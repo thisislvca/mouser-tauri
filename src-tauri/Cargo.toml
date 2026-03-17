@@ -1,0 +1,48 @@
+[package]
+name = "mouser-tauri"
+version = "0.1.0"
+description = "Clean-room Tauri rewrite of Mouser"
+authors = ["Codex"]
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+members = [
+    "crates/mouser-core",
+    "crates/mouser-import",
+    "crates/mouser-mock",
+    "crates/mouser-platform",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+mouser-core = { path = "crates/mouser-core" }
+mouser-import = { path = "crates/mouser-import" }
+mouser-mock = { path = "crates/mouser-mock" }
+mouser-platform = { path = "crates/mouser-platform" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+thiserror = "2"
+
+[lib]
+name = "mouser_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+mouser-core.workspace = true
+mouser-import.workspace = true
+mouser-mock.workspace = true
+mouser-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-opener = "2"

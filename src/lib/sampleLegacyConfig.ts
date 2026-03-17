@@ -1,0 +1,58 @@
+export const sampleLegacyConfig = JSON.stringify(
+  {
+    version: 4,
+    active_profile: "default",
+    profiles: {
+      default: {
+        label: "Default (All Apps)",
+        apps: [],
+        mappings: {
+          middle: "none",
+          gesture: "none",
+          gesture_left: "copy",
+          gesture_right: "paste",
+          gesture_up: "task_view",
+          gesture_down: "show_desktop",
+          xbutton1: "browser_back",
+          xbutton2: "browser_forward",
+          hscroll_left: "browser_back",
+          hscroll_right: "browser_forward",
+        },
+      },
+      vscode: {
+        label: "VS Code",
+        apps: ["Code.exe", "Code"],
+        mappings: {
+          middle: "close_tab",
+          gesture: "none",
+          gesture_left: "undo",
+          gesture_right: "save",
+          gesture_up: "find",
+          gesture_down: "select_all",
+          xbutton1: "alt_tab",
+          xbutton2: "alt_shift_tab",
+          hscroll_left: "browser_back",
+          hscroll_right: "browser_forward",
+        },
+      },
+    },
+    settings: {
+      start_minimized: true,
+      start_with_windows: false,
+      invert_hscroll: false,
+      invert_vscroll: false,
+      dpi: 1250,
+      gesture_threshold: 52,
+      gesture_deadzone: 38,
+      gesture_timeout_ms: 2800,
+      gesture_cooldown_ms: 450,
+      appearance_mode: "system",
+      debug_mode: true,
+      device_layout_overrides: {
+        mx_master_3s: "mx_master",
+      },
+    },
+  },
+  null,
+  2,
+);

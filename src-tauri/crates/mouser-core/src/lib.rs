@@ -1,0 +1,772 @@
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogicalControl {
+    Middle,
+    GesturePress,
+    GestureLeft,
+    GestureRight,
+    GestureUp,
+    GestureDown,
+    Back,
+    Forward,
+    HscrollLeft,
+    HscrollRight,
+}
+
+impl LogicalControl {
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::Middle,
+            Self::GesturePress,
+            Self::GestureLeft,
+            Self::GestureRight,
+            Self::GestureUp,
+            Self::GestureDown,
+            Self::Back,
+            Self::Forward,
+            Self::HscrollLeft,
+            Self::HscrollRight,
+        ]
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Middle => "Middle button",
+            Self::GesturePress => "Gesture button",
+            Self::GestureLeft => "Gesture swipe left",
+            Self::GestureRight => "Gesture swipe right",
+            Self::GestureUp => "Gesture swipe up",
+            Self::GestureDown => "Gesture swipe down",
+            Self::Back => "Back button",
+            Self::Forward => "Forward button",
+            Self::HscrollLeft => "Horizontal scroll left",
+            Self::HscrollRight => "Horizontal scroll right",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Binding {
+    pub control: LogicalControl,
+    pub action_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppMatcherKind {
+    Executable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppMatcher {
+    pub kind: AppMatcherKind,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppearanceMode {
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    pub start_minimized: bool,
+    pub start_at_login: bool,
+    pub invert_horizontal_scroll: bool,
+    pub invert_vertical_scroll: bool,
+    pub dpi: u16,
+    pub gesture_threshold: u16,
+    pub gesture_deadzone: u16,
+    pub gesture_timeout_ms: u32,
+    pub gesture_cooldown_ms: u32,
+    pub appearance_mode: AppearanceMode,
+    pub debug_mode: bool,
+    pub device_layout_overrides: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Profile {
+    pub id: String,
+    pub label: String,
+    pub app_matchers: Vec<AppMatcher>,
+    pub bindings: Vec<Binding>,
+}
+
+impl Profile {
+    pub fn binding_for(&self, control: LogicalControl) -> Option<&Binding> {
+        self.bindings
+            .iter()
+            .find(|binding| binding.control == control)
+    }
+
+    pub fn set_binding(&mut self, control: LogicalControl, action_id: impl Into<String>) {
+        let action_id = action_id.into();
+        if let Some(binding) = self
+            .bindings
+            .iter_mut()
+            .find(|binding| binding.control == control)
+        {
+            binding.action_id = action_id;
+        } else {
+            self.bindings.push(Binding { control, action_id });
+        }
+        self.bindings = normalize_bindings(std::mem::take(&mut self.bindings));
+    }
+
+    pub fn normalized(mut self) -> Self {
+        self.bindings = normalize_bindings(std::mem::take(&mut self.bindings));
+        if self.label.trim().is_empty() {
+            self.label = self.id.clone();
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfig {
+    pub version: u32,
+    pub active_profile_id: String,
+    pub profiles: Vec<Profile>,
+    pub settings: Settings,
+}
+
+impl AppConfig {
+    pub fn active_profile(&self) -> Option<&Profile> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == self.active_profile_id)
+    }
+
+    pub fn active_profile_mut(&mut self) -> Option<&mut Profile> {
+        self.profiles
+            .iter_mut()
+            .find(|profile| profile.id == self.active_profile_id)
+    }
+
+    pub fn profile_by_id(&self, profile_id: &str) -> Option<&Profile> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+    }
+
+    pub fn upsert_profile(&mut self, profile: Profile) {
+        if let Some(existing) = self.profiles.iter_mut().find(|item| item.id == profile.id) {
+            *existing = profile.normalized();
+        } else {
+            self.profiles.push(profile.normalized());
+        }
+        self.ensure_invariants();
+    }
+
+    pub fn delete_profile(&mut self, profile_id: &str) -> bool {
+        if profile_id == "default" {
+            return false;
+        }
+
+        let before = self.profiles.len();
+        self.profiles.retain(|profile| profile.id != profile_id);
+        if self.active_profile_id == profile_id {
+            self.active_profile_id = "default".to_string();
+        }
+        self.ensure_invariants();
+        before != self.profiles.len()
+    }
+
+    pub fn sync_active_profile_for_app(&mut self, executable: Option<&str>) -> bool {
+        let target = executable
+            .and_then(|exe| {
+                self.profiles.iter().find(|profile| {
+                    profile.app_matchers.iter().any(|matcher| {
+                        matcher.kind == AppMatcherKind::Executable
+                            && matcher.value.eq_ignore_ascii_case(exe)
+                    })
+                })
+            })
+            .map(|profile| profile.id.clone())
+            .unwrap_or_else(|| "default".to_string());
+
+        if self.active_profile_id == target {
+            return false;
+        }
+
+        self.active_profile_id = target;
+        true
+    }
+
+    pub fn ensure_invariants(&mut self) {
+        if self.profiles.is_empty() {
+            self.profiles.push(default_profile());
+        }
+
+        if !self.profiles.iter().any(|profile| profile.id == "default") {
+            self.profiles.insert(0, default_profile());
+        }
+
+        for profile in &mut self.profiles {
+            profile.bindings = normalize_bindings(std::mem::take(&mut profile.bindings));
+            if profile.label.trim().is_empty() {
+                profile.label = profile.id.clone();
+            }
+        }
+
+        if !self
+            .profiles
+            .iter()
+            .any(|profile| profile.id == self.active_profile_id)
+        {
+            self.active_profile_id = "default".to_string();
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionDefinition {
+    pub id: String,
+    pub label: String,
+    pub category: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotspotSummaryType {
+    Mapping,
+    Gesture,
+    Hscroll,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LabelSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceHotspot {
+    pub control: LogicalControl,
+    pub label: String,
+    pub summary_type: HotspotSummaryType,
+    pub norm_x: f32,
+    pub norm_y: f32,
+    pub label_side: LabelSide,
+    pub label_off_x: i32,
+    pub label_off_y: i32,
+    pub is_hscroll: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLayout {
+    pub key: String,
+    pub label: String,
+    pub image_asset: String,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub interactive: bool,
+    pub manual_selectable: bool,
+    pub note: String,
+    pub hotspots: Vec<DeviceHotspot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceInfo {
+    pub key: String,
+    pub display_name: String,
+    pub product_id: Option<u16>,
+    pub product_name: Option<String>,
+    pub transport: Option<String>,
+    pub source: Option<String>,
+    pub ui_layout: String,
+    pub image_asset: String,
+    pub supported_controls: Vec<LogicalControl>,
+    pub gesture_cids: Vec<u16>,
+    pub dpi_min: u16,
+    pub dpi_max: u16,
+    pub connected: bool,
+    pub battery_level: Option<u8>,
+    pub current_dpi: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugEventKind {
+    Info,
+    Warning,
+    Gesture,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugEvent {
+    pub kind: DebugEventKind,
+    pub message: String,
+    pub timestamp_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineStatus {
+    pub enabled: bool,
+    pub connected: bool,
+    pub active_profile_id: String,
+    pub frontmost_app: Option<String>,
+    pub selected_device_key: Option<String>,
+    pub debug_mode: bool,
+    pub debug_log: Vec<DebugEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineSnapshot {
+    pub devices: Vec<DeviceInfo>,
+    pub active_device_key: Option<String>,
+    pub active_device: Option<DeviceInfo>,
+    pub engine_status: EngineStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformCapabilities {
+    pub platform: String,
+    pub windows_supported: bool,
+    pub macos_supported: bool,
+    pub live_hooks_available: bool,
+    pub live_hid_available: bool,
+    pub tray_ready: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutChoice {
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BootstrapPayload {
+    pub config: AppConfig,
+    pub available_actions: Vec<ActionDefinition>,
+    pub layouts: Vec<DeviceLayout>,
+    pub engine_snapshot: EngineSnapshot,
+    pub platform_capabilities: PlatformCapabilities,
+    pub manual_layout_choices: Vec<LayoutChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportReport {
+    pub config: AppConfig,
+    pub warnings: Vec<String>,
+    pub source_path: Option<String>,
+    pub imported_profiles: usize,
+}
+
+pub fn default_settings() -> Settings {
+    Settings {
+        start_minimized: true,
+        start_at_login: false,
+        invert_horizontal_scroll: false,
+        invert_vertical_scroll: false,
+        dpi: 1000,
+        gesture_threshold: 50,
+        gesture_deadzone: 40,
+        gesture_timeout_ms: 3000,
+        gesture_cooldown_ms: 500,
+        appearance_mode: AppearanceMode::System,
+        debug_mode: false,
+        device_layout_overrides: BTreeMap::new(),
+    }
+}
+
+pub fn default_profile_bindings() -> Vec<Binding> {
+    normalize_bindings(vec![
+        Binding {
+            control: LogicalControl::Back,
+            action_id: "alt_tab".to_string(),
+        },
+        Binding {
+            control: LogicalControl::Forward,
+            action_id: "alt_tab".to_string(),
+        },
+        Binding {
+            control: LogicalControl::HscrollLeft,
+            action_id: "browser_back".to_string(),
+        },
+        Binding {
+            control: LogicalControl::HscrollRight,
+            action_id: "browser_forward".to_string(),
+        },
+    ])
+}
+
+pub fn default_profile() -> Profile {
+    Profile {
+        id: "default".to_string(),
+        label: "Default (All Apps)".to_string(),
+        app_matchers: Vec::new(),
+        bindings: default_profile_bindings(),
+    }
+}
+
+pub fn default_config() -> AppConfig {
+    AppConfig {
+        version: 1,
+        active_profile_id: "default".to_string(),
+        profiles: vec![default_profile()],
+        settings: default_settings(),
+    }
+}
+
+pub fn normalize_bindings(bindings: Vec<Binding>) -> Vec<Binding> {
+    let mut map = BTreeMap::new();
+    for binding in bindings {
+        map.insert(binding.control, binding.action_id);
+    }
+
+    LogicalControl::all()
+        .into_iter()
+        .map(|control| Binding {
+            control,
+            action_id: map.remove(&control).unwrap_or_else(|| "none".to_string()),
+        })
+        .collect()
+}
+
+pub fn default_action_catalog() -> Vec<ActionDefinition> {
+    vec![
+        action("alt_tab", "Alt + Tab (Switch Windows)", "Navigation"),
+        action(
+            "alt_shift_tab",
+            "Alt + Shift + Tab (Switch Windows Reverse)",
+            "Navigation",
+        ),
+        action("show_desktop", "Show Desktop", "Navigation"),
+        action("task_view", "Task View", "Navigation"),
+        action("browser_back", "Browser Back", "Browser"),
+        action("browser_forward", "Browser Forward", "Browser"),
+        action("close_tab", "Close Tab", "Browser"),
+        action("new_tab", "New Tab", "Browser"),
+        action("copy", "Copy", "Editing"),
+        action("paste", "Paste", "Editing"),
+        action("cut", "Cut", "Editing"),
+        action("undo", "Undo", "Editing"),
+        action("select_all", "Select All", "Editing"),
+        action("save", "Save", "Editing"),
+        action("find", "Find", "Editing"),
+        action("volume_up", "Volume Up", "Media"),
+        action("volume_down", "Volume Down", "Media"),
+        action("volume_mute", "Volume Mute", "Media"),
+        action("play_pause", "Play / Pause", "Media"),
+        action("next_track", "Next Track", "Media"),
+        action("prev_track", "Previous Track", "Media"),
+        action("none", "Do Nothing (Pass-through)", "Other"),
+    ]
+}
+
+pub fn default_layouts() -> Vec<DeviceLayout> {
+    vec![
+        DeviceLayout {
+            key: "mx_master".to_string(),
+            label: "MX Master family".to_string(),
+            image_asset: "/assets/mouse.png".to_string(),
+            image_width: 460,
+            image_height: 360,
+            interactive: true,
+            manual_selectable: true,
+            note: String::new(),
+            hotspots: vec![
+                hotspot(
+                    LogicalControl::Middle,
+                    "Middle button",
+                    HotspotSummaryType::Mapping,
+                    0.35,
+                    0.40,
+                    LabelSide::Right,
+                    100,
+                    -160,
+                    false,
+                ),
+                hotspot(
+                    LogicalControl::GesturePress,
+                    "Gesture button",
+                    HotspotSummaryType::Gesture,
+                    0.70,
+                    0.63,
+                    LabelSide::Left,
+                    -200,
+                    60,
+                    false,
+                ),
+                hotspot(
+                    LogicalControl::Forward,
+                    "Forward button",
+                    HotspotSummaryType::Mapping,
+                    0.60,
+                    0.48,
+                    LabelSide::Left,
+                    -300,
+                    0,
+                    false,
+                ),
+                hotspot(
+                    LogicalControl::Back,
+                    "Back button",
+                    HotspotSummaryType::Mapping,
+                    0.65,
+                    0.40,
+                    LabelSide::Right,
+                    200,
+                    50,
+                    false,
+                ),
+                hotspot(
+                    LogicalControl::HscrollLeft,
+                    "Horizontal scroll",
+                    HotspotSummaryType::Hscroll,
+                    0.60,
+                    0.375,
+                    LabelSide::Right,
+                    200,
+                    -50,
+                    true,
+                ),
+            ],
+        },
+        DeviceLayout {
+            key: "mx_anywhere".to_string(),
+            label: "MX Anywhere family".to_string(),
+            image_asset: "/assets/icons/mouse-simple.svg".to_string(),
+            image_width: 220,
+            image_height: 220,
+            interactive: false,
+            manual_selectable: false,
+            note: "MX Anywhere support is wired for device detection and HID++ probing. A dedicated overlay still needs to be added."
+                .to_string(),
+            hotspots: Vec::new(),
+        },
+        DeviceLayout {
+            key: "mx_vertical".to_string(),
+            label: "MX Vertical family".to_string(),
+            image_asset: "/assets/icons/mouse-simple.svg".to_string(),
+            image_width: 220,
+            image_height: 220,
+            interactive: false,
+            manual_selectable: false,
+            note: "MX Vertical falls back to a generic device card until a dedicated overlay is added."
+                .to_string(),
+            hotspots: Vec::new(),
+        },
+        DeviceLayout {
+            key: "generic_mouse".to_string(),
+            label: "Generic mouse".to_string(),
+            image_asset: "/assets/icons/mouse-simple.svg".to_string(),
+            image_width: 220,
+            image_height: 220,
+            interactive: false,
+            manual_selectable: false,
+            note: "This device is detected and the backend can still probe HID++ features, but Mouser does not have a dedicated visual overlay for it yet."
+                .to_string(),
+            hotspots: Vec::new(),
+        },
+    ]
+}
+
+pub fn manual_layout_choices(layouts: &[DeviceLayout]) -> Vec<LayoutChoice> {
+    let mut choices = vec![LayoutChoice {
+        key: String::new(),
+        label: "Auto-detect".to_string(),
+    }];
+    choices.extend(
+        layouts
+            .iter()
+            .filter(|layout| layout.manual_selectable)
+            .map(|layout| LayoutChoice {
+                key: layout.key.clone(),
+                label: layout.label.clone(),
+            }),
+    );
+    choices
+}
+
+pub fn default_device_catalog() -> Vec<DeviceInfo> {
+    vec![
+        DeviceInfo {
+            key: "mx_master_3s".to_string(),
+            display_name: "MX Master 3S".to_string(),
+            product_id: Some(0xB034),
+            product_name: Some("MX Master 3S".to_string()),
+            transport: Some("Bluetooth Low Energy".to_string()),
+            source: Some("mock-catalog".to_string()),
+            ui_layout: "mx_master".to_string(),
+            image_asset: "/assets/mouse.png".to_string(),
+            supported_controls: LogicalControl::all(),
+            gesture_cids: vec![0x00C3, 0x00D7],
+            dpi_min: 200,
+            dpi_max: 8000,
+            connected: true,
+            battery_level: Some(84),
+            current_dpi: 1200,
+        },
+        DeviceInfo {
+            key: "mx_anywhere_3s".to_string(),
+            display_name: "MX Anywhere 3S".to_string(),
+            product_id: Some(0xB037),
+            product_name: Some("MX Anywhere 3S".to_string()),
+            transport: Some("Bolt Receiver".to_string()),
+            source: Some("mock-catalog".to_string()),
+            ui_layout: "mx_anywhere".to_string(),
+            image_asset: "/assets/icons/mouse-simple.svg".to_string(),
+            supported_controls: LogicalControl::all(),
+            gesture_cids: vec![0x00C3],
+            dpi_min: 200,
+            dpi_max: 8000,
+            connected: false,
+            battery_level: Some(62),
+            current_dpi: 1000,
+        },
+        DeviceInfo {
+            key: "mystery_logitech_mouse".to_string(),
+            display_name: "Mystery Logitech Mouse".to_string(),
+            product_id: Some(0xB999),
+            product_name: Some("Mystery Logitech Mouse".to_string()),
+            transport: Some("USB".to_string()),
+            source: Some("mock-catalog".to_string()),
+            ui_layout: "generic_mouse".to_string(),
+            image_asset: "/assets/icons/mouse-simple.svg".to_string(),
+            supported_controls: LogicalControl::all(),
+            gesture_cids: vec![0x00C3, 0x00D7],
+            dpi_min: 200,
+            dpi_max: 8000,
+            connected: false,
+            battery_level: None,
+            current_dpi: 900,
+        },
+    ]
+}
+
+pub fn clamp_dpi(device: Option<&DeviceInfo>, value: u16) -> u16 {
+    let min = device.map(|info| info.dpi_min).unwrap_or(200);
+    let max = device.map(|info| info.dpi_max).unwrap_or(8000);
+    value.max(min).min(max)
+}
+
+pub fn layout_by_key(layouts: &[DeviceLayout], layout_key: &str) -> Option<DeviceLayout> {
+    layouts
+        .iter()
+        .find(|layout| layout.key == layout_key)
+        .cloned()
+}
+
+pub fn effective_layout_key(
+    settings: &Settings,
+    device_key: Option<&str>,
+    default_layout_key: &str,
+) -> String {
+    if let Some(device_key) = device_key {
+        if let Some(override_key) = settings.device_layout_overrides.get(device_key) {
+            if !override_key.is_empty() {
+                return override_key.clone();
+            }
+        }
+    }
+    default_layout_key.to_string()
+}
+
+fn action(id: &str, label: &str, category: &str) -> ActionDefinition {
+    ActionDefinition {
+        id: id.to_string(),
+        label: label.to_string(),
+        category: category.to_string(),
+    }
+}
+
+fn hotspot(
+    control: LogicalControl,
+    label: &str,
+    summary_type: HotspotSummaryType,
+    norm_x: f32,
+    norm_y: f32,
+    label_side: LabelSide,
+    label_off_x: i32,
+    label_off_y: i32,
+    is_hscroll: bool,
+) -> DeviceHotspot {
+    DeviceHotspot {
+        control,
+        label: label.to_string(),
+        summary_type,
+        norm_x,
+        norm_y,
+        label_side,
+        label_off_x,
+        label_off_y,
+        is_hscroll,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_round_trip_preserves_defaults() {
+        let config = default_config();
+        let json = serde_json::to_string_pretty(&config).unwrap();
+        let decoded: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn profile_resolution_prefers_matching_app() {
+        let mut config = default_config();
+        config.upsert_profile(Profile {
+            id: "vscode".to_string(),
+            label: "VS Code".to_string(),
+            app_matchers: vec![AppMatcher {
+                kind: AppMatcherKind::Executable,
+                value: "Code.exe".to_string(),
+            }],
+            bindings: default_profile_bindings(),
+        });
+
+        assert!(config.sync_active_profile_for_app(Some("code.exe")));
+        assert_eq!(config.active_profile_id, "vscode");
+        assert!(config.sync_active_profile_for_app(Some("Finder")));
+        assert_eq!(config.active_profile_id, "default");
+    }
+
+    #[test]
+    fn binding_lookup_uses_control_identity() {
+        let profile = default_profile();
+        let binding = profile.binding_for(LogicalControl::Back).unwrap();
+        assert_eq!(binding.action_id, "alt_tab");
+    }
+
+    #[test]
+    fn device_metadata_and_dpi_clamp_match_catalog() {
+        let catalog = default_device_catalog();
+        let device = catalog
+            .iter()
+            .find(|device| device.key == "mx_master_3s")
+            .unwrap();
+        assert_eq!(device.ui_layout, "mx_master");
+        assert_eq!(clamp_dpi(Some(device), 9000), 8000);
+        assert_eq!(clamp_dpi(Some(device), 100), 200);
+    }
+}
