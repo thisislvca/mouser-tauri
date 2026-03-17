@@ -1,46 +1,58 @@
-import { invoke } from "@tauri-apps/api/core";
+import { commands, events, type Result } from "./bindings";
 import type {
   AppConfig,
-  BootstrapPayload,
-  DeviceInfo,
-  EngineSnapshot,
-  ImportLegacyRequest,
-  LegacyImportReport,
+  DebugEvent,
+  ImportLegacyConfigRequest,
   Profile,
-} from "./types";
+} from "./bindings";
 
-export function bootstrapLoad() {
-  return invoke<BootstrapPayload>("bootstrap_load");
+function unwrap<T, E>(result: Result<T, E>): T {
+  if (result.status === "ok") {
+    return result.data;
+  }
+
+  throw new Error(String(result.error));
 }
 
-export function configGet() {
-  return invoke<AppConfig>("config_get");
+export { events };
+export type { DebugEvent };
+
+export async function bootstrapLoad() {
+  return unwrap(await commands.bootstrapLoad());
 }
 
-export function configSave(config: AppConfig) {
-  return invoke<BootstrapPayload>("config_save", { config });
+export async function configGet() {
+  return unwrap(await commands.configGet());
 }
 
-export function profilesCreate(profile: Profile) {
-  return invoke<BootstrapPayload>("profiles_create", { profile });
+export async function configSave(config: AppConfig) {
+  return unwrap(await commands.configSave(config));
 }
 
-export function profilesUpdate(profile: Profile) {
-  return invoke<BootstrapPayload>("profiles_update", { profile });
+export async function profilesCreate(profile: Profile) {
+  return unwrap(await commands.profilesCreate(profile));
 }
 
-export function profilesDelete(profileId: string) {
-  return invoke<BootstrapPayload>("profiles_delete", { profile_id: profileId });
+export async function profilesUpdate(profile: Profile) {
+  return unwrap(await commands.profilesUpdate(profile));
 }
 
-export function devicesList() {
-  return invoke<DeviceInfo[]>("devices_list");
+export async function profilesDelete(profileId: string) {
+  return unwrap(await commands.profilesDelete(profileId));
 }
 
-export function devicesSelectMock(deviceKey: string) {
-  return invoke<EngineSnapshot>("devices_select_mock", { device_key: deviceKey });
+export async function devicesList() {
+  return unwrap(await commands.devicesList());
 }
 
-export function importLegacyConfig(request: ImportLegacyRequest) {
-  return invoke<LegacyImportReport>("import_legacy_config", { request });
+export async function devicesSelectMock(deviceKey: string) {
+  return unwrap(await commands.devicesSelectMock(deviceKey));
+}
+
+export async function importLegacyConfig(request: ImportLegacyConfigRequest) {
+  return unwrap(await commands.importLegacyConfig(request));
+}
+
+export async function debugClearLog() {
+  return unwrap(await commands.debugClearLog());
 }

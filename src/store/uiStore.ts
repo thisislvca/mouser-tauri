@@ -13,10 +13,11 @@ interface UiState {
   setImportDraft: (value: string) => void;
   appendDebugEvent: (event: DebugEventRecord) => void;
   hydrateDebugLog: (events: DebugEventRecord[]) => void;
+  clearDebugEvents: () => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  activeSection: "devices",
+  activeSection: "buttons",
   selectedProfileId: null,
   importDraft: "",
   eventLog: [],
@@ -28,4 +29,5 @@ export const useUiStore = create<UiState>((set) => ({
       eventLog: [event, ...state.eventLog].slice(0, 24),
     })),
   hydrateDebugLog: (events) => set({ eventLog: events.slice(0, 24) }),
+  clearDebugEvents: () => set({ eventLog: [] }),
 }));

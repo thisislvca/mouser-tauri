@@ -5,6 +5,7 @@ description = "Clean-room Tauri rewrite of Mouser"
 authors = ["Codex"]
 edition = "2021"
 license = "Apache-2.0"
+default-run = "mouser-tauri"
 
 [workspace]
 members = [
@@ -27,7 +28,10 @@ mouser-mock = { path = "crates/mouser-mock" }
 mouser-platform = { path = "crates/mouser-platform" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["tray-icon"] }
+specta = "=2.0.0-rc.22"
+specta-typescript = "0.0.9"
+tauri = { version = "2", features = ["tray-icon", "specta"] }
+tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 thiserror = "2"
 
 [lib]
@@ -44,5 +48,8 @@ mouser-mock.workspace = true
 mouser-platform.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+specta.workspace = true
+specta-typescript.workspace = true
 tauri.workspace = true
+tauri-specta.workspace = true
 tauri-plugin-opener = "2"

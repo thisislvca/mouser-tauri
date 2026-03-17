@@ -9,102 +9,41 @@ import type {
   DebugEventRecord,
   DeviceInfo,
   DeviceLayout,
-  EngineSnapshot,
 } from "./lib/types";
 import { useUiStore } from "./store/uiStore";
 
 let currentBootstrap: BootstrapPayload;
 
-const listenMock = vi.fn(async () => () => undefined);
-const invokeMock = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-  switch (command) {
-    case "bootstrap_load":
-      return currentBootstrap;
-    case "config_save":
-      currentBootstrap = {
-        ...currentBootstrap,
-        config: args?.config as AppConfig,
-      };
-      return currentBootstrap;
-    case "profiles_update": {
-      const updatedProfile = args?.profile as AppConfig["profiles"][number];
-      currentBootstrap = {
-        ...currentBootstrap,
-        config: {
-          ...currentBootstrap.config,
-          profiles: currentBootstrap.config.profiles.map((profile) =>
-            profile.id === updatedProfile.id ? updatedProfile : profile,
-          ),
-        },
-      };
-      return currentBootstrap;
-    }
-    case "profiles_create": {
-      const nextProfile = args?.profile as AppConfig["profiles"][number];
-      currentBootstrap = {
-        ...currentBootstrap,
-        config: {
-          ...currentBootstrap.config,
-          profiles: [...currentBootstrap.config.profiles, nextProfile],
-        },
-      };
-      return currentBootstrap;
-    }
-    case "profiles_delete": {
-      const profileId = args?.profile_id as string;
-      currentBootstrap = {
-        ...currentBootstrap,
-        config: {
-          ...currentBootstrap.config,
-          activeProfileId: "default",
-          profiles: currentBootstrap.config.profiles.filter((profile) => profile.id !== profileId),
-        },
-      };
-      return currentBootstrap;
-    }
-    case "devices_select_mock": {
-      const deviceKey = args?.device_key as string;
-      const devices = currentBootstrap.engineSnapshot.devices.map((device) => ({
-        ...device,
-        connected: device.key === deviceKey,
-      }));
-      const activeDevice = devices.find((device) => device.key === deviceKey) ?? null;
-      currentBootstrap = {
-        ...currentBootstrap,
-        engineSnapshot: {
-          ...currentBootstrap.engineSnapshot,
-          devices,
-          activeDeviceKey: deviceKey,
-          activeDevice,
-          engineStatus: {
-            ...currentBootstrap.engineSnapshot.engineStatus,
-            selectedDeviceKey: deviceKey,
-            connected: Boolean(activeDevice),
-          },
-        },
-      };
-      return currentBootstrap.engineSnapshot as EngineSnapshot;
-    }
-    case "import_legacy_config": {
-      currentBootstrap = makeImportedBootstrap();
-      return {
-        config: currentBootstrap.config,
-        warnings: [],
-        sourcePath: null,
-        importedProfiles: currentBootstrap.config.profiles.length,
-      };
-    }
-    default:
-      throw new Error(`Unhandled command ${command}`);
-  }
-});
-
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: (...args: Parameters<typeof invokeMock>) => invokeMock(...args),
+const apiMocks = vi.hoisted(() => ({
+  bootstrapLoad: vi.fn(),
+  configSave: vi.fn(),
+  profilesCreate: vi.fn(),
+  profilesUpdate: vi.fn(),
+  profilesDelete: vi.fn(),
+  devicesSelectMock: vi.fn(),
+  importLegacyConfig: vi.fn(),
+  debugClearLog: vi.fn(),
+  deviceChangedListen: vi.fn(async () => () => undefined),
+  profileChangedListen: vi.fn(async () => () => undefined),
+  engineStatusChangedListen: vi.fn(async () => () => undefined),
+  debugEventListen: vi.fn(async () => () => undefined),
 }));
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (...args: Parameters<typeof listenMock>) => listenMock(...args),
+vi.mock("./lib/api", () => ({
+  bootstrapLoad: apiMocks.bootstrapLoad,
+  configSave: apiMocks.configSave,
+  profilesCreate: apiMocks.profilesCreate,
+  profilesUpdate: apiMocks.profilesUpdate,
+  profilesDelete: apiMocks.profilesDelete,
+  devicesSelectMock: apiMocks.devicesSelectMock,
+  importLegacyConfig: apiMocks.importLegacyConfig,
+  debugClearLog: apiMocks.debugClearLog,
+  events: {
+    deviceChangedEvent: { listen: apiMocks.deviceChangedListen },
+    profileChangedEvent: { listen: apiMocks.profileChangedListen },
+    engineStatusChangedEvent: { listen: apiMocks.engineStatusChangedListen },
+    debugEventEnvelope: { listen: apiMocks.debugEventListen },
+  },
 }));
 
 function makeBootstrap(): BootstrapPayload {
@@ -221,6 +160,18 @@ function makeBootstrap(): BootstrapPayload {
       { id: "copy", label: "Copy", category: "Editing" },
       { id: "none", label: "Do Nothing", category: "Other" },
     ],
+    knownApps: [
+      {
+        executable: "Code.exe",
+        label: "VS Code",
+        iconAsset: "/assets/apps/vscode.png",
+      },
+      {
+        executable: "msedge.exe",
+        label: "Microsoft Edge",
+        iconAsset: null,
+      },
+    ],
     layouts,
     engineSnapshot: {
       devices,
@@ -243,6 +194,12 @@ function makeBootstrap(): BootstrapPayload {
       liveHooksAvailable: false,
       liveHidAvailable: false,
       trayReady: true,
+      mappingEngineReady: false,
+      activeHidBackend: "macos-hidapi",
+      activeHookBackend: "macos-eventtap-stub",
+      activeFocusBackend: "macos-nsworkspace",
+      hidapiAvailable: true,
+      iokitAvailable: false,
     },
     manualLayoutChoices: [
       { key: "", label: "Auto-detect" },
@@ -262,7 +219,10 @@ function makeImportedBootstrap(): BootstrapPayload {
         id: "vscode",
         label: "VS Code",
         appMatchers: [{ kind: "executable", value: "Code.exe" }],
-        bindings: next.config.profiles[0].bindings.map((binding) => ({ ...binding, actionId: "copy" })),
+        bindings: next.config.profiles[0].bindings.map((binding) => ({
+          ...binding,
+          actionId: "copy",
+        })),
       },
     ],
     settings: {
@@ -282,18 +242,127 @@ function renderApp() {
       mutations: { retry: false },
     },
   });
-  return render(
-    <QueryClientProvider client={client}>
-      <App />
-    </QueryClientProvider>,
-  );
+  const user = userEvent.setup();
+
+  return {
+    user,
+    ...render(
+      <QueryClientProvider client={client}>
+        <App />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 describe("App", () => {
   beforeEach(() => {
     currentBootstrap = makeBootstrap();
-    invokeMock.mockClear();
-    listenMock.mockClear();
+
+    apiMocks.bootstrapLoad.mockReset();
+    apiMocks.configSave.mockReset();
+    apiMocks.profilesCreate.mockReset();
+    apiMocks.profilesUpdate.mockReset();
+    apiMocks.profilesDelete.mockReset();
+    apiMocks.devicesSelectMock.mockReset();
+    apiMocks.importLegacyConfig.mockReset();
+    apiMocks.debugClearLog.mockReset();
+    apiMocks.deviceChangedListen.mockClear();
+    apiMocks.profileChangedListen.mockClear();
+    apiMocks.engineStatusChangedListen.mockClear();
+    apiMocks.debugEventListen.mockClear();
+
+    apiMocks.bootstrapLoad.mockImplementation(async () => currentBootstrap);
+    apiMocks.configSave.mockImplementation(async (config: AppConfig) => {
+      currentBootstrap = {
+        ...currentBootstrap,
+        config,
+      };
+      return currentBootstrap;
+    });
+    apiMocks.profilesUpdate.mockImplementation(
+      async (updatedProfile: AppConfig["profiles"][number]) => {
+        currentBootstrap = {
+          ...currentBootstrap,
+          config: {
+            ...currentBootstrap.config,
+            profiles: currentBootstrap.config.profiles.map((profile) =>
+              profile.id === updatedProfile.id ? updatedProfile : profile,
+            ),
+          },
+        };
+        return currentBootstrap;
+      },
+    );
+    apiMocks.profilesCreate.mockImplementation(
+      async (nextProfile: AppConfig["profiles"][number]) => {
+        currentBootstrap = {
+          ...currentBootstrap,
+          config: {
+            ...currentBootstrap.config,
+            profiles: [...currentBootstrap.config.profiles, nextProfile],
+          },
+        };
+        return currentBootstrap;
+      },
+    );
+    apiMocks.profilesDelete.mockImplementation(async (profileId: string) => {
+      currentBootstrap = {
+        ...currentBootstrap,
+        config: {
+          ...currentBootstrap.config,
+          activeProfileId: "default",
+          profiles: currentBootstrap.config.profiles.filter(
+            (profile) => profile.id !== profileId,
+          ),
+        },
+      };
+      return currentBootstrap;
+    });
+    apiMocks.devicesSelectMock.mockImplementation(async (deviceKey: string) => {
+      const devices = currentBootstrap.engineSnapshot.devices.map((device) => ({
+        ...device,
+        connected: device.key === deviceKey,
+      }));
+      const activeDevice = devices.find((device) => device.key === deviceKey) ?? null;
+      currentBootstrap = {
+        ...currentBootstrap,
+        engineSnapshot: {
+          ...currentBootstrap.engineSnapshot,
+          devices,
+          activeDeviceKey: deviceKey,
+          activeDevice,
+          engineStatus: {
+            ...currentBootstrap.engineSnapshot.engineStatus,
+            selectedDeviceKey: deviceKey,
+            connected: Boolean(activeDevice),
+          },
+        },
+      };
+      return currentBootstrap.engineSnapshot;
+    });
+    apiMocks.importLegacyConfig.mockImplementation(async () => {
+      currentBootstrap = makeImportedBootstrap();
+      return {
+        config: currentBootstrap.config,
+        warnings: [],
+        sourcePath: null,
+        importedProfiles: currentBootstrap.config.profiles.length,
+      };
+    });
+    apiMocks.debugClearLog.mockImplementation(async () => {
+      currentBootstrap = {
+        ...currentBootstrap,
+        engineSnapshot: {
+          ...currentBootstrap.engineSnapshot,
+          engineStatus: {
+            ...currentBootstrap.engineSnapshot.engineStatus,
+            debugLog: [],
+          },
+        },
+      };
+      return currentBootstrap.engineSnapshot;
+    });
+
     useUiStore.setState({
       activeSection: "devices",
       selectedProfileId: null,
@@ -305,34 +374,37 @@ describe("App", () => {
   it("renders the MX Master layout from bootstrap data", async () => {
     renderApp();
     expect(await screen.findByTestId("device-layout-card")).toBeInTheDocument();
-    expect(screen.getByTestId("device-layout-image")).toHaveAttribute("src", "/assets/mouse.png");
-  });
-
-  it("saves settings changes through config_save", async () => {
-    renderApp();
-    const settingsButton = await screen.findByRole("button", { name: "Settings" });
-    await userEvent.click(settingsButton);
-    const dpiInput = await screen.findByTestId("dpi-input");
-    await userEvent.clear(dpiInput);
-    await userEvent.type(dpiInput, "900");
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith(
-        "config_save",
-        expect.objectContaining({
-          config: expect.objectContaining({
-            settings: expect.objectContaining({ dpi: 900 }),
-          }),
-        }),
-      ),
+    expect(screen.getByTestId("device-layout-image")).toHaveAttribute(
+      "src",
+      "/assets/mouse.png",
     );
   });
 
+  it("saves settings changes through config_save", async () => {
+    const { user } = renderApp();
+    await user.click(await screen.findByRole("button", { name: "Point + Scroll" }));
+    const dpiInput = await screen.findByTestId("dpi-input");
+    await user.clear(dpiInput);
+    await user.type(dpiInput, "900");
+
+    await waitFor(() => {
+      expect(apiMocks.configSave).toHaveBeenCalled();
+      const calls = apiMocks.configSave.mock.calls;
+      const lastCall = calls[calls.length - 1];
+      expect(lastCall?.[0]).toEqual(
+        expect.objectContaining({
+          settings: expect.objectContaining({ dpi: 900 }),
+        }),
+      );
+    });
+  });
+
   it("hydrates the UI from the legacy importer flow", async () => {
-    renderApp();
-    const debugButton = await screen.findByRole("button", { name: "Debug" });
-    await userEvent.click(debugButton);
-    await userEvent.click(await screen.findByTestId("legacy-import-button"));
-    await userEvent.click(await screen.findByRole("button", { name: "Profiles" }));
+    const { user } = renderApp();
+    await user.click(await screen.findByRole("button", { name: "Debug" }));
+    await user.click(await screen.findByTestId("legacy-import-button"));
+    await user.click(await screen.findByRole("button", { name: "Profiles" }));
+
     await waitFor(() =>
       expect(screen.getByTestId("profile-label-display")).toHaveTextContent("VS Code"),
     );

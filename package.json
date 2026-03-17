@@ -4,16 +4,18 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "npm run generate:bindings && vite",
+    "build": "npm run generate:bindings && tsc && vite build",
+    "generate:bindings": "cargo run --manifest-path src-tauri/Cargo.toml --bin export_bindings",
     "test": "vitest",
-    "test:run": "vitest run",
+    "test:run": "npm run generate:bindings && vitest run",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "@tailwindcss/vite": "^4.2.1",
     "@tanstack/react-query": "^5.83.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -28,6 +30,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "jsdom": "^26.1.0",
+    "tailwindcss": "^4.2.1",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^3.2.4"

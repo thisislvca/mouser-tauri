@@ -1,40 +1,71 @@
-use std::sync::Mutex;
+mod runtime;
+
+use std::{sync::Mutex, time::Duration};
 
 use mouser_core::{
     AppConfig, BootstrapPayload, DebugEvent, DeviceInfo, EngineSnapshot, LegacyImportReport,
     Profile,
 };
 use mouser_import::{import_legacy_config as import_legacy_payload, ImportSource};
-use mouser_mock::MockRuntime;
-use serde::Deserialize;
+use runtime::AppRuntime;
+use serde::{Deserialize, Serialize};
+use specta::Type;
+use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri::{
     menu::{MenuBuilder, MenuEvent, MenuItemBuilder},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, State, Wry,
+    AppHandle, Manager, State, Wry,
 };
+use tauri_specta::{collect_commands, collect_events, Builder, Event as SpectaEvent};
 
 struct AppState {
-    runtime: Mutex<MockRuntime>,
+    runtime: Mutex<AppRuntime>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
-struct ImportLegacyConfigRequest {
+pub struct ImportLegacyConfigRequest {
     source_path: Option<String>,
     raw_json: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type, SpectaEvent)]
+#[serde(rename_all = "camelCase")]
+#[tauri_specta(event_name = "device_changed")]
+struct DeviceChangedEvent(pub Option<DeviceInfo>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, SpectaEvent)]
+#[serde(rename_all = "camelCase")]
+#[tauri_specta(event_name = "profile_changed")]
+struct ProfileChangedEvent {
+    active_profile_id: String,
+    frontmost_app: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, SpectaEvent)]
+#[serde(rename_all = "camelCase")]
+#[tauri_specta(event_name = "engine_status_changed")]
+struct EngineStatusChangedEvent(pub mouser_core::EngineStatus);
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, SpectaEvent)]
+#[serde(rename_all = "camelCase")]
+#[tauri_specta(event_name = "debug_event")]
+struct DebugEventEnvelope(pub DebugEvent);
+
 #[tauri::command]
+#[specta::specta]
 fn bootstrap_load(state: State<'_, AppState>) -> Result<BootstrapPayload, String> {
     Ok(state.runtime.lock().unwrap().bootstrap_payload())
 }
 
 #[tauri::command]
+#[specta::specta]
 fn config_get(state: State<'_, AppState>) -> Result<AppConfig, String> {
     Ok(state.runtime.lock().unwrap().config())
 }
 
 #[tauri::command]
+#[specta::specta]
 fn config_save(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -50,6 +81,7 @@ fn config_save(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn profiles_create(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -65,6 +97,7 @@ fn profiles_create(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn profiles_update(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -80,6 +113,7 @@ fn profiles_update(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn profiles_delete(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -95,11 +129,13 @@ fn profiles_delete(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn devices_list(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
     Ok(state.runtime.lock().unwrap().devices())
 }
 
 #[tauri::command]
+#[specta::specta]
 fn devices_select_mock(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -115,6 +151,7 @@ fn devices_select_mock(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn import_legacy_config(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -137,33 +174,47 @@ fn import_legacy_config(
     Ok(report)
 }
 
+#[tauri::command]
+#[specta::specta]
+fn debug_clear_log(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<EngineSnapshot, String> {
+    let payload = {
+        let mut runtime = state.runtime.lock().unwrap();
+        runtime.clear_debug_log();
+        runtime.bootstrap_payload()
+    };
+    emit_runtime_events(&app, &payload, None)?;
+    Ok(payload.engine_snapshot)
+}
+
 fn emit_runtime_events(
     app: &AppHandle,
     payload: &BootstrapPayload,
     debug_event: Option<DebugEvent>,
 ) -> Result<(), String> {
-    app.emit(
-        "device_changed",
-        payload.engine_snapshot.active_device.clone(),
-    )
+    DeviceChangedEvent(payload.engine_snapshot.active_device.clone())
+        .emit(app)
+        .map_err(|error| error.to_string())?;
+
+    ProfileChangedEvent {
+        active_profile_id: payload.config.active_profile_id.clone(),
+        frontmost_app: payload.engine_snapshot.engine_status.frontmost_app.clone(),
+    }
+    .emit(app)
     .map_err(|error| error.to_string())?;
-    app.emit(
-        "profile_changed",
-        serde_json::json!({
-            "activeProfileId": payload.config.active_profile_id.clone(),
-            "frontmostApp": payload.engine_snapshot.engine_status.frontmost_app.clone(),
-        }),
-    )
-    .map_err(|error| error.to_string())?;
-    app.emit(
-        "engine_status_changed",
-        payload.engine_snapshot.engine_status.clone(),
-    )
-    .map_err(|error| error.to_string())?;
+
+    EngineStatusChangedEvent(payload.engine_snapshot.engine_status.clone())
+        .emit(app)
+        .map_err(|error| error.to_string())?;
+
     if let Some(debug_event) = debug_event {
-        app.emit("debug_event", debug_event)
+        DebugEventEnvelope(debug_event)
+            .emit(app)
             .map_err(|error| error.to_string())?;
     }
+
     Ok(())
 }
 
@@ -197,18 +248,38 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .manage(AppState {
-            runtime: Mutex::new(MockRuntime::new()),
-        })
-        .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
-            setup_tray(app)?;
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
+fn spawn_runtime_poller(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(900));
+
+        let (changed, payload, debug_event) = {
+            let state = app.state::<AppState>();
+            let mut runtime = state.runtime.lock().unwrap();
+            let changed = runtime.poll();
+            let payload = if changed {
+                Some(runtime.bootstrap_payload())
+            } else {
+                None
+            };
+            let debug_event = if changed {
+                runtime.last_debug_event()
+            } else {
+                None
+            };
+            (changed, payload, debug_event)
+        };
+
+        if changed {
+            if let Some(payload) = payload {
+                let _ = emit_runtime_events(&app, &payload, debug_event);
+            }
+        }
+    });
+}
+
+pub fn specta_builder() -> Builder<tauri::Wry> {
+    Builder::<tauri::Wry>::new()
+        .commands(collect_commands![
             bootstrap_load,
             config_get,
             config_save,
@@ -217,8 +288,58 @@ pub fn run() {
             profiles_delete,
             devices_list,
             devices_select_mock,
-            import_legacy_config
+            import_legacy_config,
+            debug_clear_log
         ])
+        .events(collect_events![
+            DeviceChangedEvent,
+            ProfileChangedEvent,
+            EngineStatusChangedEvent,
+            DebugEventEnvelope
+        ])
+        .typ::<BootstrapPayload>()
+        .typ::<AppConfig>()
+        .typ::<DeviceInfo>()
+        .typ::<EngineSnapshot>()
+        .typ::<LegacyImportReport>()
+        .typ::<ImportLegacyConfigRequest>()
+}
+
+pub fn export_bindings() -> Result<(), String> {
+    let builder = specta_builder();
+    let output_path = format!("{}/../src/lib/bindings.ts", env!("CARGO_MANIFEST_DIR"));
+    builder
+        .export(
+            Typescript::default().bigint(BigIntExportBehavior::Number),
+            &output_path,
+        )
+        .map_err(|error| error.to_string())?;
+
+    let generated = std::fs::read_to_string(&output_path).map_err(|error| error.to_string())?;
+    let generated = generated.replace(
+        "import {\n\tinvoke as TAURI_INVOKE,\n\tChannel as TAURI_CHANNEL,\n} from \"@tauri-apps/api/core\";",
+        "import {\n\tinvoke as TAURI_INVOKE,\n} from \"@tauri-apps/api/core\";",
+    );
+    let generated = format!("// @ts-nocheck\n{generated}");
+    std::fs::write(output_path, generated).map_err(|error| error.to_string())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let specta_builder = specta_builder();
+
+    tauri::Builder::default()
+        .manage(AppState {
+            runtime: Mutex::new(AppRuntime::new(None)),
+        })
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(specta_builder.invoke_handler())
+        .setup(move |app| {
+            setup_tray(app)?;
+            specta_builder.mount_events(app);
+            spawn_runtime_poller(app.handle().clone());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running mouser-tauri");
 }

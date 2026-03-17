@@ -4,10 +4,10 @@ use std::{
 };
 
 use mouser_core::{
-    clamp_dpi, default_action_catalog, default_config, default_device_catalog, default_layouts,
-    effective_layout_key, manual_layout_choices, AppConfig, BootstrapPayload, DebugEvent,
-    DebugEventKind, DeviceInfo, DeviceLayout, EngineSnapshot, EngineStatus, PlatformCapabilities,
-    Profile,
+    clamp_dpi, default_action_catalog, default_config, default_device_catalog, default_known_apps,
+    default_layouts, effective_layout_key, manual_layout_choices, AppConfig, BootstrapPayload,
+    DebugEvent, DebugEventKind, DeviceInfo, DeviceLayout, EngineSnapshot, EngineStatus, KnownApp,
+    PlatformCapabilities, Profile,
 };
 use mouser_platform::{ConfigStore, DeviceCatalog, PlatformError};
 
@@ -33,6 +33,10 @@ impl DeviceCatalog for MockCatalog {
 
     fn all_layouts(&self) -> Vec<DeviceLayout> {
         self.layouts.clone()
+    }
+
+    fn known_apps(&self) -> Vec<KnownApp> {
+        default_known_apps()
     }
 
     fn clamp_dpi(&self, device_key: Option<&str>, value: u16) -> u16 {
@@ -109,6 +113,7 @@ impl MockRuntime {
         BootstrapPayload {
             config: self.config(),
             available_actions: default_action_catalog(),
+            known_apps: default_known_apps(),
             layouts: self.catalog.all_layouts(),
             engine_snapshot: self.engine_snapshot(),
             platform_capabilities: current_platform_capabilities(),
@@ -302,6 +307,12 @@ fn current_platform_capabilities() -> PlatformCapabilities {
         live_hooks_available: false,
         live_hid_available: false,
         tray_ready: true,
+        mapping_engine_ready: false,
+        active_hid_backend: "mock-hid".to_string(),
+        active_hook_backend: "mock-hook".to_string(),
+        active_focus_backend: "mock-focus".to_string(),
+        hidapi_available: cfg!(target_os = "macos"),
+        iokit_available: cfg!(target_os = "macos"),
     }
 }
 

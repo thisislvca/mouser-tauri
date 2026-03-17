@@ -1,7 +1,6 @@
 import { useEffect } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
-import type { DebugEventRecord } from "../lib/types";
+import { events, type DebugEvent } from "../lib/api";
 import { useUiStore } from "../store/uiStore";
 
 export function useRuntimeEvents() {
@@ -18,10 +17,10 @@ export function useRuntimeEvents() {
       };
 
       const listeners = await Promise.all([
-        listen("device_changed", invalidate),
-        listen("profile_changed", invalidate),
-        listen("engine_status_changed", invalidate),
-        listen<DebugEventRecord>("debug_event", (event) => {
+        events.deviceChangedEvent.listen(invalidate),
+        events.profileChangedEvent.listen(invalidate),
+        events.engineStatusChangedEvent.listen(invalidate),
+        events.debugEventEnvelope.listen((event: { payload: DebugEvent }) => {
           appendDebugEvent(event.payload);
         }),
       ]);

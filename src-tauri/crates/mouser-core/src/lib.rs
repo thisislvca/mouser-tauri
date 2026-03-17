@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use specta::Type;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LogicalControl {
     Middle,
@@ -49,27 +52,27 @@ impl LogicalControl {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Binding {
     pub control: LogicalControl,
     pub action_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum AppMatcherKind {
     Executable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AppMatcher {
     pub kind: AppMatcherKind,
     pub value: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum AppearanceMode {
     System,
@@ -77,7 +80,7 @@ pub enum AppearanceMode {
     Dark,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub start_minimized: bool,
@@ -94,7 +97,7 @@ pub struct Settings {
     pub device_layout_overrides: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
     pub id: String,
@@ -133,7 +136,7 @@ impl Profile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub version: u32,
@@ -231,7 +234,7 @@ impl AppConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionDefinition {
     pub id: String,
@@ -239,7 +242,30 @@ pub struct ActionDefinition {
     pub category: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownApp {
+    pub executable: String,
+    pub label: String,
+    pub icon_asset: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownDeviceSpec {
+    pub key: String,
+    pub display_name: String,
+    pub product_ids: Vec<u16>,
+    pub aliases: Vec<String>,
+    pub gesture_cids: Vec<u16>,
+    pub ui_layout: String,
+    pub image_asset: String,
+    pub supported_controls: Vec<LogicalControl>,
+    pub dpi_min: u16,
+    pub dpi_max: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum HotspotSummaryType {
     Mapping,
@@ -247,14 +273,14 @@ pub enum HotspotSummaryType {
     Hscroll,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum LabelSide {
     Left,
     Right,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceHotspot {
     pub control: LogicalControl,
@@ -268,7 +294,7 @@ pub struct DeviceHotspot {
     pub is_hscroll: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceLayout {
     pub key: String,
@@ -282,7 +308,7 @@ pub struct DeviceLayout {
     pub hotspots: Vec<DeviceHotspot>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceInfo {
     pub key: String,
@@ -302,7 +328,7 @@ pub struct DeviceInfo {
     pub current_dpi: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum DebugEventKind {
     Info,
@@ -310,7 +336,7 @@ pub enum DebugEventKind {
     Gesture,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DebugEvent {
     pub kind: DebugEventKind,
@@ -318,7 +344,7 @@ pub struct DebugEvent {
     pub timestamp_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineStatus {
     pub enabled: bool,
@@ -330,7 +356,7 @@ pub struct EngineStatus {
     pub debug_log: Vec<DebugEvent>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineSnapshot {
     pub devices: Vec<DeviceInfo>,
@@ -339,7 +365,7 @@ pub struct EngineSnapshot {
     pub engine_status: EngineStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformCapabilities {
     pub platform: String,
@@ -348,27 +374,34 @@ pub struct PlatformCapabilities {
     pub live_hooks_available: bool,
     pub live_hid_available: bool,
     pub tray_ready: bool,
+    pub mapping_engine_ready: bool,
+    pub active_hid_backend: String,
+    pub active_hook_backend: String,
+    pub active_focus_backend: String,
+    pub hidapi_available: bool,
+    pub iokit_available: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LayoutChoice {
     pub key: String,
     pub label: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapPayload {
     pub config: AppConfig,
     pub available_actions: Vec<ActionDefinition>,
+    pub known_apps: Vec<KnownApp>,
     pub layouts: Vec<DeviceLayout>,
     pub engine_snapshot: EngineSnapshot,
     pub platform_capabilities: PlatformCapabilities,
     pub manual_layout_choices: Vec<LayoutChoice>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyImportReport {
     pub config: AppConfig,
@@ -456,19 +489,23 @@ pub fn default_action_catalog() -> Vec<ActionDefinition> {
             "Alt + Shift + Tab (Switch Windows Reverse)",
             "Navigation",
         ),
-        action("show_desktop", "Show Desktop", "Navigation"),
-        action("task_view", "Task View", "Navigation"),
+        action(
+            "show_desktop",
+            "Show Desktop (Win + D / Mission Control)",
+            "Navigation",
+        ),
+        action("task_view", "Task View / App Expose", "Navigation"),
         action("browser_back", "Browser Back", "Browser"),
         action("browser_forward", "Browser Forward", "Browser"),
-        action("close_tab", "Close Tab", "Browser"),
-        action("new_tab", "New Tab", "Browser"),
-        action("copy", "Copy", "Editing"),
-        action("paste", "Paste", "Editing"),
-        action("cut", "Cut", "Editing"),
-        action("undo", "Undo", "Editing"),
-        action("select_all", "Select All", "Editing"),
-        action("save", "Save", "Editing"),
-        action("find", "Find", "Editing"),
+        action("close_tab", "Close Tab (Ctrl/Cmd + W)", "Browser"),
+        action("new_tab", "New Tab (Ctrl/Cmd + T)", "Browser"),
+        action("copy", "Copy (Ctrl/Cmd + C)", "Editing"),
+        action("paste", "Paste (Ctrl/Cmd + V)", "Editing"),
+        action("cut", "Cut (Ctrl/Cmd + X)", "Editing"),
+        action("undo", "Undo (Ctrl/Cmd + Z)", "Editing"),
+        action("select_all", "Select All (Ctrl/Cmd + A)", "Editing"),
+        action("save", "Save (Ctrl/Cmd + S)", "Editing"),
+        action("find", "Find (Ctrl/Cmd + F)", "Editing"),
         action("volume_up", "Volume Up", "Media"),
         action("volume_down", "Volume Down", "Media"),
         action("volume_mute", "Volume Mute", "Media"),
@@ -476,6 +513,136 @@ pub fn default_action_catalog() -> Vec<ActionDefinition> {
         action("next_track", "Next Track", "Media"),
         action("prev_track", "Previous Track", "Media"),
         action("none", "Do Nothing (Pass-through)", "Other"),
+    ]
+}
+
+pub fn default_known_apps() -> Vec<KnownApp> {
+    vec![
+        known_app("msedge.exe", "Microsoft Edge", None),
+        known_app(
+            "chrome.exe",
+            "Google Chrome",
+            Some("/assets/apps/chrome.png"),
+        ),
+        known_app("Safari", "Safari", None),
+        known_app(
+            "Code.exe",
+            "Visual Studio Code",
+            Some("/assets/apps/vscode.png"),
+        ),
+        known_app(
+            "Code",
+            "Visual Studio Code",
+            Some("/assets/apps/vscode.png"),
+        ),
+        known_app("VLC", "VLC Media Player", Some("/assets/apps/vlc.png")),
+        known_app("vlc.exe", "VLC Media Player", Some("/assets/apps/vlc.png")),
+        known_app(
+            "Microsoft.Media.Player.exe",
+            "Windows Media Player",
+            Some("/assets/apps/media-player.webp"),
+        ),
+        known_app("Finder", "Finder", None),
+    ]
+}
+
+pub fn known_device_specs() -> Vec<KnownDeviceSpec> {
+    vec![
+        known_device(
+            "mx_master_3s",
+            "MX Master 3S",
+            &[0xB034],
+            &["Logitech MX Master 3S", "MX Master 3S for Mac"],
+            &[0x00C3, 0x00D7],
+            "mx_master",
+            "/assets/mouse.png",
+            200,
+            8000,
+        ),
+        known_device(
+            "mx_master_3",
+            "MX Master 3",
+            &[0xB023],
+            &[
+                "Wireless Mouse MX Master 3",
+                "MX Master 3 for Mac",
+                "MX Master 3 Mac",
+            ],
+            &[0x00C3, 0x00D7],
+            "mx_master",
+            "/assets/mouse.png",
+            200,
+            8000,
+        ),
+        known_device(
+            "mx_master_2s",
+            "MX Master 2S",
+            &[0xB019],
+            &["Wireless Mouse MX Master 2S"],
+            &[0x00C3, 0x00D7],
+            "mx_master",
+            "/assets/mouse.png",
+            200,
+            4000,
+        ),
+        known_device(
+            "mx_master",
+            "MX Master",
+            &[0xB012],
+            &["Wireless Mouse MX Master"],
+            &[0x00C3, 0x00D7],
+            "mx_master",
+            "/assets/mouse.png",
+            200,
+            4000,
+        ),
+        known_device(
+            "mx_vertical",
+            "MX Vertical",
+            &[0xB020],
+            &[
+                "MX Vertical Wireless Mouse",
+                "MX Vertical Advanced Ergonomic Mouse",
+            ],
+            &[0x00C3, 0x00D7],
+            "mx_vertical",
+            "/assets/icons/mouse-simple.svg",
+            200,
+            4000,
+        ),
+        known_device(
+            "mx_anywhere_3s",
+            "MX Anywhere 3S",
+            &[0xB037],
+            &["MX Anywhere 3S for Mac"],
+            &[0x00C3],
+            "mx_anywhere",
+            "/assets/icons/mouse-simple.svg",
+            200,
+            8000,
+        ),
+        known_device(
+            "mx_anywhere_3",
+            "MX Anywhere 3",
+            &[0xB025],
+            &["MX Anywhere 3 for Mac"],
+            &[0x00C3],
+            "mx_anywhere",
+            "/assets/icons/mouse-simple.svg",
+            200,
+            4000,
+        ),
+        known_device(
+            "mx_anywhere_2s",
+            "MX Anywhere 2S",
+            &[0xB01A],
+            &["Wireless Mobile Mouse MX Anywhere 2S"],
+            &[0x00C3],
+            "mx_anywhere",
+            "/assets/icons/mouse-simple.svg",
+            200,
+            4000,
+        ),
     ]
 }
 
@@ -660,6 +827,79 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
     ]
 }
 
+pub fn resolve_known_device(
+    product_id: Option<u16>,
+    product_name: Option<&str>,
+) -> Option<KnownDeviceSpec> {
+    let normalized_name = normalize_name(product_name.unwrap_or_default());
+    known_device_specs().into_iter().find(|spec| {
+        product_id
+            .map(|product_id| spec.product_ids.contains(&product_id))
+            .unwrap_or(false)
+            || (!normalized_name.is_empty()
+                && std::iter::once(spec.display_name.as_str())
+                    .chain(spec.aliases.iter().map(String::as_str))
+                    .any(|candidate| normalize_name(candidate) == normalized_name))
+    })
+}
+
+pub fn build_connected_device_info(
+    product_id: Option<u16>,
+    product_name: Option<&str>,
+    transport: Option<&str>,
+    source: Option<&str>,
+    battery_level: Option<u8>,
+    current_dpi: u16,
+) -> DeviceInfo {
+    if let Some(spec) = resolve_known_device(product_id, product_name) {
+        return DeviceInfo {
+            key: spec.key,
+            display_name: spec.display_name,
+            product_id,
+            product_name: product_name.map(str::to_string),
+            transport: transport.map(str::to_string),
+            source: source.map(str::to_string),
+            ui_layout: spec.ui_layout,
+            image_asset: spec.image_asset,
+            supported_controls: spec.supported_controls,
+            gesture_cids: spec.gesture_cids,
+            dpi_min: spec.dpi_min,
+            dpi_max: spec.dpi_max,
+            connected: true,
+            battery_level,
+            current_dpi,
+        };
+    }
+
+    let display_name = product_name
+        .map(str::to_string)
+        .or_else(|| product_id.map(|product_id| format!("Logitech PID 0x{product_id:04X}")))
+        .unwrap_or_else(|| "Logitech mouse".to_string());
+    let key = normalize_name(&display_name).replace(' ', "_");
+
+    DeviceInfo {
+        key: if key.is_empty() {
+            "logitech_mouse".to_string()
+        } else {
+            key
+        },
+        display_name: display_name.clone(),
+        product_id,
+        product_name: Some(display_name),
+        transport: transport.map(str::to_string),
+        source: source.map(str::to_string),
+        ui_layout: "generic_mouse".to_string(),
+        image_asset: "/assets/icons/mouse-simple.svg".to_string(),
+        supported_controls: LogicalControl::all(),
+        gesture_cids: vec![0x00C3, 0x00D7],
+        dpi_min: 200,
+        dpi_max: 8000,
+        connected: true,
+        battery_level,
+        current_dpi,
+    }
+}
+
 pub fn clamp_dpi(device: Option<&DeviceInfo>, value: u16) -> u16 {
     let min = device.map(|info| info.dpi_min).unwrap_or(200);
     let max = device.map(|info| info.dpi_max).unwrap_or(8000);
@@ -694,6 +934,49 @@ fn action(id: &str, label: &str, category: &str) -> ActionDefinition {
         label: label.to_string(),
         category: category.to_string(),
     }
+}
+
+fn known_app(executable: &str, label: &str, icon_asset: Option<&str>) -> KnownApp {
+    KnownApp {
+        executable: executable.to_string(),
+        label: label.to_string(),
+        icon_asset: icon_asset.map(str::to_string),
+    }
+}
+
+fn known_device(
+    key: &str,
+    display_name: &str,
+    product_ids: &[u16],
+    aliases: &[&str],
+    gesture_cids: &[u16],
+    ui_layout: &str,
+    image_asset: &str,
+    dpi_min: u16,
+    dpi_max: u16,
+) -> KnownDeviceSpec {
+    KnownDeviceSpec {
+        key: key.to_string(),
+        display_name: display_name.to_string(),
+        product_ids: product_ids.to_vec(),
+        aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
+        gesture_cids: gesture_cids.to_vec(),
+        ui_layout: ui_layout.to_string(),
+        image_asset: image_asset.to_string(),
+        supported_controls: LogicalControl::all(),
+        dpi_min,
+        dpi_max,
+    }
+}
+
+fn normalize_name(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn hotspot(
