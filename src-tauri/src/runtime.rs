@@ -127,6 +127,47 @@ impl AppRuntime {
         }
     }
 
+    pub fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled == enabled {
+            return;
+        }
+
+        self.enabled = enabled;
+        self.sync_hook_backend();
+        self.push_debug(
+            DebugEventKind::Info,
+            if enabled {
+                "Remapping enabled"
+            } else {
+                "Remapping disabled"
+            },
+        );
+    }
+
+    pub fn set_debug_mode(&mut self, enabled: bool) {
+        if self.config.settings.debug_mode == enabled {
+            return;
+        }
+
+        self.config.settings.debug_mode = enabled;
+        self.persist_config();
+        self.sync_hook_backend();
+
+        if enabled {
+            self.log_debug_session_state();
+        } else {
+            self.push_debug(DebugEventKind::Info, "Debug mode disabled");
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn debug_mode(&self) -> bool {
+        self.config.settings.debug_mode
+    }
+
     pub fn create_profile(&mut self, profile: Profile) {
         self.config.upsert_profile(profile);
         self.persist_config();
@@ -324,7 +365,10 @@ impl AppRuntime {
             return;
         };
 
-        if let Err(error) = self.hook_backend.configure(&self.config.settings, &profile) {
+        if let Err(error) =
+            self.hook_backend
+                .configure(&self.config.settings, &profile, self.enabled)
+        {
             self.push_debug(
                 DebugEventKind::Warning,
                 format!("Failed to configure hook backend: {error}"),
@@ -357,11 +401,12 @@ impl AppRuntime {
             live_hid_available: hid_capabilities.can_enumerate_devices,
             tray_ready: true,
             mapping_engine_ready: hook_capabilities.can_intercept_buttons,
+            gesture_diversion_available: hook_capabilities.supports_gesture_diversion,
             active_hid_backend: self.hid_backend.backend_id().to_string(),
             active_hook_backend: self.hook_backend.backend_id().to_string(),
             active_focus_backend: self.app_focus_backend.backend_id().to_string(),
             hidapi_available: cfg!(target_os = "macos"),
-            iokit_available: false,
+            iokit_available: cfg!(target_os = "macos"),
         }
     }
 
@@ -399,7 +444,7 @@ impl AppRuntime {
             format!(
                 "Transport support: hidapi={} iokit={}",
                 if cfg!(target_os = "macos") { "ready" } else { "unavailable" },
-                "not-ported",
+                if cfg!(target_os = "macos") { "ready" } else { "unavailable" },
             ),
         );
         if !self.hook_backend.capabilities().can_intercept_buttons {
@@ -505,7 +550,7 @@ fn current_hook_backend() -> Box<dyn HookBackend> {
     if cfg!(target_os = "macos") {
         Box::new(MacOsHookBackend::new())
     } else {
-        Box::new(WindowsHookBackend)
+        Box::new(WindowsHookBackend::new())
     }
 }
 

@@ -12,11 +12,17 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri::{
-    menu::{MenuBuilder, MenuEvent, MenuItemBuilder},
+    menu::{CheckMenuItemBuilder, MenuBuilder, MenuEvent, MenuItemBuilder},
     tray::TrayIconBuilder,
     AppHandle, Manager, State, Wry,
 };
 use tauri_specta::{collect_commands, collect_events, Builder, Event as SpectaEvent};
+
+const TRAY_ID: &str = "main";
+const TRAY_SHOW_ID: &str = "show";
+const TRAY_TOGGLE_REMAPPING_ID: &str = "toggle_remapping";
+const TRAY_TOGGLE_DEBUG_ID: &str = "toggle_debug";
+const TRAY_QUIT_ID: &str = "quit";
 
 struct AppState {
     runtime: Mutex<AppRuntime>,
@@ -194,6 +200,8 @@ fn emit_runtime_events(
     payload: &BootstrapPayload,
     debug_event: Option<DebugEvent>,
 ) -> Result<(), String> {
+    sync_tray_menu(app, payload)?;
+
     DeviceChangedEvent(payload.engine_snapshot.active_device.clone())
         .emit(app)
         .map_err(|error| error.to_string())?;
@@ -218,24 +226,92 @@ fn emit_runtime_events(
     Ok(())
 }
 
+fn build_tray_menu<M: Manager<Wry>>(
+    manager: &M,
+    remapping_enabled: bool,
+    debug_mode: bool,
+) -> tauri::Result<tauri::menu::Menu<Wry>> {
+    let show = MenuItemBuilder::with_id(TRAY_SHOW_ID, "Open Mouser").build(manager)?;
+    let remapping = CheckMenuItemBuilder::with_id(TRAY_TOGGLE_REMAPPING_ID, "Enable Remapping")
+        .checked(remapping_enabled)
+        .build(manager)?;
+    let debug = CheckMenuItemBuilder::with_id(TRAY_TOGGLE_DEBUG_ID, "Debug Mode")
+        .checked(debug_mode)
+        .build(manager)?;
+    let quit = MenuItemBuilder::with_id(TRAY_QUIT_ID, "Quit Mouser").build(manager)?;
+
+    MenuBuilder::new(manager)
+        .items(&[&show, &remapping, &debug])
+        .separator()
+        .item(&quit)
+        .build()
+}
+
+fn show_main_window(app: &AppHandle<Wry>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn sync_tray_menu(app: &AppHandle<Wry>, payload: &BootstrapPayload) -> Result<(), String> {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return Ok(());
+    };
+
+    let menu = build_tray_menu(
+        app,
+        payload.engine_snapshot.engine_status.enabled,
+        payload.engine_snapshot.engine_status.debug_mode,
+    )
+    .map_err(|error| error.to_string())?;
+
+    tray.set_menu(Some(menu)).map_err(|error| error.to_string())
+}
+
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let show = MenuItemBuilder::with_id("show", "Show Mouser").build(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-    let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+    let (remapping_enabled, debug_mode) = {
+        let state = app.state::<AppState>();
+        let runtime = state.runtime.lock().unwrap();
+        (runtime.enabled(), runtime.debug_mode())
+    };
+    let menu = build_tray_menu(app, remapping_enabled, debug_mode)?;
     let icon = app.default_window_icon().cloned();
-    let builder = TrayIconBuilder::new()
+    let builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .icon_as_template(cfg!(target_os = "macos"))
         .show_menu_on_left_click(true)
         .on_menu_event(
             |app: &AppHandle<Wry>, event: MenuEvent| match event.id.as_ref() {
-                "show" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                TRAY_SHOW_ID => show_main_window(app),
+                TRAY_TOGGLE_REMAPPING_ID => {
+                    let (payload, debug_event) = {
+                        let state = app.state::<AppState>();
+                        let mut runtime = state.runtime.lock().unwrap();
+                        let next_enabled = !runtime.enabled();
+                        runtime.set_enabled(next_enabled);
+                        (runtime.bootstrap_payload(), runtime.last_debug_event())
+                    };
+                    let _ = emit_runtime_events(app, &payload, debug_event);
+                }
+                TRAY_TOGGLE_DEBUG_ID => {
+                    let (payload, debug_event, debug_mode) = {
+                        let state = app.state::<AppState>();
+                        let mut runtime = state.runtime.lock().unwrap();
+                        let next_debug_mode = !runtime.debug_mode();
+                        runtime.set_debug_mode(next_debug_mode);
+                        (
+                            runtime.bootstrap_payload(),
+                            runtime.last_debug_event(),
+                            next_debug_mode,
+                        )
+                    };
+                    let _ = emit_runtime_events(app, &payload, debug_event);
+                    if debug_mode {
+                        show_main_window(app);
                     }
                 }
-                "quit" => app.exit(0),
+                TRAY_QUIT_ID => app.exit(0),
                 _ => {}
             },
         );

@@ -195,6 +195,7 @@ function makeBootstrap(): BootstrapPayload {
       liveHidAvailable: false,
       trayReady: true,
       mappingEngineReady: false,
+      gestureDiversionAvailable: false,
       activeHidBackend: "macos-hidapi",
       activeHookBackend: "macos-eventtap-stub",
       activeFocusBackend: "macos-nsworkspace",
@@ -389,10 +390,8 @@ describe("App", () => {
     await user.click(await screen.findByTestId("hotspot-card-middle"));
     expect(await screen.findByTestId("buttons-editor-sheet")).toBeInTheDocument();
 
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Middle button" }),
-      "copy",
-    );
+    await user.click(screen.getByRole("combobox", { name: "Middle button" }));
+    await user.click(await screen.findByRole("option", { name: "Copy" }));
 
     await waitFor(() => {
       expect(apiMocks.profilesUpdate).toHaveBeenCalled();

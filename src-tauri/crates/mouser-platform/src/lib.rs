@@ -1,17 +1,22 @@
+use std::{fs, path::PathBuf};
+#[cfg(target_os = "macos")]
 use std::{
-    fs,
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant},
 };
 
 use mouser_core::{
-    build_connected_device_info, clamp_dpi, default_config, default_known_apps, default_layouts,
-    known_device_specs, AppConfig, DebugEventKind, DeviceInfo, DeviceLayout, KnownApp,
-    LogicalControl, Profile, Settings,
+    clamp_dpi, default_config, default_known_apps, default_layouts, known_device_specs,
+    AppConfig, DebugEventKind, DeviceInfo, DeviceLayout, KnownApp, LogicalControl, Profile,
+    Settings,
 };
+#[cfg(target_os = "macos")]
+use mouser_core::build_connected_device_info;
 use thiserror::Error;
 
 mod macos_hook;
+mod macos_iokit;
+mod windows_backend;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookCapabilities {
@@ -53,7 +58,12 @@ pub enum PlatformError {
 pub trait HookBackend: Send + Sync {
     fn backend_id(&self) -> &'static str;
     fn capabilities(&self) -> HookCapabilities;
-    fn configure(&self, settings: &Settings, profile: &Profile) -> Result<(), PlatformError>;
+    fn configure(
+        &self,
+        settings: &Settings,
+        profile: &Profile,
+        enabled: bool,
+    ) -> Result<(), PlatformError>;
     fn drain_events(&self) -> Vec<HookBackendEvent>;
 }
 
@@ -204,9 +214,12 @@ impl ConfigStore for JsonConfigStore {
     }
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
 pub mod macos {
     use super::*;
     pub use crate::macos_hook::MacOsHookBackend;
+    #[cfg(target_os = "macos")]
+    use crate::macos_iokit::{enumerate_iokit_infos, MacOsIoKitInfo, MacOsNativeHidDevice};
 
     #[cfg(target_os = "macos")]
     use hidapi::{BusType, DeviceInfo as HidDeviceInfo, HidApi, HidDevice};
@@ -228,7 +241,7 @@ pub mod macos {
     impl HidBackend for MacOsHidBackend {
         fn backend_id(&self) -> &'static str {
             if cfg!(target_os = "macos") {
-                "macos-hidapi"
+                "macos-iokit+hidapi"
             } else {
                 "macos-unsupported"
             }
@@ -262,20 +275,40 @@ pub mod macos {
 
             #[cfg(target_os = "macos")]
             {
-                let api = HidApi::new().map_err(map_hid_error)?;
                 let mut devices = Vec::new();
-                for info in vendor_hid_infos(&api) {
-                    if let Ok(device) = info.open_device(&api) {
-                        if let Some(device_info) = probe_device(&device, info) {
-                            if devices
-                                .iter()
-                                .all(|existing: &DeviceInfo| existing.key != device_info.key)
-                            {
-                                devices.push(device_info);
+                let mut issues = Vec::new();
+
+                match enumerate_iokit_infos() {
+                    Ok(infos) => {
+                        for info in infos {
+                            if let Some(device_info) = probe_iokit_device(&info) {
+                                push_unique_device(&mut devices, device_info);
                             }
                         }
                     }
+                    Err(error) => issues.push(format!("iokit: {error}")),
                 }
+
+                match HidApi::new() {
+                    Ok(api) => {
+                        for info in vendor_hid_infos(&api) {
+                            if let Ok(device) = info.open_device(&api) {
+                                if let Some(device_info) = probe_hidapi_device(&device, info) {
+                                    push_unique_device(&mut devices, device_info);
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => issues.push(format!("hidapi: {}", map_hid_error(error))),
+                }
+
+                if devices.is_empty() && !issues.is_empty() {
+                    return Err(PlatformError::Message(format!(
+                        "failed to enumerate macOS HID devices: {}",
+                        issues.join("; ")
+                    )));
+                }
+
                 Ok(devices)
             }
         }
@@ -291,23 +324,48 @@ pub mod macos {
 
             #[cfg(target_os = "macos")]
             {
-                let api = HidApi::new().map_err(map_hid_error)?;
-                for info in vendor_hid_infos(&api) {
-                    let Ok(device) = info.open_device(&api) else {
-                        continue;
-                    };
-                    let candidate = build_connected_device_info(
-                        Some(info.product_id()),
-                        info.product_string(),
-                        Some(transport_label(info.bus_type())),
-                        Some("hidapi"),
-                        None,
-                        dpi,
-                    );
-                    if candidate.key == device_key && set_device_dpi(&device, dpi)? {
-                        return Ok(());
+                if let Ok(infos) = enumerate_iokit_infos() {
+                    for info in infos {
+                        let transport = iokit_transport_label(info.transport.as_deref());
+                        if !device_key_matches(
+                            device_key,
+                            Some(info.product_id),
+                            info.product_string.as_deref(),
+                            transport.as_deref(),
+                            "iokit",
+                            dpi,
+                        ) {
+                            continue;
+                        }
+
+                        let Ok(device) = open_iokit_device(&info) else {
+                            continue;
+                        };
+                        if set_hidpp_dpi(&device, dpi)? {
+                            return Ok(());
+                        }
                     }
                 }
+
+                if let Ok(api) = HidApi::new() {
+                    for info in vendor_hid_infos(&api) {
+                        let Ok(device) = info.open_device(&api) else {
+                            continue;
+                        };
+                        if device_key_matches(
+                            device_key,
+                            Some(info.product_id()),
+                            info.product_string(),
+                            Some(transport_label(info.bus_type())),
+                            "hidapi",
+                            dpi,
+                        ) && set_hidpp_dpi(&device, dpi)?
+                        {
+                            return Ok(());
+                        }
+                    }
+                }
+
                 Err(PlatformError::Message(format!(
                     "could not find a live Logitech device matching `{device_key}`"
                 )))
@@ -367,14 +425,77 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    fn probe_device(device: &HidDevice, info: &HidDeviceInfo) -> Option<DeviceInfo> {
-        let current_dpi = read_current_dpi(device).ok().flatten().unwrap_or(1000);
-        let battery_level = read_battery(device).ok().flatten();
-        Some(build_connected_device_info(
+    trait HidppDeviceIo {
+        fn write_packet(&self, packet: &[u8]) -> Result<(), PlatformError>;
+        fn read_packet(&self, timeout_ms: i32) -> Result<Vec<u8>, PlatformError>;
+    }
+
+    #[cfg(target_os = "macos")]
+    impl HidppDeviceIo for HidDevice {
+        fn write_packet(&self, packet: &[u8]) -> Result<(), PlatformError> {
+            self.write(packet).map_err(map_hid_error)?;
+            Ok(())
+        }
+
+        fn read_packet(&self, timeout_ms: i32) -> Result<Vec<u8>, PlatformError> {
+            let mut buffer = [0u8; 64];
+            let size = self
+                .read_timeout(&mut buffer, timeout_ms)
+                .map_err(map_hid_error)?;
+            Ok(buffer[..size].to_vec())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl HidppDeviceIo for MacOsNativeHidDevice {
+        fn write_packet(&self, packet: &[u8]) -> Result<(), PlatformError> {
+            self.write_report(packet)
+        }
+
+        fn read_packet(&self, timeout_ms: i32) -> Result<Vec<u8>, PlatformError> {
+            self.read_timeout(timeout_ms)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn probe_hidapi_device(device: &HidDevice, info: &HidDeviceInfo) -> Option<DeviceInfo> {
+        probe_transport_device(
+            device,
             Some(info.product_id()),
             info.product_string(),
             Some(transport_label(info.bus_type())),
-            Some("hidapi"),
+            "hidapi",
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn probe_iokit_device(info: &MacOsIoKitInfo) -> Option<DeviceInfo> {
+        let transport = iokit_transport_label(info.transport.as_deref());
+        let device = open_iokit_device(info).ok()?;
+        probe_transport_device(
+            &device,
+            Some(info.product_id),
+            info.product_string.as_deref(),
+            transport.as_deref(),
+            "iokit",
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn probe_transport_device<T: HidppDeviceIo + ?Sized>(
+        device: &T,
+        product_id: Option<u16>,
+        product_name: Option<&str>,
+        transport: Option<&str>,
+        source: &'static str,
+    ) -> Option<DeviceInfo> {
+        let current_dpi = read_hidpp_current_dpi(device).ok().flatten().unwrap_or(1000);
+        let battery_level = read_hidpp_battery(device).ok().flatten();
+        Some(build_connected_device_info(
+            product_id,
+            product_name,
+            transport,
+            Some(source),
             battery_level,
             current_dpi,
         ))
@@ -392,7 +513,83 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    fn set_device_dpi(device: &HidDevice, dpi: u16) -> Result<bool, PlatformError> {
+    fn iokit_transport_label(transport: Option<&str>) -> Option<String> {
+        transport.map(|value| match value {
+            "Bluetooth" => "Bluetooth Low Energy".to_string(),
+            other => other.to_string(),
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn push_unique_device(devices: &mut Vec<DeviceInfo>, device: DeviceInfo) {
+        if devices
+            .iter()
+            .all(|existing: &DeviceInfo| existing.key != device.key)
+        {
+            devices.push(device);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn device_key_matches(
+        device_key: &str,
+        product_id: Option<u16>,
+        product_name: Option<&str>,
+        transport: Option<&str>,
+        source: &'static str,
+        dpi: u16,
+    ) -> bool {
+        build_connected_device_info(
+            product_id,
+            product_name,
+            transport,
+            Some(source),
+            None,
+            dpi,
+        )
+        .key
+            == device_key
+    }
+
+    #[cfg(target_os = "macos")]
+    fn iokit_open_candidates(info: &MacOsIoKitInfo) -> Vec<MacOsIoKitInfo> {
+        let mut candidates = vec![info.clone()];
+        if info.transport.as_deref() != Some("USB") {
+            candidates.push(MacOsIoKitInfo {
+                product_id: info.product_id,
+                usage_page: 0,
+                usage: 0,
+                transport: Some("Bluetooth Low Energy".to_string()),
+                product_string: info.product_string.clone(),
+            });
+        }
+        candidates
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open_iokit_device(info: &MacOsIoKitInfo) -> Result<MacOsNativeHidDevice, PlatformError> {
+        let mut last_error = None;
+
+        for candidate in iokit_open_candidates(info) {
+            match MacOsNativeHidDevice::open(&candidate) {
+                Ok(device) => return Ok(device),
+                Err(error) => last_error = Some(error),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            PlatformError::Message(format!(
+                "could not open IOHIDDevice for pid 0x{:04X}",
+                info.product_id
+            ))
+        }))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_hidpp_dpi<T: HidppDeviceIo + ?Sized>(
+        device: &T,
+        dpi: u16,
+    ) -> Result<bool, PlatformError> {
         let Some(feature_index) = find_feature(device, FEAT_ADJ_DPI)? else {
             return Ok(false);
         };
@@ -403,7 +600,9 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    fn read_current_dpi(device: &HidDevice) -> Result<Option<u16>, PlatformError> {
+    fn read_hidpp_current_dpi<T: HidppDeviceIo + ?Sized>(
+        device: &T,
+    ) -> Result<Option<u16>, PlatformError> {
         let Some(feature_index) = find_feature(device, FEAT_ADJ_DPI)? else {
             return Ok(None);
         };
@@ -418,7 +617,9 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    fn read_battery(device: &HidDevice) -> Result<Option<u8>, PlatformError> {
+    fn read_hidpp_battery<T: HidppDeviceIo + ?Sized>(
+        device: &T,
+    ) -> Result<Option<u8>, PlatformError> {
         if let Some(feature_index) = find_feature(device, FEAT_UNIFIED_BATT)? {
             if let Some(response) = request(device, feature_index, 1, &[])? {
                 return Ok(response.first().copied());
@@ -435,7 +636,10 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    fn find_feature(device: &HidDevice, feature_id: u16) -> Result<Option<u8>, PlatformError> {
+    fn find_feature<T: HidppDeviceIo + ?Sized>(
+        device: &T,
+        feature_id: u16,
+    ) -> Result<Option<u8>, PlatformError> {
         let feature_hi = ((feature_id >> 8) & 0xFF) as u8;
         let feature_lo = (feature_id & 0xFF) as u8;
         let Some(response) = request(device, 0x00, 0, &[feature_hi, feature_lo, 0x00])? else {
@@ -448,8 +652,8 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    fn request(
-        device: &HidDevice,
+    fn request<T: HidppDeviceIo + ?Sized>(
+        device: &T,
         feature_index: u8,
         function: u8,
         params: &[u8],
@@ -457,18 +661,15 @@ pub mod macos {
         write_request(device, feature_index, function, params)?;
         let deadline = Instant::now() + Duration::from_millis(1_500);
         let expected_reply_functions = [function, (function + 1) & 0x0F];
-        let mut buffer = [0u8; 64];
 
         while Instant::now() < deadline {
-            let size = device
-                .read_timeout(&mut buffer, 200)
-                .map_err(map_hid_error)?;
-            if size == 0 {
+            let packet = device.read_packet(200)?;
+            if packet.is_empty() {
                 continue;
             }
 
             let Some((response_feature, response_function, response_sw, response_params)) =
-                parse_message(&buffer[..size])
+                parse_message(&packet)
             else {
                 continue;
             };
@@ -489,8 +690,8 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    fn write_request(
-        device: &HidDevice,
+    fn write_request<T: HidppDeviceIo + ?Sized>(
+        device: &T,
         feature_index: u8,
         function: u8,
         params: &[u8],
@@ -505,7 +706,7 @@ pub mod macos {
                 packet[4 + offset] = byte;
             }
         }
-        device.write(&packet).map_err(map_hid_error)?;
+        device.write_packet(&packet)?;
         Ok(())
     }
 
@@ -536,70 +737,7 @@ pub mod macos {
 }
 
 pub mod windows {
-    use super::*;
-
-    pub struct WindowsHookBackend;
-    pub struct WindowsHidBackend;
-    pub struct WindowsAppFocusBackend;
-
-    impl HookBackend for WindowsHookBackend {
-        fn backend_id(&self) -> &'static str {
-            "windows-stub"
-        }
-
-        fn capabilities(&self) -> HookCapabilities {
-            HookCapabilities {
-                can_intercept_buttons: false,
-                can_intercept_scroll: false,
-                supports_gesture_diversion: false,
-            }
-        }
-
-        fn configure(&self, _settings: &Settings, _profile: &Profile) -> Result<(), PlatformError> {
-            Ok(())
-        }
-
-        fn drain_events(&self) -> Vec<HookBackendEvent> {
-            Vec::new()
-        }
-    }
-
-    impl HidBackend for WindowsHidBackend {
-        fn backend_id(&self) -> &'static str {
-            "windows-stub"
-        }
-
-        fn capabilities(&self) -> HidCapabilities {
-            HidCapabilities {
-                can_enumerate_devices: false,
-                can_read_battery: false,
-                can_read_dpi: false,
-                can_write_dpi: false,
-            }
-        }
-
-        fn list_devices(&self) -> Result<Vec<DeviceInfo>, PlatformError> {
-            Err(PlatformError::Unsupported(
-                "live Windows HID integration is not implemented yet",
-            ))
-        }
-
-        fn set_device_dpi(&self, _device_key: &str, _dpi: u16) -> Result<(), PlatformError> {
-            Err(PlatformError::Unsupported(
-                "live Windows HID integration is not implemented yet",
-            ))
-        }
-    }
-
-    impl AppFocusBackend for WindowsAppFocusBackend {
-        fn backend_id(&self) -> &'static str {
-            "windows-stub"
-        }
-
-        fn current_frontmost_app(&self) -> Result<Option<String>, PlatformError> {
-            Err(PlatformError::Unsupported(
-                "live Windows frontmost app detection is not implemented yet",
-            ))
-        }
-    }
+    pub use crate::windows_backend::{
+        WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend,
+    };
 }

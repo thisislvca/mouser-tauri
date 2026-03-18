@@ -1,20 +1,39 @@
 @import "tailwindcss";
 
 :root {
-  color: #17171b;
-  background: #ffffff;
   color-scheme: light;
   font-family:
+    "Avenir Next",
     "SF Pro Display",
     "SF Pro Text",
-    -apple-system,
-    BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  --app-bg: #edf2f7;
+  --surface: rgba(252, 253, 255, 0.86);
+  --sidebar: linear-gradient(180deg, #ecf1f7 0%, #e7edf5 100%);
+  --sidebar-surface: rgba(255, 255, 255, 0.74);
+  --sidebar-foreground: #263040;
+  --card: rgba(255, 255, 255, 0.96);
+  --card-muted: rgba(247, 249, 252, 0.96);
+  --card-foreground: #121722;
+  --foreground: #121722;
+  --muted: #eef3f8;
+  --muted-foreground: #667185;
+  --accent: #2563eb;
+  --border: rgba(139, 153, 176, 0.22);
+  --border-soft: rgba(139, 153, 176, 0.14);
+  --border-strong: rgba(139, 153, 176, 0.38);
+  --input: rgba(139, 153, 176, 0.24);
+  --ring: rgba(37, 99, 235, 0.42);
+}
+
+* {
+  box-sizing: border-box;
 }
 
 html,
@@ -25,7 +44,12 @@ body,
 
 body {
   margin: 0;
-  background: #ffffff;
+  min-width: 320px;
+  background:
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.09), transparent 26%),
+    radial-gradient(circle at right 18%, rgba(30, 64, 175, 0.08), transparent 22%),
+    linear-gradient(180deg, #eef3f8 0%, #e8eef5 100%);
+  color: var(--foreground);
 }
 
 button,
@@ -35,21 +59,11 @@ textarea {
   font: inherit;
 }
 
-.field-input {
-  width: 100%;
-  border-radius: 1rem;
-  border: 1px solid #dfe3ef;
-  background: #fff;
-  color: #11131a;
-  outline: none;
-  padding: 0.8rem 1rem;
-  transition:
-    border-color 160ms ease,
-    box-shadow 160ms ease,
-    background-color 160ms ease;
+img {
+  display: block;
+  max-width: 100%;
 }
 
-.field-input:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+::selection {
+  background: rgba(37, 99, 235, 0.16);
 }

@@ -308,6 +308,7 @@ fn current_platform_capabilities() -> PlatformCapabilities {
         live_hid_available: false,
         tray_ready: true,
         mapping_engine_ready: false,
+        gesture_diversion_available: false,
         active_hid_backend: "mock-hid".to_string(),
         active_hook_backend: "mock-hook".to_string(),
         active_focus_backend: "mock-focus".to_string(),

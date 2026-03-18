@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode, type SVGProps } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+  type RefObject,
+  type SVGProps,
+} from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   BugBeetle,
@@ -10,6 +18,20 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "./components/ui/card";
+import { Input } from "./components/ui/input";
+import { ScrollArea } from "./components/ui/scroll-area";
+import { Select, type SelectOption } from "./components/ui/select";
+import { Switch } from "./components/ui/switch";
+import { Textarea } from "./components/ui/textarea";
 import {
   bootstrapLoad,
   configSave,
@@ -33,6 +55,7 @@ import type {
   Profile,
 } from "./lib/types";
 import { useRuntimeEvents } from "./hooks/useRuntimeEvents";
+import { cn } from "./lib/utils";
 import { type SectionName, useUiStore } from "./store/uiStore";
 
 const SECTION_ORDER: SectionName[] = [
@@ -198,23 +221,23 @@ function App() {
 
   if (bootstrapQuery.isLoading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-white px-8 text-[#13141b]">
-        <div className="rounded-[28px] border border-[#e4e7ef] bg-white px-6 py-4 text-sm font-medium">
+      <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-8 text-[var(--foreground)]">
+        <Card className="px-6 py-4">
           Loading Mouser...
-        </div>
+        </Card>
       </main>
     );
   }
 
   if (bootstrapQuery.isError || !bootstrap) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-white px-8 text-[#13141b]">
-        <div className="max-w-xl rounded-[30px] border border-[#e4e7ef] bg-white p-6">
+      <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-8 text-[var(--foreground)]">
+        <Card className="max-w-xl p-6">
           <p className="text-sm font-semibold">Failed to load Mouser.</p>
-          <pre className="mt-4 overflow-auto rounded-3xl border border-[#e4e7ef] bg-white p-4 text-xs text-[#5d6472]">
+          <pre className="mt-4 overflow-auto rounded-3xl border border-[var(--border)] bg-white p-4 text-xs text-[var(--muted-foreground)]">
             {String(bootstrapQuery.error)}
           </pre>
-        </div>
+        </Card>
       </main>
     );
   }
@@ -274,181 +297,199 @@ function App() {
   };
 
   const shellTitle = activeDevice?.displayName ?? "Mouser";
-  const selectedAppSummary =
-    engineSnapshot.engineStatus.frontmostApp ?? "All applications";
   const batteryLabel =
     activeDevice?.batteryLevel != null ? `${activeDevice.batteryLevel}%` : "N/A";
 
   return (
-    <main className="min-h-screen bg-white text-[#11121a] antialiased">
-      <div className="mx-auto grid min-h-screen max-w-[1700px] grid-rows-[92px_minmax(0,1fr)] overflow-hidden bg-white">
-        <header className="grid grid-cols-[220px_minmax(0,1fr)] border-b border-[#eceef4]">
-          <div className="border-r border-[#eceef4]" />
-
-          <div className="flex min-w-0 items-center justify-between gap-6 px-8">
-            <div className="flex min-w-0 items-center gap-4">
-              <button
-                aria-label="Back"
-                className="flex h-10 w-10 items-center justify-center rounded-full text-[#1c2028] transition hover:bg-[#f3f4f7]"
-                type="button"
-              >
-                <CaretLeft className="h-5 w-5" />
-              </button>
-              <h1 className="truncate text-[22px] font-semibold tracking-[-0.04em] text-[#111318]">
-                {shellTitle}
-              </h1>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-3">
-              {isMutating && <StatusPill tone="accent" value="Applying" />}
-              <button
-                className="rounded-full border border-[#d9dce6] bg-white px-5 py-3 text-sm font-semibold text-[#171b24] transition hover:bg-[#f7f8fb]"
-                onClick={() => setActiveSection("profiles")}
-                type="button"
-              >
-                + Add Application
-              </button>
-            </div>
+    <main className="min-h-screen bg-[var(--app-bg)] text-[var(--foreground)] antialiased">
+      <div className="min-h-screen lg:pl-[18rem]">
+        <aside className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:flex lg:w-[18rem] lg:flex-col lg:bg-[var(--sidebar)] lg:px-5 lg:py-6">
+          <div className="px-3 pb-6 pt-3">
+            <p className="text-[13px] font-semibold uppercase tracking-[0.28em] text-[var(--sidebar-foreground)]">
+              Mouser
+            </p>
           </div>
-        </header>
 
-        <div className="grid min-h-0 grid-cols-[220px_minmax(0,1fr)]">
-          <aside className="flex flex-col border-r border-[#eceef4] bg-white px-5 py-7">
-            <nav className="space-y-1">
-              {SECTION_ORDER.map((section) => (
-                <SectionNavButton
-                  active={activeSection === section}
-                  icon={SECTION_META[section].icon}
-                  key={section}
-                  label={SECTION_META[section].label}
-                  onClick={() => setActiveSection(section)}
-                />
-              ))}
-            </nav>
+          <nav className="space-y-1.5">
+            {SECTION_ORDER.map((section) => (
+              <SectionNavButton
+                active={activeSection === section}
+                icon={SECTION_META[section].icon}
+                key={section}
+                label={SECTION_META[section].label}
+                onClick={() => setActiveSection(section)}
+              />
+            ))}
+          </nav>
 
-            <div className="mt-auto">
-              <div className="inline-flex items-center gap-2 rounded-[14px] border border-[#dfe4ea] bg-white px-3 py-2 text-sm font-semibold text-[#35a95c]">
-                <span>{batteryLabel}</span>
-                <span className="text-[#7d8395]">battery</span>
+          <div className="mt-auto">
+            <Card className="bg-[var(--sidebar-surface)]">
+              <CardContent className="flex items-center justify-between px-4 py-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--muted-foreground)]">
+                    Battery
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--foreground)]">{batteryLabel}</p>
+                </div>
+                <StatusPill tone="success" value="Connected" />
+              </CardContent>
+            </Card>
+          </div>
+        </aside>
+
+        <div className="min-h-screen p-3 sm:p-4 lg:p-5">
+          <div className="flex min-h-[calc(100vh-1.5rem)] flex-col overflow-hidden rounded-[32px] bg-[var(--surface)] shadow-[0_36px_120px_rgba(15,23,42,0.10)] ring-1 ring-[var(--border-soft)] sm:min-h-[calc(100vh-2rem)]">
+            <header className="border-b border-[var(--border)] px-5 py-5 sm:px-8">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+                <Button aria-label="Back" size="icon" variant="ghost">
+                  <CaretLeft className="h-5 w-5" />
+                </Button>
+                <h2 className="truncate text-[24px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+                  {shellTitle}
+                </h2>
               </div>
-            </div>
-          </aside>
 
-          <section className="min-w-0 overflow-y-auto bg-white px-8 py-8">
-            {activeSection === "buttons" && (
-              <ButtonsView
-                actionLookup={actionLookup}
-                activeDevice={activeDevice}
-                activeLayout={activeLayout}
-                config={config}
-                frontmostApp={engineSnapshot.engineStatus.frontmostApp}
-                groupedActions={groupedActions}
-                mappingEngineReady={platformCapabilities.mappingEngineReady}
-                platformCapabilities={platformCapabilities}
-                profile={selectedProfile}
-                updateSelectedProfile={updateSelectedProfile}
-              />
-            )}
+                <div className="flex shrink-0 items-center gap-3">
+                  {isMutating && <StatusPill tone="accent" value="Applying" />}
+                  <Button onClick={() => setActiveSection("profiles")} variant="outline">
+                    + Add application
+                  </Button>
+                </div>
+              </div>
 
-            {activeSection === "devices" && (
-              <PointAndScrollView
-                actionLookup={actionLookup}
-                activeDevice={activeDevice}
-                activeLayout={activeLayout}
-                bootstrap={bootstrap}
-                config={config}
-                engineSnapshot={engineSnapshot}
-                layoutChoices={bootstrap.manualLayoutChoices}
-                profile={selectedProfile}
-                saveSettings={saveSettings}
-                selectDevice={selectDeviceMutation.mutate}
-              />
-            )}
-
-            {activeSection === "profiles" && (
-              <ProfilesView
-                deleteProfile={deleteProfileMutation.mutate}
-                knownApps={knownApps}
-                profile={selectedProfile}
-                profiles={config.profiles}
-                setSelectedProfileId={setSelectedProfileId}
-                updateSelectedProfile={updateSelectedProfile}
-              />
-            )}
-
-            {activeSection === "settings" && (
-              <div className="space-y-6">
-                <div className="grid gap-4 rounded-[26px] border border-[#eceef4] bg-white p-5 md:grid-cols-[minmax(0,1fr)_360px]">
-                  <div className="space-y-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#9095a3]">
-                      Quick add
-                    </p>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <input
-                        className="field-input"
-                        list="known-apps"
-                        placeholder="Known app executable"
-                        value={newProfileApp}
-                        onChange={(event) => setNewProfileApp(event.currentTarget.value)}
+              <div className="mt-5 lg:hidden">
+                <ScrollArea className="w-full whitespace-nowrap">
+                  <div className="flex gap-2 pb-1">
+                    {SECTION_ORDER.map((section) => (
+                      <SectionNavButton
+                        active={activeSection === section}
+                        compact
+                        icon={SECTION_META[section].icon}
+                        key={section}
+                        label={SECTION_META[section].label}
+                        onClick={() => setActiveSection(section)}
                       />
-                      <input
-                        className="field-input"
-                        placeholder="Optional custom label"
-                        value={newProfileLabel}
-                        onChange={(event) => setNewProfileLabel(event.currentTarget.value)}
+                    ))}
+                  </div>
+                </ScrollArea>
+              </div>
+            </header>
+
+            <div className="min-h-0 flex-1">
+              <ScrollArea className="h-full">
+                <section className="min-w-0 px-5 py-6 sm:px-8 sm:py-8">
+                  {activeSection === "buttons" && (
+                    <ButtonsView
+                      actionLookup={actionLookup}
+                      activeDevice={activeDevice}
+                      activeLayout={activeLayout}
+                      config={config}
+                      groupedActions={groupedActions}
+                      mappingEngineReady={platformCapabilities.mappingEngineReady}
+                      platformCapabilities={platformCapabilities}
+                      profile={selectedProfile}
+                      updateSelectedProfile={updateSelectedProfile}
+                    />
+                  )}
+
+                  {activeSection === "devices" && (
+                    <PointAndScrollView
+                      actionLookup={actionLookup}
+                      activeDevice={activeDevice}
+                      activeLayout={activeLayout}
+                      bootstrap={bootstrap}
+                      config={config}
+                      engineSnapshot={engineSnapshot}
+                      layoutChoices={bootstrap.manualLayoutChoices}
+                      profile={selectedProfile}
+                      saveSettings={saveSettings}
+                      selectDevice={selectDeviceMutation.mutate}
+                    />
+                  )}
+
+                  {activeSection === "profiles" && (
+                    <ProfilesView
+                      deleteProfile={deleteProfileMutation.mutate}
+                      knownApps={knownApps}
+                      profile={selectedProfile}
+                      profiles={config.profiles}
+                      setSelectedProfileId={setSelectedProfileId}
+                      updateSelectedProfile={updateSelectedProfile}
+                    />
+                  )}
+
+                  {activeSection === "settings" && (
+                    <div className="space-y-6">
+                      <Card>
+                        <CardHeader className="grid gap-4 pb-0 md:grid-cols-[minmax(0,1fr)_220px] md:items-end">
+                          <div>
+                            <CardTitle className="text-[26px]">New Profile</CardTitle>
+                          </div>
+                          <div className="md:justify-self-end">
+                            <Button className="w-full md:w-auto" onClick={createProfileFromDraft}>
+                              Create profile
+                            </Button>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="pt-6">
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <Input
+                              list="known-apps"
+                              placeholder="Known app executable"
+                              value={newProfileApp}
+                              onChange={(event) => setNewProfileApp(event.currentTarget.value)}
+                            />
+                            <Input
+                              placeholder="Optional custom label"
+                              value={newProfileLabel}
+                              onChange={(event) => setNewProfileLabel(event.currentTarget.value)}
+                            />
+                          </div>
+                          <datalist id="known-apps">
+                            {knownApps.map((app) => (
+                              <option key={app.executable} value={app.executable}>
+                                {app.label}
+                              </option>
+                            ))}
+                          </datalist>
+                        </CardContent>
+                      </Card>
+
+                      <SettingsView
+                        activeDevice={activeDevice}
+                        config={config}
+                        platformCapabilities={platformCapabilities}
+                        saveSettings={saveSettings}
                       />
                     </div>
-                    <datalist id="known-apps">
-                      {knownApps.map((app) => (
-                        <option key={app.executable} value={app.executable}>
-                          {app.label}
-                        </option>
-                      ))}
-                    </datalist>
-                  </div>
+                  )}
 
-                  <div className="flex items-end justify-end">
-                    <button
-                      className="rounded-full bg-[#2563eb] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#1d4ed8]"
-                      onClick={createProfileFromDraft}
-                      type="button"
-                    >
-                      Create profile
-                    </button>
-                  </div>
-                </div>
-
-                <SettingsView
-                  activeDevice={activeDevice}
-                  config={config}
-                  platformCapabilities={platformCapabilities}
-                  saveSettings={saveSettings}
-                />
-              </div>
-            )}
-
-            {activeSection === "debug" && (
-              <DebugView
-                clearDebugLog={clearDebugLogMutation.mutate}
-                config={config}
-                debugEvents={runtimeEvents}
-                importDraft={importDraft}
-                importSourcePath={importSourcePath}
-                importWarnings={importWarnings}
-                isClearing={clearDebugLogMutation.isPending}
-                onImport={() =>
-                  importMutation.mutate({
-                    sourcePath: importSourcePath.trim() || null,
-                    rawJson: importDraft,
-                  })
-                }
-                platformCapabilities={platformCapabilities}
-                saveSettings={saveSettings}
-                setImportDraft={setImportDraft}
-                setImportSourcePath={setImportSourcePath}
-              />
-            )}
-          </section>
+                  {activeSection === "debug" && (
+                    <DebugView
+                      clearDebugLog={clearDebugLogMutation.mutate}
+                      config={config}
+                      debugEvents={runtimeEvents}
+                      importDraft={importDraft}
+                      importSourcePath={importSourcePath}
+                      importWarnings={importWarnings}
+                      isClearing={clearDebugLogMutation.isPending}
+                      onImport={() =>
+                        importMutation.mutate({
+                          sourcePath: importSourcePath.trim() || null,
+                          rawJson: importDraft,
+                        })
+                      }
+                      platformCapabilities={platformCapabilities}
+                      saveSettings={saveSettings}
+                      setImportDraft={setImportDraft}
+                      setImportSourcePath={setImportSourcePath}
+                    />
+                  )}
+                </section>
+              </ScrollArea>
+            </div>
+          </div>
         </div>
       </div>
     </main>
@@ -463,7 +504,6 @@ function ButtonsView(props: {
   actionLookup: Map<string, ActionDefinition>;
   groupedActions: Array<[string, ActionDefinition[]]>;
   platformCapabilities: BootstrapPayload["platformCapabilities"];
-  frontmostApp: string | null | undefined;
   mappingEngineReady: boolean;
   updateSelectedProfile: (mutateProfile: (profile: Profile) => void) => void;
 }) {
@@ -492,51 +532,52 @@ function ButtonsView(props: {
   return (
     <div className="min-h-full">
       {props.activeDevice ? (
-        <div className="flex min-h-[760px] flex-col gap-8 xl:flex-row xl:items-stretch">
-          <motion.div
-            layout
-            className="min-w-0 flex-1"
-            transition={BUTTONS_SHEET_TRANSITION}
-          >
-            <ButtonsWorkbench
-              actionLookup={props.actionLookup}
-              activeDevice={props.activeDevice}
-              layout={props.activeLayout}
-              profile={props.profile}
-              selectedControl={selectedControl}
-              onSelectControl={setSelectedControl}
-            />
+        <div className="grid min-h-[760px] gap-6 xl:grid-cols-[minmax(0,1fr)_380px] xl:gap-8">
+          <motion.div layout className="min-w-0" transition={BUTTONS_SHEET_TRANSITION}>
+            <StagePanel title={props.activeDevice.displayName}>
+              <ButtonsWorkbench
+                actionLookup={props.actionLookup}
+                activeDevice={props.activeDevice}
+                layout={props.activeLayout}
+                profile={props.profile}
+                selectedControl={selectedControl}
+                onSelectControl={setSelectedControl}
+              />
+            </StagePanel>
           </motion.div>
 
           <AnimatePresence initial={false}>
-            {selectedHotspot && (
+            {selectedHotspot ? (
               <motion.aside
-                animate={{ maxWidth: 440, opacity: 1 }}
-                className="w-full overflow-hidden xl:flex-none"
-                exit={{ maxWidth: 0, opacity: 0 }}
-                initial={{ maxWidth: 0, opacity: 0 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="min-w-0 xl:border-l xl:border-[var(--border)] xl:pl-8"
+                exit={{ opacity: 0, x: 24 }}
+                initial={{ opacity: 0, x: 24 }}
                 key={selectedHotspot.control}
-                transition={BUTTONS_SHEET_TRANSITION}
+                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
               >
-                <motion.div
-                  animate={{ x: 0, opacity: 1 }}
-                  className="h-full w-full border-t border-[#eceef4] pt-6 xl:w-[420px] xl:border-t-0 xl:border-l xl:pl-8 xl:pt-0"
-                  exit={{ x: 28, opacity: 0 }}
-                  initial={{ x: 28, opacity: 0 }}
-                  transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-                >
-                  <ButtonsControlSheet
-                    actionLookup={props.actionLookup}
-                    control={selectedHotspot.control}
-                    frontmostApp={props.frontmostApp}
-                    groupedActions={props.groupedActions}
-                    mappingEngineReady={props.mappingEngineReady}
-                    platformCapabilities={props.platformCapabilities}
-                    profile={props.profile}
-                    setBinding={setBinding}
-                    onClose={() => setSelectedControl(null)}
-                  />
-                </motion.div>
+                <ButtonsControlSheet
+                  actionLookup={props.actionLookup}
+                  control={selectedHotspot.control}
+                  groupedActions={props.groupedActions}
+                  mappingEngineReady={props.mappingEngineReady}
+                  platformCapabilities={props.platformCapabilities}
+                  profile={props.profile}
+                  setBinding={setBinding}
+                  onClose={() => setSelectedControl(null)}
+                />
+              </motion.aside>
+            ) : (
+              <motion.aside
+                animate={{ opacity: 1 }}
+                className="hidden xl:block xl:border-l xl:border-[var(--border)] xl:pl-8"
+                initial={{ opacity: 0 }}
+              >
+                <Card className="h-full bg-[var(--card-muted)]">
+                  <CardHeader className="flex h-full items-center justify-center">
+                    <CardTitle className="text-[22px]">Select a control</CardTitle>
+                  </CardHeader>
+                </Card>
               </motion.aside>
             )}
           </AnimatePresence>
@@ -563,13 +604,19 @@ function PointAndScrollView(props: {
   saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
   selectDevice: (deviceKey: string) => void;
 }) {
+  const layoutOptions = props.layoutChoices.map(
+    (choice) =>
+      ({
+        label: choice.label,
+        value: choice.key,
+      }) satisfies SelectOption,
+  );
+
   return (
     <div className="space-y-6">
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_380px]">
         <StagePanel
-          eyebrow="Device"
           title={props.activeDevice?.displayName ?? "Point and scroll"}
-          subtitle="DPI, wheel direction, and manual layout overrides stay on the active device."
         >
           {props.activeDevice ? (
             <DeviceCanvas
@@ -587,14 +634,11 @@ function PointAndScrollView(props: {
         </StagePanel>
 
         <Panel
-          eyebrow="Tuning"
-          title="Point + scroll"
-          subtitle="These settings mirror the device-level controls you expect from Options+."
+          title="Tuning"
         >
           <div className="space-y-4">
             <Field label="DPI">
-              <input
-                className="field-input"
+              <Input
                 data-testid="dpi-input"
                 max={props.activeDevice?.dpiMax ?? 8000}
                 min={props.activeDevice?.dpiMin ?? 200}
@@ -609,30 +653,25 @@ function PointAndScrollView(props: {
             </Field>
 
             <Field label="Manual layout override">
-              <select
-                className="field-input"
+              <Select
+                ariaLabel="Manual layout override"
+                options={layoutOptions}
                 value={props.activeDevice ? props.config.settings.deviceLayoutOverrides[props.activeDevice.key] ?? "" : ""}
-                onChange={(event) =>
+                onValueChange={(value) =>
                   props.saveSettings((nextConfig) => {
                     if (!props.activeDevice) {
                       return;
                     }
 
-                    if (event.currentTarget.value) {
+                    if (value) {
                       nextConfig.settings.deviceLayoutOverrides[props.activeDevice.key] =
-                        event.currentTarget.value;
+                        value;
                     } else {
                       delete nextConfig.settings.deviceLayoutOverrides[props.activeDevice.key];
                     }
                   })
                 }
-              >
-                {props.layoutChoices.map((choice) => (
-                  <option key={choice.key || "auto"} value={choice.key}>
-                    {choice.label}
-                  </option>
-                ))}
-              </select>
+              />
             </Field>
 
             <SwitchRow
@@ -654,8 +693,7 @@ function PointAndScrollView(props: {
               }
             />
             <Field label="Gesture threshold">
-              <input
-                className="field-input"
+              <Input
                 type="number"
                 value={props.config.settings.gestureThreshold}
                 onChange={(event) =>
@@ -666,8 +704,7 @@ function PointAndScrollView(props: {
               />
             </Field>
             <Field label="Gesture deadzone">
-              <input
-                className="field-input"
+              <Input
                 type="number"
                 value={props.config.settings.gestureDeadzone}
                 onChange={(event) =>
@@ -683,19 +720,17 @@ function PointAndScrollView(props: {
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
         <Panel
-          eyebrow="Devices"
-          title="Connected roster"
-          subtitle="Use this to verify which Logitech interface the runtime is probing."
+          title="Devices"
         >
           <div className="space-y-3">
             {props.engineSnapshot.devices.length > 0 ? (
               props.engineSnapshot.devices.map((device) => (
                 <button
                   className={[
-                    "w-full rounded-[24px] border px-4 py-4 text-left transition",
+                    "w-full rounded-[24px] px-4 py-4 text-left transition ring-1",
                     device.key === props.engineSnapshot.activeDeviceKey
-                      ? "border-[#93c5fd] bg-white text-[#111318] shadow-[0_12px_28px_rgba(37,99,235,0.08)]"
-                      : "border-[#e7eaf2] bg-white hover:border-[#d4d9ea]",
+                      ? "bg-[var(--card)] text-[var(--foreground)] ring-[#c3d8fb] shadow-[0_16px_34px_rgba(37,99,235,0.10)]"
+                      : "bg-[var(--card-muted)] ring-[var(--border)] hover:bg-[var(--card)]",
                   ].join(" ")}
                   key={device.key}
                   onClick={() => props.selectDevice(device.key)}
@@ -732,9 +767,7 @@ function PointAndScrollView(props: {
         </Panel>
 
         <Panel
-          eyebrow="Runtime"
-          title="Probe status"
-          subtitle="This is the state the Rust backend is actually exposing."
+          title="Runtime"
         >
           <div className="space-y-3">
             <CapabilityRow label="Active HID backend" value={props.bootstrap.platformCapabilities.activeHidBackend} />
@@ -760,9 +793,7 @@ function ProfilesView(props: {
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
       <Panel
-        eyebrow="Profiles"
-        title="Application routing"
-        subtitle="Each profile can target one or more executables."
+        title="Profiles"
       >
         <div className="space-y-3">
           {props.profiles.map((profile) => {
@@ -772,25 +803,27 @@ function ProfilesView(props: {
             return (
               <button
                 className={[
-                  "flex w-full items-center justify-between gap-4 rounded-[24px] border px-4 py-4 text-left transition",
+                  "flex w-full items-center justify-between gap-4 rounded-[24px] px-4 py-4 text-left transition ring-1",
                   profile.id === props.profile.id
-                    ? "border-[#93c5fd] bg-white shadow-[0_12px_28px_rgba(37,99,235,0.08)]"
-                    : "border-[#e7eaf2] bg-white hover:border-[#d4d9ea]",
+                    ? "bg-[var(--card)] shadow-[0_16px_34px_rgba(37,99,235,0.10)] ring-[#c3d8fb]"
+                    : "bg-[var(--card-muted)] ring-[var(--border)] hover:bg-[var(--card)]",
                 ].join(" ")}
                 key={profile.id}
                 onClick={() => props.setSelectedProfileId(profile.id)}
                 type="button"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-[#10131a]">{profile.label}</p>
-                  <p className="mt-1 truncate text-xs text-[#717787]">
+                  <p className="truncate text-sm font-semibold text-[var(--foreground)]">
+                    {profile.label}
+                  </p>
+                  <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
                     {profile.appMatchers.map((matcher) => matcher.value).join(", ") || "All applications"}
                   </p>
                 </div>
                 {profileApp?.iconAsset ? (
                   <img
                     alt={profileApp.label}
-                    className="h-11 w-11 rounded-2xl border border-[#e7eaf2] bg-white object-cover"
+                    className="h-11 w-11 rounded-2xl border border-[var(--border)] bg-white object-cover"
                     src={profileApp.iconAsset}
                   />
                 ) : (
@@ -803,14 +836,11 @@ function ProfilesView(props: {
       </Panel>
 
       <Panel
-        eyebrow="Editor"
-        title="Selected profile"
-        subtitle="Edit the label, executable routes, and lifecycle of the active profile."
+        title="Profile"
       >
         <div className="space-y-4">
           <Field label="Label">
-            <input
-              className="field-input"
+            <Input
               data-testid="profile-label-input"
               value={props.profile.label}
               onChange={(event) =>
@@ -822,8 +852,8 @@ function ProfilesView(props: {
           </Field>
 
           <Field label="Executable matchers">
-            <textarea
-              className="field-input min-h-[180px] resize-y py-3"
+            <Textarea
+              className="min-h-[180px] resize-y"
               rows={6}
               value={props.profile.appMatchers.map((matcher) => matcher.value).join("\n")}
               onChange={(event) =>
@@ -838,26 +868,28 @@ function ProfilesView(props: {
             />
           </Field>
 
-          <div className="rounded-[24px] border border-[#e7eaf2] bg-white px-4 py-4">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
+          <Card className="bg-[var(--card-muted)] shadow-none ring-1 ring-[var(--border)]">
+            <CardContent className="px-4 py-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
               Current selection
-            </p>
-            <p
-              className="mt-3 text-sm font-semibold text-[#10131a]"
-              data-testid="profile-label-display"
-            >
-              {props.profile.label}
-            </p>
-          </div>
+              </p>
+              <p
+                className="mt-3 text-sm font-semibold text-[var(--foreground)]"
+                data-testid="profile-label-display"
+              >
+                {props.profile.label}
+              </p>
+            </CardContent>
+          </Card>
 
-          <button
-            className="flex w-full items-center justify-center rounded-2xl border border-[#efc7c7] bg-white px-4 py-3 text-sm font-semibold text-[#8d3a3a] transition hover:border-[#e3b1b1] disabled:cursor-not-allowed disabled:opacity-40"
+          <Button
+            className="w-full"
             disabled={props.profile.id === "default"}
             onClick={() => props.deleteProfile(props.profile.id)}
-            type="button"
+            variant="destructive"
           >
             Delete profile
-          </button>
+          </Button>
         </div>
       </Panel>
     </div>
@@ -870,12 +902,16 @@ function SettingsView(props: {
   platformCapabilities: BootstrapPayload["platformCapabilities"];
   saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
 }) {
+  const appearanceOptions = [
+    { label: "System", value: "system" },
+    { label: "Light", value: "light" },
+    { label: "Dark", value: "dark" },
+  ] satisfies SelectOption[];
+
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
       <Panel
-        eyebrow="App"
-        title="Global preferences"
-        subtitle="Startup behavior, appearance, and gesture tuning live here."
+        title="Settings"
       >
         <div className="grid gap-4 md:grid-cols-2">
           <SwitchRow
@@ -906,24 +942,20 @@ function SettingsView(props: {
             }
           />
           <Field label="Appearance mode">
-            <select
-              className="field-input"
+            <Select
+              ariaLabel="Appearance mode"
+              options={appearanceOptions}
               value={props.config.settings.appearanceMode}
-              onChange={(event) =>
+              onValueChange={(value) =>
                 props.saveSettings((nextConfig) => {
                   nextConfig.settings.appearanceMode =
-                    event.currentTarget.value as AppConfig["settings"]["appearanceMode"];
+                    value as AppConfig["settings"]["appearanceMode"];
                 })
               }
-            >
-              <option value="system">System</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-            </select>
+            />
           </Field>
           <Field label="Gesture timeout (ms)">
-            <input
-              className="field-input"
+            <Input
               type="number"
               value={props.config.settings.gestureTimeoutMs}
               onChange={(event) =>
@@ -934,8 +966,7 @@ function SettingsView(props: {
             />
           </Field>
           <Field label="Gesture cooldown (ms)">
-            <input
-              className="field-input"
+            <Input
               type="number"
               value={props.config.settings.gestureCooldownMs}
               onChange={(event) =>
@@ -949,9 +980,7 @@ function SettingsView(props: {
       </Panel>
 
       <Panel
-        eyebrow="Readiness"
-        title="Runtime status"
-        subtitle="The backend needs both HID and a live hook path for full parity."
+        title="Status"
       >
         <div className="space-y-3">
           <CapabilityRow label="Platform" value={props.platformCapabilities.platform} />
@@ -983,23 +1012,20 @@ function DebugView(props: {
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_360px]">
       <Panel
-        eyebrow="Diagnostics"
-        title="Runtime log"
-        subtitle="Use this to confirm what the Rust runtime is actually doing on macOS."
+        title="Log"
       >
         <div className="flex flex-wrap items-center gap-3">
           <StatusPill
             tone={props.config.settings.debugMode ? "accent" : "neutral"}
             value={props.config.settings.debugMode ? "Debug on" : "Debug off"}
           />
-          <button
-            className="rounded-full border border-[#d8dded] bg-white px-4 py-2 text-sm font-semibold text-[#171b24] transition hover:border-[#c8cee0] disabled:cursor-not-allowed disabled:opacity-50"
+          <Button
             disabled={props.isClearing}
             onClick={props.clearDebugLog}
-            type="button"
+            variant="outline"
           >
             Clear log
-          </button>
+          </Button>
         </div>
 
         <div className="mt-5 grid gap-3 md:grid-cols-2">
@@ -1009,8 +1035,9 @@ function DebugView(props: {
           <CapabilityRow label="iokit backend" value={props.platformCapabilities.iokitAvailable ? "Ready" : "Not ported"} />
         </div>
 
-        <div className="mt-5 rounded-[28px] border border-[#e7eaf2] bg-white p-3">
-          <div className="max-h-[560px] space-y-3 overflow-y-auto pr-1">
+        <div className="mt-5 rounded-[28px] bg-[var(--card-muted)] p-3 ring-1 ring-[var(--border)]">
+          <ScrollArea className="max-h-[560px] pr-1">
+            <div className="space-y-3">
             {props.debugEvents.length > 0 ? (
               props.debugEvents.map((event) => (
                 <LogEntry event={event} key={`${event.timestampMs}-${event.message}`} />
@@ -1021,15 +1048,14 @@ function DebugView(props: {
                 title="No debug events"
               />
             )}
-          </div>
+            </div>
+          </ScrollArea>
         </div>
       </Panel>
 
       <div className="space-y-6">
         <Panel
-          eyebrow="Controls"
-          title="Debug mode"
-          subtitle="This mirrors the Python app: enable verbose runtime reporting when you need it."
+          title="Debug"
         >
           <SwitchRow
             checked={props.config.settings.debugMode}
@@ -1043,38 +1069,34 @@ function DebugView(props: {
         </Panel>
 
         <Panel
-          eyebrow="Importer"
-          title="Legacy config"
-          subtitle="Hydrate the Rust config from the existing Python Mouser JSON."
+          title="Import"
         >
           <div className="space-y-4">
             <Field label="Optional source path">
-              <input
-                className="field-input"
+              <Input
                 placeholder="~/Library/Application Support/Mouser/config.json"
                 value={props.importSourcePath}
                 onChange={(event) => props.setImportSourcePath(event.currentTarget.value)}
               />
             </Field>
             <Field label="Legacy Mouser JSON">
-              <textarea
-                className="field-input min-h-[280px] resize-y py-3 font-mono text-xs leading-6"
+              <Textarea
+                className="min-h-[280px] resize-y font-mono text-xs leading-6"
                 data-testid="legacy-import-input"
                 rows={12}
                 value={props.importDraft}
                 onChange={(event) => props.setImportDraft(event.currentTarget.value)}
               />
             </Field>
-            <button
-              className="flex w-full items-center justify-center rounded-2xl bg-[#2563eb] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#1d4ed8]"
+            <Button
+              className="w-full"
               data-testid="legacy-import-button"
               onClick={props.onImport}
-              type="button"
             >
               Import legacy config
-            </button>
+            </Button>
             {props.importWarnings.length > 0 && (
-              <ul className="space-y-2 rounded-[24px] border border-[#efd8af] bg-white p-4 text-sm text-[#8b5f1b]">
+              <ul className="space-y-2 rounded-[24px] border border-[#efd8af] bg-[#fff9ef] p-4 text-sm text-[#8b5f1b]">
                 {props.importWarnings.map((warning) => (
                   <li key={warning}>{warning}</li>
                 ))}
@@ -1090,6 +1112,7 @@ function DebugView(props: {
 function SectionNavButton(props: {
   label: string;
   active: boolean;
+  compact?: boolean;
   onClick: () => void;
   icon: (props: SVGProps<SVGSVGElement>) => ReactNode;
 }) {
@@ -1097,13 +1120,14 @@ function SectionNavButton(props: {
 
   return (
     <button
-      aria-label={props.label}
-      className={[
-        "flex w-full items-center gap-3 rounded-[18px] px-4 py-3 text-left transition",
+      aria-label={props.compact ? `${props.label} quick nav` : props.label}
+      className={cn(
+        "flex items-center gap-3 rounded-[20px] px-4 py-3 text-left transition-all duration-200",
+        props.compact ? "shrink-0 whitespace-nowrap" : "w-full",
         props.active
-          ? "bg-[#2563eb] text-white shadow-[0_16px_32px_rgba(37,99,235,0.22)]"
-          : "text-[#1f232c] hover:bg-[#f4f5f8]",
-      ].join(" ")}
+          ? "bg-[var(--accent)] text-white shadow-[0_18px_36px_rgba(37,99,235,0.22)]"
+          : "bg-transparent text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-surface)]",
+      )}
       onClick={props.onClick}
       type="button"
     >
@@ -1113,54 +1137,34 @@ function SectionNavButton(props: {
   );
 }
 
-function Panel(props: {
-  eyebrow: string;
-  title: string;
-  subtitle: string;
-  children: ReactNode;
-}) {
+function Panel(props: { title: string; subtitle?: string; children: ReactNode }) {
   return (
-    <section className="rounded-[26px] border border-[#eceef4] bg-white p-6">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
-        {props.eyebrow}
-      </p>
-      <div className="mt-3 border-b border-[#eef1f6] pb-4">
-        <h3 className="text-[24px] font-semibold tracking-[-0.04em] text-[#10131a]">
-          {props.title}
-        </h3>
-        <p className="mt-2 text-sm text-[#656c7d]">{props.subtitle}</p>
-      </div>
-      <div className="pt-5">{props.children}</div>
-    </section>
+    <Card>
+      <CardHeader>
+        <CardTitle>{props.title}</CardTitle>
+        {props.subtitle ? <CardDescription>{props.subtitle}</CardDescription> : null}
+      </CardHeader>
+      <CardContent>{props.children}</CardContent>
+    </Card>
   );
 }
 
-function StagePanel(props: {
-  eyebrow: string;
-  title: string;
-  subtitle: string;
-  children: ReactNode;
-}) {
+function StagePanel(props: { title: string; subtitle?: string; children: ReactNode }) {
   return (
-    <section className="rounded-[26px] border border-[#eceef4] bg-white p-6">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
-        {props.eyebrow}
-      </p>
-      <div className="mt-3 border-b border-[#eef1f6] pb-4">
-        <h3 className="text-[26px] font-semibold tracking-[-0.05em] text-[#10131a]">
-          {props.title}
-        </h3>
-        <p className="mt-2 text-sm text-[#656c7d]">{props.subtitle}</p>
-      </div>
-      <div className="pt-5">{props.children}</div>
-    </section>
+    <Card className="overflow-hidden bg-[var(--card-muted)]">
+      <CardHeader className="pb-0">
+        <CardTitle className="text-[28px]">{props.title}</CardTitle>
+        {props.subtitle ? <CardDescription>{props.subtitle}</CardDescription> : null}
+      </CardHeader>
+      <CardContent className="pt-6">{props.children}</CardContent>
+    </Card>
   );
 }
 
 function Field(props: { label: string; children: ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-2 block text-sm font-medium text-[#2f3441]">{props.label}</span>
+      <span className="mb-2.5 block text-sm font-medium text-[var(--foreground)]">{props.label}</span>
       {props.children}
     </label>
   );
@@ -1172,14 +1176,9 @@ function SwitchRow(props: {
   onChange: (value: boolean) => void;
 }) {
   return (
-    <label className="flex items-center justify-between rounded-[22px] border border-[#e7eaf2] bg-white px-4 py-4 text-sm font-medium text-[#171b24]">
+    <label className="flex items-center justify-between rounded-[24px] bg-[var(--card-muted)] px-4 py-4 text-sm font-medium text-[var(--foreground)] ring-1 ring-[var(--border)]">
       <span>{props.label}</span>
-      <input
-        checked={props.checked}
-        className="h-4 w-4 accent-[#2563eb]"
-        onChange={(event) => props.onChange(event.currentTarget.checked)}
-        type="checkbox"
-      />
+      <Switch checked={props.checked} onCheckedChange={props.onChange} />
     </label>
   );
 }
@@ -1192,63 +1191,116 @@ function ButtonsWorkbench(props: {
   selectedControl: LogicalControl | null;
   onSelectControl: (control: LogicalControl) => void;
 }) {
+  const workbenchRef = useRef<HTMLDivElement | null>(null);
+  const workbenchSize = useElementSize(workbenchRef);
+  const minCanvasWidth = props.layout.imageWidth + 220;
+  const maxCanvasWidth = props.layout.imageWidth + 520;
+  const canvasWidth = clamp(
+    workbenchSize.width || props.layout.imageWidth + 360,
+    minCanvasWidth,
+    maxCanvasWidth,
+  );
+  const canvasHeight = props.layout.imageHeight + 320;
+  const imageLeft = (canvasWidth - props.layout.imageWidth) / 2;
+  const imageTop = 124;
+
   return (
-    <section className="relative flex min-h-[760px] items-center justify-center bg-white">
-      <div className="relative flex min-h-[720px] w-full items-center justify-center px-6 py-10 xl:px-10">
-        <div
-          className="relative"
-          style={{ width: props.layout.imageWidth, height: props.layout.imageHeight }}
-        >
-          <img
-            alt={props.layout.label}
-            className="absolute inset-0 h-full w-full object-contain drop-shadow-[0_28px_44px_rgba(15,23,42,0.14)]"
-            data-testid="device-layout-image"
-            src={props.layout.imageAsset}
-          />
+    <section className="relative rounded-[30px] bg-white/90 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] ring-1 ring-[var(--border)]">
+      <div
+        className="relative overflow-x-auto rounded-[26px] bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.95),rgba(241,244,250,0.88)_42%,rgba(236,240,246,0.74))]"
+        ref={workbenchRef}
+      >
+        <div className="relative mx-auto min-h-[720px] min-w-full px-4 py-6 sm:px-8">
+          <div className="relative mx-auto" style={{ width: canvasWidth, height: canvasHeight }}>
+            <div
+              className="absolute inset-x-8 inset-y-10 rounded-[40px] border border-white/70 bg-white/50 blur-0"
+              aria-hidden="true"
+            />
+            <img
+              alt={props.layout.label}
+              className="absolute object-contain drop-shadow-[0_28px_44px_rgba(15,23,42,0.16)]"
+              data-testid="device-layout-image"
+              src={props.layout.imageAsset}
+              style={{
+                height: props.layout.imageHeight,
+                left: imageLeft,
+                top: imageTop,
+                width: props.layout.imageWidth,
+              }}
+            />
 
-          {props.layout.hotspots.map((hotspot) => {
-            const isSelected = props.selectedControl === hotspot.control;
-            const summary = summarizeHotspot(props.profile, hotspot.control, props.actionLookup);
-            const labelX = hotspot.normX * props.layout.imageWidth + hotspot.labelOffX;
-            const labelY = hotspot.normY * props.layout.imageHeight + hotspot.labelOffY;
+            {props.layout.hotspots.map((hotspot) => {
+              const isSelected = props.selectedControl === hotspot.control;
+              const summary = stageHotspotSummary(props.profile, hotspot.control, props.actionLookup);
+              const pointX = imageLeft + hotspot.normX * props.layout.imageWidth;
+              const pointY = imageTop + hotspot.normY * props.layout.imageHeight;
+              const cardMetrics = stageCardMetrics(hotspot.control);
+              const rawLabelX = pointX + hotspot.labelOffX;
+              const rawLabelY = pointY + hotspot.labelOffY;
+              const labelX = clamp(rawLabelX, 20, canvasWidth - cardMetrics.width - 20);
+              const labelY = clamp(rawLabelY, 28, canvasHeight - cardMetrics.height - 28);
+              const labelSide = labelX >= pointX ? "right" : "left";
+              const connector = connectorStyle(
+                pointX,
+                pointY,
+                labelSide,
+                labelX,
+                labelY,
+                cardMetrics,
+              );
 
-            return (
-              <div key={hotspot.control}>
-                <span
-                  className={[
-                    "absolute z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] bg-[#111318] transition",
-                    isSelected
-                      ? "border-[#bfdbfe] bg-[#2563eb] shadow-[0_0_0_10px_rgba(37,99,235,0.14)]"
-                      : "border-white shadow-[0_10px_24px_rgba(15,23,42,0.14)]",
-                  ].join(" ")}
-                  style={{
-                    left: hotspot.normX * props.layout.imageWidth,
-                    top: hotspot.normY * props.layout.imageHeight,
-                  }}
-                  title={hotspot.label}
-                />
-                <button
-                  aria-label={hotspot.label}
-                  aria-pressed={isSelected}
-                  className={[
-                    "absolute z-20 max-w-[260px] rounded-[26px] border px-8 py-6 text-left transition",
-                    isSelected
-                      ? "border-[#2563eb] bg-white shadow-[0_20px_36px_rgba(37,99,235,0.16)]"
-                      : "border-[#eceef4] bg-white shadow-[0_18px_32px_rgba(15,23,42,0.08)] hover:border-[#d6dbee]",
-                  ].join(" ")}
-                  data-testid={`hotspot-card-${hotspot.control}`}
-                  onClick={() => props.onSelectControl(hotspot.control)}
-                  style={{ left: labelX, top: labelY }}
-                  type="button"
-                >
-                  <p className="text-[17px] font-semibold tracking-[-0.03em] text-[#111318]">
-                    {hotspot.label}
-                  </p>
-                  <p className="mt-3 text-[15px] leading-8 text-[#677084]">{summary}</p>
-                </button>
-              </div>
-            );
-          })}
+              return (
+                <div key={hotspot.control}>
+                  <span
+                    className={cn(
+                      "pointer-events-none absolute z-[15] h-[2px] origin-left rounded-full transition",
+                      isSelected ? "bg-[#89b7ff]" : "bg-[#d2dae8]",
+                    )}
+                    style={connector}
+                  />
+                  <span
+                    className={cn(
+                      "absolute z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] bg-[#10131a] transition",
+                      isSelected
+                        ? "border-[#d7e6ff] bg-[var(--accent)] shadow-[0_0_0_10px_rgba(37,99,235,0.14)]"
+                        : "border-white shadow-[0_10px_24px_rgba(15,23,42,0.14)]",
+                    )}
+                    style={{
+                      left: pointX,
+                      top: pointY,
+                    }}
+                    title={hotspot.label}
+                  />
+                  <button
+                    aria-label={hotspot.label}
+                    aria-pressed={isSelected}
+                    className={cn(
+                      "absolute z-20 rounded-[24px] px-5 py-4 text-left transition ring-1",
+                      isSelected
+                        ? "bg-white shadow-[0_18px_30px_rgba(37,99,235,0.14)] ring-[var(--accent)]"
+                        : "bg-white/90 shadow-[0_14px_24px_rgba(15,23,42,0.08)] ring-[var(--border)] hover:bg-white hover:ring-[var(--border-strong)]",
+                    )}
+                    data-testid={`hotspot-card-${hotspot.control}`}
+                    onClick={() => props.onSelectControl(hotspot.control)}
+                    style={{
+                      left: labelX,
+                      minHeight: cardMetrics.height,
+                      top: labelY,
+                      width: cardMetrics.width,
+                    }}
+                    type="button"
+                  >
+                    <p className="text-[14px] font-semibold tracking-[-0.02em] text-[var(--foreground)]">
+                      {hotspot.label}
+                    </p>
+                    <p className="mt-2 text-[12px] leading-5 text-[var(--muted-foreground)]">
+                      {summary}
+                    </p>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </section>
@@ -1260,7 +1312,6 @@ function ButtonsControlSheet(props: {
   profile: Profile;
   actionLookup: Map<string, ActionDefinition>;
   groupedActions: Array<[string, ActionDefinition[]]>;
-  frontmostApp: string | null | undefined;
   mappingEngineReady: boolean;
   platformCapabilities: BootstrapPayload["platformCapabilities"];
   setBinding: (control: LogicalControl, actionId: string) => void;
@@ -1269,72 +1320,66 @@ function ButtonsControlSheet(props: {
   const controls = editorControlsFor(props.control);
   const title = editorTitleFor(props.control);
   const description = editorDescriptionFor(props.control);
+  const gestureControl = props.control.startsWith("gesture_");
   const note =
-    !props.mappingEngineReady
-      ? "Live remapping is unavailable because the macOS event tap did not start."
-      : props.control === "gesture_press" && !props.platformCapabilities.iokitAvailable
-        ? "Gesture-button swipe diversion still depends on the native IOKit listener."
+    gestureControl && !props.platformCapabilities.gestureDiversionAvailable
+      ? props.platformCapabilities.platform === "macos"
+        ? "Gesture remapping will appear when the Logitech gesture channel connects."
+        : "Gesture remapping is unavailable on this platform."
+      : !props.mappingEngineReady
+        ? "Live remapping is unavailable because the macOS event tap did not start."
         : null;
 
   return (
     <section
-      className="flex h-full min-h-[520px] flex-col rounded-[34px] border border-[#eceef4] bg-white p-6"
+      className="flex h-full min-h-[520px] flex-col pt-2"
       data-testid="buttons-editor-sheet"
     >
-      <div className="flex items-start justify-between gap-4 border-b border-[#eceef4] pb-5">
+      <div className="flex items-start justify-between gap-4 pb-3">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
-            Assignment
-          </p>
-          <h3 className="mt-3 text-[34px] font-semibold tracking-[-0.05em] text-[#10131a]">
+          <h3 className="text-[34px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
             {title}
           </h3>
-          <p className="mt-3 max-w-sm text-sm leading-7 text-[#677084]">{description}</p>
+          {note ? (
+            <p className="mt-3 max-w-sm text-sm leading-7 text-[var(--muted-foreground)]">{note}</p>
+          ) : (
+            <p className="mt-3 text-sm leading-7 text-[var(--muted-foreground)]">{description}</p>
+          )}
         </div>
 
-        <button
+        <Button
           aria-label="Close button editor"
-          className="flex h-11 w-11 items-center justify-center rounded-full border border-[#e1e5ef] text-[#353c49] transition hover:border-[#cfd5e4]"
           onClick={props.onClose}
-          type="button"
+          size="icon"
+          variant="ghost"
         >
           <X className="h-4 w-4" />
-        </button>
+        </Button>
       </div>
 
-      <div className="mt-5 flex flex-wrap gap-2">
-        <InfoPill label="Profile" value={props.profile.label} />
-        <InfoPill label="App" value={props.frontmostApp ?? "All applications"} />
-        <StatusPill
-          tone={props.mappingEngineReady ? "success" : "warning"}
-          value={props.mappingEngineReady ? "Live" : props.platformCapabilities.activeHookBackend}
-        />
-      </div>
+      <Card className="mt-2 bg-[var(--card-muted)] shadow-none ring-1 ring-[var(--border)]">
+        <CardContent className="px-5 py-4">
+          <p className="text-base leading-8 text-[var(--foreground)]">
+            {summarizeHotspot(props.profile, props.control, props.actionLookup)}
+          </p>
+        </CardContent>
+      </Card>
 
-      <div className="mt-6 rounded-[28px] border border-[#eceef4] bg-white px-5 py-5">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
-          Current mapping
-        </p>
-        <p className="mt-3 text-base leading-8 text-[#171b24]">
-          {summarizeHotspot(props.profile, props.control, props.actionLookup)}
-        </p>
-      </div>
-
-      <div className="mt-6 flex-1 space-y-4 overflow-y-auto pr-1">
-        {controls.map((control) => (
-          <SheetActionField
-            actionLookup={props.actionLookup}
-            control={control}
-            groupedActions={props.groupedActions}
-            key={control}
-            label={sheetFieldLabelFor(control)}
-            onChange={(actionId) => props.setBinding(control, actionId)}
-            profile={props.profile}
-          />
-        ))}
-
-        {note && <InlineNotice tone={props.mappingEngineReady ? "accent" : "warning"}>{note}</InlineNotice>}
-      </div>
+      <ScrollArea className="mt-5 flex-1 pr-1">
+        <div className="space-y-4">
+          {controls.map((control) => (
+            <SheetActionField
+              actionLookup={props.actionLookup}
+              control={control}
+              groupedActions={props.groupedActions}
+              key={control}
+              label={sheetFieldLabelFor(control)}
+              onChange={(actionId) => props.setBinding(control, actionId)}
+              profile={props.profile}
+            />
+          ))}
+        </div>
+      </ScrollArea>
     </section>
   );
 }
@@ -1348,37 +1393,35 @@ function SheetActionField(props: {
   onChange: (actionId: string) => void;
 }) {
   const currentBinding = bindingFor(props.profile, props.control);
+  const actionOptions = props.groupedActions.flatMap(([group, actions]) =>
+    actions.map(
+      (action) =>
+        ({
+          group,
+          label: action.label,
+          value: action.id,
+        }) satisfies SelectOption,
+    ),
+  );
 
   return (
-    <div className="rounded-[24px] border border-[#e7eaf2] bg-white p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-[#10131a]">{props.label}</p>
-          <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[#8a8fa0]">
-            {props.control.replace(/_/g, " ")}
-          </p>
+    <Card className="bg-[var(--card)]">
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-sm font-semibold text-[var(--foreground)]">{props.label}</p>
+          <Badge variant="default">
+            {actionFor(props.profile, props.control, props.actionLookup)}
+          </Badge>
         </div>
-        <span className="rounded-full border border-[#e2e6f0] px-3 py-1 text-xs font-semibold text-[#596173]">
-          {actionFor(props.profile, props.control, props.actionLookup)}
-        </span>
-      </div>
-      <select
-        aria-label={props.label}
-        className="field-input mt-4"
-        value={currentBinding.actionId}
-        onChange={(event) => props.onChange(event.currentTarget.value)}
-      >
-        {props.groupedActions.map(([category, actions]) => (
-          <optgroup key={category} label={category}>
-            {actions.map((action) => (
-              <option key={action.id} value={action.id}>
-                {action.label}
-              </option>
-            ))}
-          </optgroup>
-        ))}
-      </select>
-    </div>
+        <Select
+          ariaLabel={props.label}
+          className="mt-4"
+          onValueChange={props.onChange}
+          options={actionOptions}
+          value={currentBinding.actionId}
+        />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1390,7 +1433,7 @@ function DeviceCanvas(props: {
 }) {
   return (
     <div
-      className="rounded-[28px] border border-[#eef0f5] bg-white p-6"
+      className="rounded-[28px] bg-white p-6 ring-1 ring-[var(--border)]"
       data-testid="device-layout-card"
     >
       <div className="relative mx-auto min-h-[500px] w-full max-w-[920px]">
@@ -1419,11 +1462,11 @@ function DeviceCanvas(props: {
                   title={hotspot.label}
                 />
                 <div
-                  className="absolute z-20 max-w-[240px] rounded-[22px] border border-[#e7eaf2] bg-white px-4 py-3 shadow-[0_12px_24px_rgba(15,23,42,0.08)]"
+                  className="absolute z-20 max-w-[240px] rounded-[22px] bg-white px-4 py-3 shadow-[0_12px_24px_rgba(15,23,42,0.08)] ring-1 ring-[var(--border)]"
                   style={{ left: labelX, top: labelY }}
                 >
-                  <p className="text-sm font-semibold text-[#10131a]">{hotspot.label}</p>
-                  <p className="mt-1 text-xs leading-5 text-[#656c7d]">{summary}</p>
+                  <p className="text-sm font-semibold text-[var(--foreground)]">{hotspot.label}</p>
+                  <p className="mt-1 text-xs leading-5 text-[var(--muted-foreground)]">{summary}</p>
                 </div>
               </div>
             );
@@ -1434,39 +1477,27 @@ function DeviceCanvas(props: {
   );
 }
 
-function InfoPill(props: { label: string; value: string }) {
-  return (
-    <span className="rounded-full border border-[#dfe4f0] bg-white px-3 py-1.5 text-xs font-semibold text-[#515869]">
-      <span className="text-[#9096a8]">{props.label}</span> {props.value}
-    </span>
-  );
-}
-
 function StatusPill(props: {
   tone: "success" | "accent" | "neutral" | "warning";
   value: string;
 }) {
-  const toneClass =
+  const toneClass: ComponentProps<typeof Badge>["variant"] =
     props.tone === "success"
-      ? "border-[#cfe9da] bg-white text-[#177a4d]"
+      ? "success"
       : props.tone === "accent"
-        ? "border-[#bfdbfe] bg-white text-[#2563eb]"
+        ? "accent"
         : props.tone === "warning"
-          ? "border-[#f3dfbe] bg-white text-[#92611f]"
-          : "border-[#e3e7f0] bg-white text-[#596071]";
+          ? "warning"
+          : "default";
 
-  return (
-    <span className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${toneClass}`}>
-      {props.value}
-    </span>
-  );
+  return <Badge variant={toneClass}>{props.value}</Badge>;
 }
 
 function CapabilityRow(props: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between rounded-[20px] border border-[#e7eaf2] bg-white px-4 py-3 text-sm">
-      <span className="font-medium text-[#2f3441]">{props.label}</span>
-      <span className="text-[#10131a]">{props.value}</span>
+    <div className="flex items-center justify-between rounded-[20px] bg-[var(--card-muted)] px-4 py-3 text-sm ring-1 ring-[var(--border)]">
+      <span className="font-medium text-[var(--foreground)]">{props.label}</span>
+      <span className="text-[var(--foreground)]">{props.value}</span>
     </div>
   );
 }
@@ -1474,9 +1505,9 @@ function CapabilityRow(props: { label: string; value: string }) {
 function LogEntry(props: { event: DebugEventRecord }) {
   const accent =
     props.event.kind === "warning"
-      ? "border-[#f2dfc0] bg-white text-[#8b5e1a]"
+      ? "border-[#f2dfc0] bg-[#fff9ef] text-[#8b5e1a]"
       : props.event.kind === "gesture"
-        ? "border-[#bfdbfe] bg-white text-[#1d4ed8]"
+        ? "border-[#bfdbfe] bg-[#f2f7ff] text-[#1d4ed8]"
         : "border-[#e3e7f0] bg-white text-[#485062]";
 
   return (
@@ -1494,33 +1525,61 @@ function LogEntry(props: { event: DebugEventRecord }) {
   );
 }
 
-function InlineNotice(props: {
-  tone: "warning" | "accent";
-  children: ReactNode;
-}) {
-  const toneClass =
-    props.tone === "warning"
-      ? "border-[#f2dfc0] bg-white text-[#8b5e1a]"
-      : "border-[#bfdbfe] bg-white text-[#1d4ed8]";
-
-  return <div className={`rounded-[24px] border px-4 py-4 text-sm font-medium ${toneClass}`}>{props.children}</div>;
-}
-
 function EmptyState(props: { title: string; body: string }) {
   return (
-    <div className="rounded-[28px] border border-dashed border-[#d5dbea] bg-white p-8 text-center">
-      <p className="text-base font-semibold text-[#10131a]">{props.title}</p>
-      <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[#656c7d]">{props.body}</p>
+    <div className="rounded-[28px] border border-dashed border-[var(--border-strong)] bg-[var(--card-muted)] p-8 text-center">
+      <p className="text-base font-semibold text-[var(--foreground)]">{props.title}</p>
+      <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[var(--muted-foreground)]">{props.body}</p>
     </div>
   );
 }
 
 function EmptyStage(props: { title: string; body: string }) {
   return (
-    <div className="flex min-h-[520px] items-center justify-center rounded-[32px] border border-dashed border-[#d5dbea] bg-white p-8">
+    <div className="flex min-h-[520px] items-center justify-center rounded-[32px] border border-dashed border-[var(--border-strong)] bg-[var(--card)] p-8">
       <EmptyState body={props.body} title={props.title} />
     </div>
   );
+}
+
+function useElementSize<T extends HTMLElement>(ref: RefObject<T | null>) {
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) {
+      return;
+    }
+
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect();
+      setSize({ height: rect.height, width: rect.width });
+    };
+
+    updateSize();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateSize);
+      return () => window.removeEventListener("resize", updateSize);
+    }
+
+    const observer = new ResizeObserver(([entry]) => {
+      setSize({
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      });
+    });
+
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return size;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function editorControlsFor(control: LogicalControl) {
@@ -1539,6 +1598,44 @@ function editorControlsFor(control: LogicalControl) {
   }
 
   return [control];
+}
+
+function stageCardMetrics(control: LogicalControl) {
+  if (control === "gesture_press") {
+    return { width: 196, height: 98 };
+  }
+
+  if (control === "hscroll_left") {
+    return { width: 182, height: 94 };
+  }
+
+  return { width: 170, height: 80 };
+}
+
+function connectorStyle(
+  pointX: number,
+  pointY: number,
+  labelSide: "left" | "right",
+  labelX: number,
+  labelY: number,
+  cardMetrics: { width: number; height: number },
+) {
+  const anchorX = labelSide === "right" ? labelX : labelX + cardMetrics.width;
+  const anchorY = labelY + cardMetrics.height / 2;
+  const dx = anchorX - pointX;
+  const dy = anchorY - pointY;
+  const angle = Math.atan2(dy, dx);
+  const inset = 12;
+  const startX = pointX + Math.cos(angle) * inset;
+  const startY = pointY + Math.sin(angle) * inset;
+  const length = Math.max(Math.hypot(dx, dy) - inset, 0);
+
+  return {
+    left: startX,
+    top: startY,
+    width: length,
+    transform: `translateY(-50%) rotate(${(angle * 180) / Math.PI}deg)`,
+  };
 }
 
 function editorTitleFor(control: LogicalControl) {
@@ -1563,6 +1660,40 @@ function editorDescriptionFor(control: LogicalControl) {
   }
 
   return "Adjust the action for this control on the active profile. Changes save immediately and apply to the currently selected app profile.";
+}
+
+function stageHotspotSummary(
+  profile: Profile,
+  control: LogicalControl,
+  actionLookup: Map<string, ActionDefinition>,
+) {
+  if (control === "hscroll_left") {
+    const left = compactStageActionLabel(actionFor(profile, "hscroll_left", actionLookup));
+    const right = compactStageActionLabel(actionFor(profile, "hscroll_right", actionLookup));
+    return `L ${left} / R ${right}`;
+  }
+
+  if (control === "gesture_press") {
+    const tap = compactStageActionLabel(actionFor(profile, "gesture_press", actionLookup));
+    const swipeConfigured =
+      ["gesture_left", "gesture_right", "gesture_up", "gesture_down"].some(
+        (gestureControl) =>
+          actionFor(profile, gestureControl as LogicalControl, actionLookup) !==
+          "Do Nothing (Pass-through)",
+      );
+    return swipeConfigured ? `Tap ${tap} + swipes` : `Tap ${tap}`;
+  }
+
+  return compactStageActionLabel(actionFor(profile, control, actionLookup));
+}
+
+function compactStageActionLabel(label: string) {
+  const normalized =
+    label === "Do Nothing (Pass-through)"
+      ? "No action"
+      : label.replace(/\s*\([^)]*\)\s*/g, "").trim();
+
+  return normalized.length > 24 ? `${normalized.slice(0, 22)}...` : normalized;
 }
 
 function sheetFieldLabelFor(control: LogicalControl) {
