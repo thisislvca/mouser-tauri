@@ -419,7 +419,7 @@ fn current_platform_capabilities() -> PlatformCapabilities {
         active_hid_backend: "mock-hid".to_string(),
         active_hook_backend: "mock-hook".to_string(),
         active_focus_backend: "mock-focus".to_string(),
-        hidapi_available: cfg!(target_os = "macos"),
+        hidapi_available: cfg!(any(target_os = "macos", target_os = "windows")),
         iokit_available: cfg!(target_os = "macos"),
     }
 }

@@ -14,9 +14,9 @@ use std::{
 use mouser_core::build_connected_device_info;
 use mouser_core::{
     clamp_dpi, default_config, default_device_settings, default_known_apps, default_layouts,
-    hydrate_identity_key, AppDiscoverySource, AppIdentity, AppConfig, DebugEventKind,
-    DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp, KnownApp,
-    LogicalControl, Profile, Settings, known_device_specs,
+    AppDiscoverySource, AppIdentity, AppConfig, DebugEventKind, DeviceFingerprint, DeviceInfo,
+    DeviceLayout, DeviceSettings, InstalledApp, KnownApp, LogicalControl, Profile, Settings,
+    known_device_specs,
 };
 use thiserror::Error;
 
@@ -519,17 +519,44 @@ impl ConfigStore for JsonConfigStore {
         })?;
 
         #[cfg(target_os = "windows")]
-        if self.path.exists() {
-            fs::remove_file(&self.path).map_err(|error| PlatformError::Io {
-                path: self.path.display().to_string(),
-                message: error.to_string(),
-            })?;
+        {
+            let backup_path = if self.path.exists() {
+                let backup_path = self.recovery_path("bak");
+                fs::rename(&self.path, &backup_path).map_err(|error| PlatformError::Io {
+                    path: self.path.display().to_string(),
+                    message: error.to_string(),
+                })?;
+                Some(backup_path)
+            } else {
+                None
+            };
+
+            return match fs::rename(&temp_path, &self.path) {
+                Ok(()) => {
+                    if let Some(backup_path) = backup_path {
+                        let _ = fs::remove_file(backup_path);
+                    }
+                    Ok(())
+                }
+                Err(error) => {
+                    if let Some(backup_path) = backup_path.as_ref() {
+                        let _ = fs::rename(backup_path, &self.path);
+                    }
+                    Err(PlatformError::Io {
+                        path: self.path.display().to_string(),
+                        message: error.to_string(),
+                    })
+                }
+            };
         }
 
-        fs::rename(&temp_path, &self.path).map_err(|error| PlatformError::Io {
-            path: self.path.display().to_string(),
-            message: error.to_string(),
-        })
+        #[cfg(not(target_os = "windows"))]
+        {
+            fs::rename(&temp_path, &self.path).map_err(|error| PlatformError::Io {
+                path: self.path.display().to_string(),
+                message: error.to_string(),
+            })
+        }
     }
 }
 
@@ -542,6 +569,8 @@ pub mod macos {
 
     #[cfg(target_os = "macos")]
     use hidapi::{BusType, DeviceInfo as HidDeviceInfo, HidApi, HidDevice};
+    #[cfg(target_os = "macos")]
+    use mouser_core::hydrate_identity_key;
     #[cfg(target_os = "macos")]
     use objc2_app_kit::NSWorkspace;
     #[cfg(target_os = "macos")]
