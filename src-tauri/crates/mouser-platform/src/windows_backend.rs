@@ -2,7 +2,8 @@
 
 use std::{
     collections::HashMap,
-    path::Path,
+    fs,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc, Arc, Mutex, OnceLock, RwLock,
@@ -12,17 +13,23 @@ use std::{
 };
 
 use mouser_core::{
-    build_connected_device_info, default_config, hydrate_identity_key, DebugEventKind,
-    DeviceFingerprint, DeviceInfo, LogicalControl, Profile, Settings,
+    build_connected_device_info, default_config, hydrate_identity_key, AppDiscoverySource,
+    AppIdentity, DebugEventKind, DeviceFingerprint, DeviceInfo, InstalledApp, LogicalControl,
+    Profile,
 };
 
 use crate::{
-    horizontal_scroll_control, push_bounded_hook_event, AppFocusBackend, HidBackend,
-    HidCapabilities, HookBackend, HookBackendEvent, HookCapabilities, PlatformError,
+    dedupe_installed_apps, horizontal_scroll_control, push_bounded_hook_event,
+    AppDiscoveryBackend, AppFocusBackend, HidBackend, HidCapabilities, HookBackend,
+    HookBackendEvent, HookBackendSettings, HookCapabilities, PlatformError,
 };
 
 #[cfg(target_os = "windows")]
 use hidapi::{BusType, DeviceInfo as HidDeviceInfo, HidApi, HidDevice};
+#[cfg(target_os = "windows")]
+use lnk::encoding::WINDOWS_1252;
+#[cfg(target_os = "windows")]
+use lnk::ShellLink;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
@@ -63,6 +70,7 @@ pub struct WindowsHookBackend {
 
 pub struct WindowsHidBackend;
 pub struct WindowsAppFocusBackend;
+pub struct WindowsAppDiscoveryBackend;
 
 #[derive(Clone, PartialEq, Eq)]
 struct WindowsHookConfig {
@@ -78,7 +86,7 @@ struct WindowsHookConfig {
 }
 
 impl WindowsHookConfig {
-    fn from_runtime(settings: &Settings, profile: &Profile, enabled: bool) -> Self {
+    fn from_runtime(settings: &HookBackendSettings, profile: &Profile, enabled: bool) -> Self {
         Self {
             enabled,
             invert_horizontal_scroll: settings.invert_horizontal_scroll,
@@ -177,10 +185,12 @@ impl WindowsHookShared {
             .active_profile()
             .cloned()
             .unwrap_or_else(|| config.profiles[0].clone());
+        let hook_settings =
+            HookBackendSettings::from_app_and_device(&config.settings, &config.device_defaults);
 
         Self {
             config: RwLock::new(Arc::new(WindowsHookConfig::from_runtime(
-                &config.settings,
+                &hook_settings,
                 &profile,
                 true,
             ))),
@@ -195,7 +205,7 @@ impl WindowsHookShared {
         Arc::clone(&self.config.read().unwrap())
     }
 
-    fn reconfigure(&self, settings: &Settings, profile: &Profile, enabled: bool) {
+    fn reconfigure(&self, settings: &HookBackendSettings, profile: &Profile, enabled: bool) {
         let next = Arc::new(WindowsHookConfig::from_runtime(settings, profile, enabled));
         let changed = {
             let mut config = self.config.write().unwrap();
@@ -507,7 +517,7 @@ impl HookBackend for WindowsHookBackend {
 
     fn configure(
         &self,
-        settings: &Settings,
+        settings: &HookBackendSettings,
         profile: &Profile,
         enabled: bool,
     ) -> Result<(), PlatformError> {
@@ -673,7 +683,7 @@ impl AppFocusBackend for WindowsAppFocusBackend {
         }
     }
 
-    fn current_frontmost_app(&self) -> Result<Option<String>, PlatformError> {
+    fn current_frontmost_app(&self) -> Result<Option<AppIdentity>, PlatformError> {
         #[cfg(not(target_os = "windows"))]
         {
             Err(PlatformError::Unsupported(
@@ -688,13 +698,39 @@ impl AppFocusBackend for WindowsAppFocusBackend {
                 return Ok(None);
             }
 
-            let mut process_id = 0u32;
-            GetWindowThreadProcessId(hwnd, &mut process_id);
-            if process_id == 0 {
-                return Ok(None);
-            }
+            foreground_app_identity(hwnd).map(Some)
+        }
+    }
+}
 
-            foreground_process_name(process_id).map(Some)
+impl AppDiscoveryBackend for WindowsAppDiscoveryBackend {
+    fn backend_id(&self) -> &'static str {
+        #[cfg(target_os = "windows")]
+        {
+            "windows-start-menu"
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            "windows-stub"
+        }
+    }
+
+    fn discover_apps(&self) -> Result<Vec<InstalledApp>, PlatformError> {
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(PlatformError::Unsupported(
+                "live Windows app discovery is only available on Windows",
+            ))
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let mut apps = Vec::new();
+            for root in windows_start_menu_roots() {
+                collect_shortcut_apps(&root, &mut apps)?;
+            }
+            dedupe_installed_apps(apps)
         }
     }
 }
@@ -1580,6 +1616,132 @@ fn inject_scroll(flags: u32, delta: i32) {
 }
 
 #[cfg(target_os = "windows")]
+fn windows_start_menu_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        roots.push(PathBuf::from(app_data).join("Microsoft/Windows/Start Menu/Programs"));
+    }
+    if let Some(program_data) = std::env::var_os("ProgramData") {
+        roots.push(PathBuf::from(program_data).join("Microsoft/Windows/Start Menu/Programs"));
+    }
+    roots
+}
+
+#[cfg(target_os = "windows")]
+fn collect_shortcut_apps(root: &Path, apps: &mut Vec<InstalledApp>) -> Result<(), PlatformError> {
+    if !root.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(root).map_err(|error| PlatformError::Io {
+        path: root.display().to_string(),
+        message: error.to_string(),
+    })? {
+        let entry = entry.map_err(|error| PlatformError::Io {
+            path: root.display().to_string(),
+            message: error.to_string(),
+        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_shortcut_apps(&path, apps)?;
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("lnk") {
+            continue;
+        }
+        if let Some(app) = read_shortcut_app(&path) {
+            apps.push(app);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn read_shortcut_app(path: &Path) -> Option<InstalledApp> {
+    let shortcut = ShellLink::open(path, WINDOWS_1252).ok()?;
+    let target_path = shortcut.link_target()?;
+    let target = PathBuf::from(&target_path);
+    let executable = target.file_name()?.to_string_lossy().to_string();
+    if !executable.to_ascii_lowercase().ends_with(".exe") {
+        return None;
+    }
+
+    let label = path
+        .file_stem()
+        .map(|value| value.to_string_lossy().trim().to_string())
+        .filter(|value| {
+            let lower = value.to_ascii_lowercase();
+            !value.is_empty() && !lower.contains("uninstall") && !lower.contains("help")
+        })?;
+
+    Some(InstalledApp {
+        identity: AppIdentity {
+            label: Some(label),
+            executable: Some(executable),
+            executable_path: Some(target_path),
+            bundle_id: None,
+            package_family_name: None,
+        },
+        source_kinds: vec![AppDiscoverySource::StartMenuShortcut],
+        source_path: Some(path.to_string_lossy().to_string()),
+    })
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn foreground_app_identity(hwnd: HWND) -> Result<AppIdentity, PlatformError> {
+    let mut process_id = 0;
+    GetWindowThreadProcessId(hwnd, &mut process_id);
+    if process_id == 0 {
+        return Err(PlatformError::Message(
+            "failed to resolve foreground process".to_string(),
+        ));
+    }
+
+    let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id);
+    if process.is_null() {
+        return Err(PlatformError::Message(format!(
+            "failed to open process {process_id}"
+        )));
+    }
+
+    let result = (|| {
+        let executable_path = process_image_path(process)?;
+        let executable = Path::new(&executable_path)
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string());
+        Ok(AppIdentity {
+            label: window_title(hwnd).or_else(|| executable.clone()),
+            executable,
+            executable_path: Some(executable_path),
+            bundle_id: None,
+            package_family_name: None,
+        })
+    })();
+
+    CloseHandle(process as HANDLE);
+    result
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn window_title(hwnd: HWND) -> Option<String> {
+    let length = GetWindowTextLengthW(hwnd);
+    if length <= 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0u16; length as usize + 1];
+    let written = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
+    if written <= 0 {
+        return None;
+    }
+
+    let title = String::from_utf16_lossy(&buffer[..written as usize]);
+    let trimmed = title.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+#[cfg(target_os = "windows")]
 fn foreground_process_name(process_id: u32) -> Result<String, PlatformError> {
     unsafe {
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id);
@@ -1597,6 +1759,15 @@ fn foreground_process_name(process_id: u32) -> Result<String, PlatformError> {
 
 #[cfg(target_os = "windows")]
 unsafe fn process_image_name(process: HANDLE) -> Result<String, PlatformError> {
+    let path = process_image_path(process)?;
+    Ok(Path::new(&path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or(path))
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn process_image_path(process: HANDLE) -> Result<String, PlatformError> {
     let mut buffer = vec![0u16; 260];
     let mut size = buffer.len() as u32;
     if QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut size) == 0 {
@@ -1605,11 +1776,7 @@ unsafe fn process_image_name(process: HANDLE) -> Result<String, PlatformError> {
         ));
     }
 
-    let path = String::from_utf16_lossy(&buffer[..size as usize]);
-    Ok(Path::new(&path)
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or(path))
+    Ok(String::from_utf16_lossy(&buffer[..size as usize]))
 }
 
 #[cfg(target_os = "windows")]

@@ -13,9 +13,10 @@ use std::{
 #[cfg(target_os = "macos")]
 use mouser_core::build_connected_device_info;
 use mouser_core::{
-    clamp_dpi, default_config, default_known_apps, default_layouts, hydrate_identity_key,
-    known_device_specs, AppConfig, DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout,
-    KnownApp, LogicalControl, Profile, Settings,
+    clamp_dpi, default_config, default_device_settings, default_known_apps, default_layouts,
+    hydrate_identity_key, AppDiscoverySource, AppIdentity, AppConfig, DebugEventKind,
+    DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp, KnownApp,
+    LogicalControl, Profile, Settings, known_device_specs,
 };
 use thiserror::Error;
 
@@ -36,6 +37,34 @@ pub struct HidCapabilities {
     pub can_read_battery: bool,
     pub can_read_dpi: bool,
     pub can_write_dpi: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookBackendSettings {
+    pub invert_horizontal_scroll: bool,
+    pub invert_vertical_scroll: bool,
+    pub gesture_threshold: u16,
+    pub gesture_deadzone: u16,
+    pub gesture_timeout_ms: u32,
+    pub gesture_cooldown_ms: u32,
+    pub debug_mode: bool,
+}
+
+impl HookBackendSettings {
+    pub fn from_app_and_device(
+        settings: &Settings,
+        device_settings: &DeviceSettings,
+    ) -> Self {
+        Self {
+            invert_horizontal_scroll: device_settings.invert_horizontal_scroll,
+            invert_vertical_scroll: device_settings.invert_vertical_scroll,
+            gesture_threshold: device_settings.gesture_threshold,
+            gesture_deadzone: device_settings.gesture_deadzone,
+            gesture_timeout_ms: device_settings.gesture_timeout_ms,
+            gesture_cooldown_ms: device_settings.gesture_cooldown_ms,
+            debug_mode: settings.debug_mode,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +96,7 @@ pub trait HookBackend: Send + Sync {
     fn capabilities(&self) -> HookCapabilities;
     fn configure(
         &self,
-        settings: &Settings,
+        settings: &HookBackendSettings,
         profile: &Profile,
         enabled: bool,
     ) -> Result<(), PlatformError>;
@@ -83,7 +112,12 @@ pub trait HidBackend: Send + Sync {
 
 pub trait AppFocusBackend: Send + Sync {
     fn backend_id(&self) -> &'static str;
-    fn current_frontmost_app(&self) -> Result<Option<String>, PlatformError>;
+    fn current_frontmost_app(&self) -> Result<Option<AppIdentity>, PlatformError>;
+}
+
+pub trait AppDiscoveryBackend: Send + Sync {
+    fn backend_id(&self) -> &'static str;
+    fn discover_apps(&self) -> Result<Vec<InstalledApp>, PlatformError>;
 }
 
 pub trait DeviceCatalog: Send + Sync {
@@ -119,6 +153,35 @@ pub(crate) fn push_bounded_hook_event(
         let excess = events.len() - HOOK_EVENT_BUFFER_LIMIT;
         events.drain(0..excess);
     }
+}
+
+pub(crate) fn dedupe_installed_apps(apps: Vec<InstalledApp>) -> Result<Vec<InstalledApp>, PlatformError> {
+    let mut deduped = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+
+    for mut app in apps {
+        let stable_id = app.identity.stable_id();
+        if !seen.insert(stable_id) {
+            continue;
+        }
+
+        if app.identity.preferred_matchers().is_empty() {
+            continue;
+        }
+
+        app.source_kinds.sort();
+        app.source_kinds.dedup();
+        deduped.push(app);
+    }
+
+    deduped.sort_by(|left, right| {
+        left.identity
+            .label_or_fallback()
+            .unwrap_or_default()
+            .cmp(&right.identity.label_or_fallback().unwrap_or_default())
+    });
+
+    Ok(deduped)
 }
 
 #[derive(Clone, Default)]
@@ -187,6 +250,126 @@ pub struct JsonConfigStore {
     path: PathBuf,
 }
 
+fn deserialize_app_config(raw: &str) -> Result<AppConfig, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(raw)?;
+    migrate_app_config_value(&mut value);
+    serde_json::from_value(value)
+}
+
+fn migrate_app_config_value(value: &mut serde_json::Value) {
+    let Some(config) = value.as_object_mut() else {
+        return;
+    };
+
+    let (mut device_defaults, layout_overrides) = {
+        let settings_value = config
+            .entry("settings".to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !settings_value.is_object() {
+            *settings_value = serde_json::Value::Object(serde_json::Map::new());
+        }
+        let settings = settings_value.as_object_mut().unwrap();
+
+        let mut device_defaults = settings
+            .remove("deviceDefaults")
+            .filter(|value| value.is_object())
+            .unwrap_or_else(|| {
+                serde_json::to_value(default_device_settings())
+                    .expect("default device settings should serialize")
+            });
+        if !device_defaults.is_object() {
+            device_defaults = serde_json::to_value(default_device_settings())
+                .expect("default device settings should serialize");
+        }
+        {
+            let device_defaults_map = device_defaults.as_object_mut().unwrap();
+            for (legacy_key, next_key) in [
+                ("dpi", "dpi"),
+                ("invertHorizontalScroll", "invertHorizontalScroll"),
+                ("invertVerticalScroll", "invertVerticalScroll"),
+                ("gestureThreshold", "gestureThreshold"),
+                ("gestureDeadzone", "gestureDeadzone"),
+                ("gestureTimeoutMs", "gestureTimeoutMs"),
+                ("gestureCooldownMs", "gestureCooldownMs"),
+            ] {
+                if let Some(legacy_value) = settings.remove(legacy_key) {
+                    device_defaults_map.insert(next_key.to_string(), legacy_value);
+                }
+            }
+        }
+
+        let layout_overrides = settings
+            .remove("deviceLayoutOverrides")
+            .and_then(|value| value.as_object().cloned());
+        (device_defaults, layout_overrides)
+    };
+    let device_defaults_template = device_defaults.clone();
+
+    let mut applied_layout_override = false;
+    if let Some(managed_devices) = config
+        .get_mut("managedDevices")
+        .and_then(|value| value.as_array_mut())
+    {
+        for device in managed_devices {
+            let Some(device_object) = device.as_object_mut() else {
+                continue;
+            };
+            let device_id = device_object
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            let model_key = device_object
+                .get("modelKey")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+
+            let device_settings = device_object
+                .entry("settings".to_string())
+                .or_insert_with(|| device_defaults_template.clone());
+            if !device_settings.is_object() {
+                *device_settings = device_defaults_template.clone();
+            }
+            let device_settings_map = device_settings.as_object_mut().unwrap();
+
+            if let Some(layout_overrides) = layout_overrides.as_ref() {
+                let override_value = device_id
+                    .as_deref()
+                    .and_then(|device_id| layout_overrides.get(device_id))
+                    .or_else(|| {
+                        model_key
+                            .as_deref()
+                            .and_then(|model_key| layout_overrides.get(model_key))
+                    })
+                    .cloned();
+                if let Some(override_value) = override_value {
+                    device_settings_map
+                        .insert("manualLayoutOverride".to_string(), override_value);
+                    applied_layout_override = true;
+                }
+            }
+        }
+    }
+
+    if !applied_layout_override {
+        if let Some(layout_overrides) = layout_overrides.as_ref() {
+            if layout_overrides.len() == 1 {
+                if let Some(layout) = layout_overrides.values().next() {
+                    device_defaults
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("manualLayoutOverride".to_string(), layout.clone());
+                }
+            }
+        }
+    }
+
+    config.insert("deviceDefaults".to_string(), device_defaults);
+
+    if config.get("version").and_then(|value| value.as_u64()).unwrap_or(0) < 3 {
+        config.insert("version".to_string(), serde_json::Value::from(3u64));
+    }
+}
+
 impl JsonConfigStore {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
@@ -226,7 +409,7 @@ impl JsonConfigStore {
         }
 
         match fs::read_to_string(&self.path) {
-            Ok(raw) => match serde_json::from_str::<AppConfig>(&raw) {
+            Ok(raw) => match deserialize_app_config(&raw) {
                 Ok(config) => (config, None),
                 Err(error) => {
                     let warning = self
@@ -296,7 +479,7 @@ impl ConfigStore for JsonConfigStore {
             path: self.path.display().to_string(),
             message: error.to_string(),
         })?;
-        serde_json::from_str::<AppConfig>(&raw).map_err(|error| {
+        deserialize_app_config(&raw).map_err(|error| {
             PlatformError::Message(format!("failed to decode {}: {error}", self.path.display()))
         })
     }
@@ -347,6 +530,8 @@ pub mod macos {
     use hidapi::{BusType, DeviceInfo as HidDeviceInfo, HidApi, HidDevice};
     #[cfg(target_os = "macos")]
     use objc2_app_kit::NSWorkspace;
+    #[cfg(target_os = "macos")]
+    use plist::Value as PlistValue;
 
     const LOGI_VID: u16 = 0x046D;
     const LONG_ID: u8 = 0x11;
@@ -361,6 +546,7 @@ pub mod macos {
 
     pub struct MacOsHidBackend;
     pub struct MacOsAppFocusBackend;
+    pub struct MacOsAppDiscoveryBackend;
 
     impl HidBackend for MacOsHidBackend {
         fn backend_id(&self) -> &'static str {
@@ -508,7 +694,7 @@ pub mod macos {
             }
         }
 
-        fn current_frontmost_app(&self) -> Result<Option<String>, PlatformError> {
+        fn current_frontmost_app(&self) -> Result<Option<AppIdentity>, PlatformError> {
             #[cfg(not(target_os = "macos"))]
             {
                 Err(PlatformError::Unsupported(
@@ -523,24 +709,154 @@ pub mod macos {
                     return Ok(None);
                 };
 
-                if let Some(url) = app.executableURL() {
-                    if let Some(path) = url.path() {
-                        let executable = Path::new(&path.to_string())
-                            .file_name()
-                            .map(|name| name.to_string_lossy().to_string());
-                        if executable.is_some() {
-                            return Ok(executable);
-                        }
-                    }
-                }
+                let executable_path = app
+                    .executableURL()
+                    .and_then(|url| url.path())
+                    .map(|path| path.to_string());
+                let executable = executable_path.as_deref().and_then(|path| {
+                    Path::new(path)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                });
 
-                if let Some(bundle_id) = app.bundleIdentifier() {
-                    return Ok(Some(bundle_id.to_string()));
-                }
-
-                Ok(app.localizedName().map(|name| name.to_string()))
+                Ok(Some(AppIdentity {
+                    label: app.localizedName().map(|name| name.to_string()),
+                    executable,
+                    executable_path,
+                    bundle_id: app.bundleIdentifier().map(|bundle_id| bundle_id.to_string()),
+                    package_family_name: None,
+                }))
             }
         }
+    }
+
+    impl AppDiscoveryBackend for MacOsAppDiscoveryBackend {
+        fn backend_id(&self) -> &'static str {
+            if cfg!(target_os = "macos") {
+                "macos-applications"
+            } else {
+                "macos-unsupported"
+            }
+        }
+
+        fn discover_apps(&self) -> Result<Vec<InstalledApp>, PlatformError> {
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(PlatformError::Unsupported(
+                    "macOS app discovery is only available on macOS",
+                ))
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                let mut apps = Vec::new();
+                for root in macos_application_roots() {
+                    collect_macos_apps_from_root(&root, &mut apps)?;
+                }
+                dedupe_installed_apps(apps)
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_application_roots() -> Vec<PathBuf> {
+        let mut roots = vec![
+            PathBuf::from("/Applications"),
+            PathBuf::from("/System/Applications"),
+            PathBuf::from("/System/Applications/Utilities"),
+        ];
+        if let Some(home) = std::env::var_os("HOME") {
+            roots.push(PathBuf::from(home).join("Applications"));
+        }
+        roots
+    }
+
+    #[cfg(target_os = "macos")]
+    fn collect_macos_apps_from_root(
+        root: &Path,
+        apps: &mut Vec<InstalledApp>,
+    ) -> Result<(), PlatformError> {
+        if !root.exists() {
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(root).map_err(|error| PlatformError::Io {
+            path: root.display().to_string(),
+            message: error.to_string(),
+        })? {
+            let entry = entry.map_err(|error| PlatformError::Io {
+                path: root.display().to_string(),
+                message: error.to_string(),
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("app") {
+                continue;
+            }
+
+            if let Some(app) = read_macos_bundle(&path) {
+                apps.push(app);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn read_macos_bundle(path: &Path) -> Option<InstalledApp> {
+        let plist_path = path.join("Contents").join("Info.plist");
+        let plist = PlistValue::from_file(&plist_path).ok()?;
+        let dict = plist.as_dictionary()?;
+        if dict
+            .get("LSBackgroundOnly")
+            .and_then(PlistValue::as_boolean)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+
+        let label = dict
+            .get("CFBundleDisplayName")
+            .and_then(PlistValue::as_string)
+            .or_else(|| dict.get("CFBundleName").and_then(PlistValue::as_string))
+            .map(str::trim)
+            .filter(|value: &&str| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                path.file_stem()
+                    .map(|value| value.to_string_lossy().to_string())
+            })?;
+        if label.to_ascii_lowercase().contains("helper") {
+            return None;
+        }
+
+        let executable = dict
+            .get("CFBundleExecutable")
+            .and_then(PlistValue::as_string)
+            .map(str::trim)
+            .filter(|value: &&str| !value.is_empty())
+            .map(str::to_string);
+        let executable_path = executable
+            .as_deref()
+            .map(|name| path.join("Contents").join("MacOS").join(name))
+            .filter(|path: &PathBuf| path.exists())
+            .map(|path: PathBuf| path.to_string_lossy().to_string());
+
+        Some(InstalledApp {
+            identity: AppIdentity {
+                label: Some(label),
+                executable,
+                executable_path,
+                bundle_id: dict
+                    .get("CFBundleIdentifier")
+                    .and_then(PlistValue::as_string)
+                    .map(str::trim)
+                    .filter(|value: &&str| !value.is_empty())
+                    .map(str::to_string),
+                package_family_name: None,
+            },
+            source_kinds: vec![AppDiscoverySource::ApplicationBundle],
+            source_path: Some(path.to_string_lossy().to_string()),
+        })
     }
 
     #[cfg(target_os = "macos")]
@@ -911,7 +1227,7 @@ pub mod macos {
 
 pub mod windows {
     pub use crate::windows_backend::{
-        WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend,
+        WindowsAppDiscoveryBackend, WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend,
     };
 }
 
@@ -981,5 +1297,67 @@ mod tests {
 
         assert!(recovered.path().exists());
         let _ = fs::remove_file(recovered.path());
+    }
+
+    #[test]
+    fn load_migrates_global_device_settings_into_per_device_settings() {
+        let path = unique_test_path("migrate");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": 2,
+                "activeProfileId": "default",
+                "profiles": [{
+                    "id": "default",
+                    "label": "Default (All Apps)",
+                    "appMatchers": [],
+                    "bindings": [],
+                }],
+                "managedDevices": [{
+                    "id": "mx_master_3s-1",
+                    "modelKey": "mx_master_3s",
+                    "displayName": "MX Master 3S",
+                    "nickname": null,
+                    "identityKey": null,
+                    "createdAtMs": 1,
+                    "lastSeenAtMs": null,
+                    "lastSeenTransport": "Bluetooth Low Energy"
+                }],
+                "settings": {
+                    "startMinimized": true,
+                    "startAtLogin": false,
+                    "appearanceMode": "system",
+                    "debugMode": true,
+                    "dpi": 1600,
+                    "invertHorizontalScroll": true,
+                    "gestureThreshold": 65,
+                    "deviceLayoutOverrides": {
+                        "mx_master_3s": "mx_master"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let store = JsonConfigStore::new(path.clone());
+        let config = store.load().unwrap();
+
+        assert_eq!(config.version, 3);
+        assert_eq!(config.settings.debug_mode, true);
+        assert_eq!(config.device_defaults.dpi, 1600);
+        let managed = config
+            .managed_devices
+            .into_iter()
+            .find(|device| device.id == "mx_master_3s-1")
+            .expect("expected managed device");
+        assert_eq!(managed.settings.dpi, 1600);
+        assert_eq!(managed.settings.invert_horizontal_scroll, true);
+        assert_eq!(
+            managed.settings.manual_layout_override.as_deref(),
+            Some("mx_master")
+        );
+
+        let _ = fs::remove_file(path);
     }
 }

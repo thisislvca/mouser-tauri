@@ -1,6 +1,8 @@
 export type {
   ActionDefinition,
   AppConfig,
+  AppDiscoverySnapshot,
+  AppDiscoverySource,
   AppMatcher,
   AppMatcherKind,
   AppearanceMode,
@@ -9,6 +11,8 @@ export type {
   DebugEvent as DebugEventRecord,
   DebugEventKind,
   DeviceFingerprint,
+  DeviceSettings,
+  DiscoveredApp,
   DeviceHotspot,
   DeviceInfo,
   DeviceLayout,

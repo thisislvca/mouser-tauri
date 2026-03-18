@@ -13,6 +13,16 @@ import type {
 import { useUiStore } from "./store/uiStore";
 
 let currentBootstrap: BootstrapPayload;
+const DEFAULT_DEVICE_SETTINGS: NonNullable<AppConfig["deviceDefaults"]> = {
+  dpi: 1000,
+  invertHorizontalScroll: false,
+  invertVerticalScroll: false,
+  gestureThreshold: 50,
+  gestureDeadzone: 40,
+  gestureTimeoutMs: 3000,
+  gestureCooldownMs: 500,
+  manualLayoutOverride: null,
+};
 
 function normalizedIdentityKey(identityKey: string | null | undefined) {
   const trimmed = identityKey?.trim();
@@ -31,19 +41,55 @@ function samePhysicalDevice(left: DeviceInfo, right: DeviceInfo) {
   return left.modelKey === right.modelKey;
 }
 
+function normalizeDeviceSettings(
+  settings:
+    | AppConfig["deviceDefaults"]
+    | NonNullable<AppConfig["managedDevices"]>[number]["settings"]
+    | null
+    | undefined,
+): NonNullable<AppConfig["deviceDefaults"]> {
+  return {
+    dpi: settings?.dpi ?? DEFAULT_DEVICE_SETTINGS.dpi,
+    invertHorizontalScroll:
+      settings?.invertHorizontalScroll ??
+      DEFAULT_DEVICE_SETTINGS.invertHorizontalScroll,
+    invertVerticalScroll:
+      settings?.invertVerticalScroll ??
+      DEFAULT_DEVICE_SETTINGS.invertVerticalScroll,
+    gestureThreshold:
+      settings?.gestureThreshold ?? DEFAULT_DEVICE_SETTINGS.gestureThreshold,
+    gestureDeadzone:
+      settings?.gestureDeadzone ?? DEFAULT_DEVICE_SETTINGS.gestureDeadzone,
+    gestureTimeoutMs:
+      settings?.gestureTimeoutMs ?? DEFAULT_DEVICE_SETTINGS.gestureTimeoutMs,
+    gestureCooldownMs:
+      settings?.gestureCooldownMs ?? DEFAULT_DEVICE_SETTINGS.gestureCooldownMs,
+    manualLayoutOverride:
+      settings?.manualLayoutOverride ??
+      DEFAULT_DEVICE_SETTINGS.manualLayoutOverride,
+  };
+}
+
 const apiMocks = vi.hoisted(() => ({
   bootstrapLoad: vi.fn(),
   configSave: vi.fn(),
+  appSettingsUpdate: vi.fn(),
+  deviceDefaultsUpdate: vi.fn(),
+  appDiscoveryRefresh: vi.fn(),
   profilesCreate: vi.fn(),
   profilesUpdate: vi.fn(),
   profilesDelete: vi.fn(),
   devicesAdd: vi.fn(),
+  devicesUpdateSettings: vi.fn(),
+  devicesUpdateProfile: vi.fn(),
+  devicesUpdateNickname: vi.fn(),
   devicesRemove: vi.fn(),
   devicesSelect: vi.fn(),
   devicesSelectMock: vi.fn(),
   importLegacyConfig: vi.fn(),
   debugClearLog: vi.fn(),
   deviceChangedListen: vi.fn(async () => () => undefined),
+  appDiscoveryChangedListen: vi.fn(async () => () => undefined),
   profileChangedListen: vi.fn(async () => () => undefined),
   engineStatusChangedListen: vi.fn(async () => () => undefined),
   debugEventListen: vi.fn(async () => () => undefined),
@@ -52,16 +98,23 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("./lib/api", () => ({
   bootstrapLoad: apiMocks.bootstrapLoad,
   configSave: apiMocks.configSave,
+  appSettingsUpdate: apiMocks.appSettingsUpdate,
+  deviceDefaultsUpdate: apiMocks.deviceDefaultsUpdate,
+  appDiscoveryRefresh: apiMocks.appDiscoveryRefresh,
   profilesCreate: apiMocks.profilesCreate,
   profilesUpdate: apiMocks.profilesUpdate,
   profilesDelete: apiMocks.profilesDelete,
   devicesAdd: apiMocks.devicesAdd,
+  devicesUpdateSettings: apiMocks.devicesUpdateSettings,
+  devicesUpdateProfile: apiMocks.devicesUpdateProfile,
+  devicesUpdateNickname: apiMocks.devicesUpdateNickname,
   devicesRemove: apiMocks.devicesRemove,
   devicesSelect: apiMocks.devicesSelect,
   devicesSelectMock: apiMocks.devicesSelectMock,
   importLegacyConfig: apiMocks.importLegacyConfig,
   debugClearLog: apiMocks.debugClearLog,
   events: {
+    appDiscoveryChangedEvent: { listen: apiMocks.appDiscoveryChangedListen },
     deviceChangedEvent: { listen: apiMocks.deviceChangedListen },
     profileChangedEvent: { listen: apiMocks.profileChangedListen },
     engineStatusChangedEvent: { listen: apiMocks.engineStatusChangedListen },
@@ -101,7 +154,18 @@ function makeBootstrap(): BootstrapPayload {
         modelKey: "mx_master_3s",
         displayName: "MX Master 3S",
         nickname: null,
+        profileId: null,
         identityKey: "mock:mx_master_3s:1",
+        settings: {
+          dpi: 1200,
+          invertHorizontalScroll: false,
+          invertVerticalScroll: false,
+          gestureThreshold: 50,
+          gestureDeadzone: 40,
+          gestureTimeoutMs: 3000,
+          gestureCooldownMs: 500,
+          manualLayoutOverride: null,
+        },
         createdAtMs: 1,
         lastSeenAtMs: 1,
         lastSeenTransport: "Bluetooth Low Energy",
@@ -110,16 +174,18 @@ function makeBootstrap(): BootstrapPayload {
     settings: {
       startMinimized: true,
       startAtLogin: false,
+      appearanceMode: "system",
+      debugMode: false,
+    },
+    deviceDefaults: {
+      dpi: 1200,
       invertHorizontalScroll: false,
       invertVerticalScroll: false,
-      dpi: 1200,
       gestureThreshold: 50,
       gestureDeadzone: 40,
       gestureTimeoutMs: 3000,
       gestureCooldownMs: 500,
-      appearanceMode: "system",
-      debugMode: false,
-      deviceLayoutOverrides: {},
+      manualLayoutOverride: null,
     },
   };
 
@@ -218,6 +284,44 @@ function makeBootstrap(): BootstrapPayload {
         iconAsset: null,
       },
     ],
+    appDiscovery: {
+      suggestedApps: [
+        {
+          id: "vscode",
+          label: "VS Code",
+          description: "Code.exe",
+          matchers: [{ kind: "executable", value: "Code.exe" }],
+          iconAsset: "/assets/apps/vscode.png",
+          sourceKinds: ["catalog"],
+          sourcePath: null,
+          suggested: true,
+        },
+      ],
+      browseApps: [
+        {
+          id: "vscode",
+          label: "VS Code",
+          description: "Code.exe",
+          matchers: [{ kind: "executable", value: "Code.exe" }],
+          iconAsset: "/assets/apps/vscode.png",
+          sourceKinds: ["catalog"],
+          sourcePath: null,
+          suggested: true,
+        },
+        {
+          id: "edge",
+          label: "Microsoft Edge",
+          description: "msedge.exe",
+          matchers: [{ kind: "executable", value: "msedge.exe" }],
+          iconAsset: null,
+          sourceKinds: ["catalog"],
+          sourcePath: null,
+          suggested: true,
+        },
+      ],
+      lastScanAtMs: 1,
+      scanning: false,
+    },
     supportedDevices: [
       {
         key: "mx_master_3s",
@@ -334,15 +438,22 @@ describe("App", () => {
 
     apiMocks.bootstrapLoad.mockReset();
     apiMocks.configSave.mockReset();
+    apiMocks.appSettingsUpdate.mockReset();
+    apiMocks.deviceDefaultsUpdate.mockReset();
+    apiMocks.appDiscoveryRefresh.mockReset();
     apiMocks.profilesCreate.mockReset();
     apiMocks.profilesUpdate.mockReset();
     apiMocks.profilesDelete.mockReset();
     apiMocks.devicesAdd.mockReset();
+    apiMocks.devicesUpdateSettings.mockReset();
+    apiMocks.devicesUpdateProfile.mockReset();
+    apiMocks.devicesUpdateNickname.mockReset();
     apiMocks.devicesRemove.mockReset();
     apiMocks.devicesSelect.mockReset();
     apiMocks.devicesSelectMock.mockReset();
     apiMocks.importLegacyConfig.mockReset();
     apiMocks.debugClearLog.mockReset();
+    apiMocks.appDiscoveryChangedListen.mockClear();
     apiMocks.deviceChangedListen.mockClear();
     apiMocks.profileChangedListen.mockClear();
     apiMocks.engineStatusChangedListen.mockClear();
@@ -356,6 +467,38 @@ describe("App", () => {
       };
       return currentBootstrap;
     });
+    apiMocks.appSettingsUpdate.mockImplementation(
+      async (settings: AppConfig["settings"]) => {
+        currentBootstrap = {
+          ...currentBootstrap,
+          config: {
+            ...currentBootstrap.config,
+            settings,
+          },
+          engineSnapshot: {
+            ...currentBootstrap.engineSnapshot,
+            engineStatus: {
+              ...currentBootstrap.engineSnapshot.engineStatus,
+              debugMode: settings.debugMode,
+            },
+          },
+        };
+        return currentBootstrap;
+      },
+    );
+    apiMocks.deviceDefaultsUpdate.mockImplementation(
+      async (settings: NonNullable<AppConfig["deviceDefaults"]>) => {
+        currentBootstrap = {
+          ...currentBootstrap,
+          config: {
+            ...currentBootstrap.config,
+            deviceDefaults: settings,
+          },
+        };
+        return currentBootstrap;
+      },
+    );
+    apiMocks.appDiscoveryRefresh.mockImplementation(async () => currentBootstrap);
     apiMocks.profilesUpdate.mockImplementation(
       async (updatedProfile: AppConfig["profiles"][number]) => {
         currentBootstrap = {
@@ -420,7 +563,9 @@ describe("App", () => {
         dpiMax: supportedDevice.dpiMax,
         connected: false,
         batteryLevel: null,
-        currentDpi: currentBootstrap.config.settings.dpi,
+        currentDpi: normalizeDeviceSettings(
+          currentBootstrap.config.deviceDefaults,
+        ).dpi,
         fingerprint: {
           identityKey: `mock:${modelKey}:${(currentBootstrap.config.managedDevices?.length ?? 0) + 1}`,
           serialNumber: null,
@@ -443,7 +588,11 @@ describe("App", () => {
               modelKey,
               displayName: supportedDevice.displayName,
               nickname: null,
+              profileId: null,
               identityKey: nextDevice.fingerprint?.identityKey ?? null,
+              settings: normalizeDeviceSettings(
+                currentBootstrap.config.deviceDefaults,
+              ),
               createdAtMs: 1,
               lastSeenAtMs: null,
               lastSeenTransport: null,
@@ -457,6 +606,104 @@ describe("App", () => {
       };
       return currentBootstrap;
     });
+    apiMocks.devicesUpdateSettings.mockImplementation(
+      async (
+        deviceKey: string,
+        settings: NonNullable<AppConfig["deviceDefaults"]>,
+      ) => {
+        currentBootstrap = {
+          ...currentBootstrap,
+          config: {
+            ...currentBootstrap.config,
+            managedDevices: (currentBootstrap.config.managedDevices ?? []).map(
+              (device) =>
+                device.id === deviceKey ? { ...device, settings } : device,
+            ),
+          },
+          engineSnapshot: {
+            ...currentBootstrap.engineSnapshot,
+            devices: currentBootstrap.engineSnapshot.devices.map((device) =>
+              device.key === deviceKey
+                ? { ...device, currentDpi: settings.dpi }
+                : device,
+            ),
+            activeDevice:
+              currentBootstrap.engineSnapshot.activeDevice?.key === deviceKey
+                ? {
+                    ...currentBootstrap.engineSnapshot.activeDevice,
+                    currentDpi: settings.dpi,
+                  }
+                : currentBootstrap.engineSnapshot.activeDevice,
+          },
+        };
+        return currentBootstrap;
+      },
+    );
+    apiMocks.devicesUpdateProfile.mockImplementation(
+      async (deviceKey: string, profileId: string | null) => {
+        currentBootstrap = {
+          ...currentBootstrap,
+          config: {
+            ...currentBootstrap.config,
+            activeProfileId: profileId ?? "default",
+            managedDevices: (currentBootstrap.config.managedDevices ?? []).map(
+              (device) =>
+                device.id === deviceKey ? { ...device, profileId } : device,
+            ),
+          },
+          engineSnapshot: {
+            ...currentBootstrap.engineSnapshot,
+            engineStatus: {
+              ...currentBootstrap.engineSnapshot.engineStatus,
+              activeProfileId: profileId ?? "default",
+            },
+          },
+        };
+        return currentBootstrap;
+      },
+    );
+    apiMocks.devicesUpdateNickname.mockImplementation(
+      async (deviceKey: string, nickname: string | null) => {
+        const nextDisplayName =
+          nickname ??
+          currentBootstrap.engineSnapshot.devices.find(
+            (device) => device.key === deviceKey,
+          )?.productName ??
+          currentBootstrap.engineSnapshot.devices.find(
+            (device) => device.key === deviceKey,
+          )?.displayName ??
+          "Unknown device";
+        currentBootstrap = {
+          ...currentBootstrap,
+          config: {
+            ...currentBootstrap.config,
+            managedDevices: (currentBootstrap.config.managedDevices ?? []).map(
+              (device) =>
+                device.id === deviceKey
+                  ? { ...device, nickname, displayName: nextDisplayName }
+                  : device,
+            ),
+          },
+          engineSnapshot: {
+            ...currentBootstrap.engineSnapshot,
+            devices: currentBootstrap.engineSnapshot.devices.map((device) =>
+              device.key === deviceKey
+                ? { ...device, displayName: nextDisplayName, nickname }
+                : device,
+            ),
+            activeDevice:
+              currentBootstrap.engineSnapshot.activeDevice?.key === deviceKey
+                ? {
+                    ...currentBootstrap.engineSnapshot.activeDevice,
+                    displayName: nextDisplayName,
+                    nickname,
+                  }
+                : currentBootstrap.engineSnapshot.activeDevice,
+          },
+        };
+        return currentBootstrap;
+      },
+    );
     apiMocks.devicesRemove.mockImplementation(async (deviceKey: string) => {
       currentBootstrap = {
         ...currentBootstrap,
@@ -493,6 +740,9 @@ describe("App", () => {
           ),
       }));
       const activeDevice = devices.find((device) => device.key === deviceKey) ?? null;
+      const assignedProfileId =
+        currentBootstrap.config.managedDevices?.find((device) => device.id === deviceKey)
+          ?.profileId ?? currentBootstrap.config.activeProfileId;
       currentBootstrap = {
         ...currentBootstrap,
         engineSnapshot: {
@@ -502,9 +752,14 @@ describe("App", () => {
           activeDevice,
           engineStatus: {
             ...currentBootstrap.engineSnapshot.engineStatus,
+            activeProfileId: assignedProfileId,
             selectedDeviceKey: deviceKey,
             connected: Boolean(activeDevice),
           },
+        },
+        config: {
+          ...currentBootstrap.config,
+          activeProfileId: assignedProfileId,
         },
       };
       return currentBootstrap.engineSnapshot;
@@ -581,13 +836,30 @@ describe("App", () => {
     await user.click(await screen.findByTestId("dpi-preset-1600"));
 
     await waitFor(() => {
-      expect(apiMocks.configSave).toHaveBeenCalled();
-      const calls = apiMocks.configSave.mock.calls;
+      expect(apiMocks.devicesUpdateSettings).toHaveBeenCalled();
+      const calls = apiMocks.devicesUpdateSettings.mock.calls;
       const lastCall = calls[calls.length - 1];
-      expect(lastCall?.[0]).toEqual(
+      expect(lastCall?.[0]).toBe("mx_master_3s");
+      expect(lastCall?.[1]).toEqual(
         expect.objectContaining({
-          settings: expect.objectContaining({ dpi: 1600 }),
+          dpi: 1600,
         }),
+      );
+    });
+  });
+
+  it("assigns a profile to the selected device", async () => {
+    currentBootstrap = makeImportedBootstrap();
+    const { user } = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Tune" }));
+    await user.click(await screen.findByRole("combobox", { name: "Assigned profile" }));
+    await user.click(await screen.findByRole("option", { name: "VS Code" }));
+
+    await waitFor(() => {
+      expect(apiMocks.devicesUpdateProfile).toHaveBeenCalledWith(
+        "mx_master_3s",
+        "vscode",
       );
     });
   });
@@ -635,13 +907,26 @@ describe("App", () => {
     await user.click(screen.getByText("Start at login"));
 
     await waitFor(() => {
-      expect(apiMocks.configSave).toHaveBeenCalled();
-      const calls = apiMocks.configSave.mock.calls;
+      expect(apiMocks.appSettingsUpdate).toHaveBeenCalled();
+      const calls = apiMocks.appSettingsUpdate.mock.calls;
       const lastCall = calls[calls.length - 1];
       expect(lastCall?.[0]).toEqual(
-        expect.objectContaining({
-          settings: expect.objectContaining({ startAtLogin: true }),
-        }),
+        expect.objectContaining({ startAtLogin: true }),
+      );
+    });
+  });
+
+  it("updates defaults for newly added devices from app settings", async () => {
+    const { user } = renderApp();
+    await user.click(await screen.findByRole("button", { name: "App settings" }));
+    await user.click(await screen.findByRole("button", { name: "1600" }));
+
+    await waitFor(() => {
+      expect(apiMocks.deviceDefaultsUpdate).toHaveBeenCalled();
+      const calls = apiMocks.deviceDefaultsUpdate.mock.calls;
+      const lastCall = calls[calls.length - 1];
+      expect(lastCall?.[0]).toEqual(
+        expect.objectContaining({ dpi: 1600 }),
       );
     });
   });

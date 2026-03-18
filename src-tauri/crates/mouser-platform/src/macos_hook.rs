@@ -2,13 +2,13 @@
 use crate::macos_iokit::{enumerate_iokit_infos, MacOsIoKitInfo, MacOsNativeHidDevice};
 #[cfg(target_os = "macos")]
 use crate::{horizontal_scroll_control, push_bounded_hook_event};
-use crate::{HookBackend, HookBackendEvent, HookCapabilities, PlatformError};
+use crate::{HookBackend, HookBackendEvent, HookBackendSettings, HookCapabilities, PlatformError};
 #[cfg(target_os = "macos")]
 use mouser_core::{
     build_connected_device_info, hydrate_identity_key, Binding, DebugEventKind, DeviceFingerprint,
     LogicalControl,
 };
-use mouser_core::{Profile, Settings};
+use mouser_core::Profile;
 
 #[cfg(not(target_os = "macos"))]
 pub struct MacOsHookBackend;
@@ -42,7 +42,7 @@ impl HookBackend for MacOsHookBackend {
 
     fn configure(
         &self,
-        _settings: &Settings,
+        _settings: &HookBackendSettings,
         _profile: &Profile,
         _enabled: bool,
     ) -> Result<(), PlatformError> {
@@ -167,7 +167,7 @@ struct MacOsHookConfig {
 
 #[cfg(target_os = "macos")]
 impl MacOsHookConfig {
-    fn from_runtime(settings: &Settings, profile: &Profile, enabled: bool) -> Self {
+    fn from_runtime(settings: &HookBackendSettings, profile: &Profile, enabled: bool) -> Self {
         Self {
             profile_id: profile.id.clone(),
             enabled,
@@ -318,7 +318,7 @@ impl MacOsHookShared {
         }
     }
 
-    fn reconfigure(&self, settings: &Settings, profile: &Profile, enabled: bool) {
+    fn reconfigure(&self, settings: &HookBackendSettings, profile: &Profile, enabled: bool) {
         let next = Arc::new(MacOsHookConfig::from_runtime(settings, profile, enabled));
         let changed = {
             let mut config = self.config.write().unwrap();
@@ -797,7 +797,7 @@ impl HookBackend for MacOsHookBackend {
 
     fn configure(
         &self,
-        settings: &Settings,
+        settings: &HookBackendSettings,
         profile: &Profile,
         enabled: bool,
     ) -> Result<(), PlatformError> {

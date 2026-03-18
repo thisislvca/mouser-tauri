@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use mouser_core::{
     default_config, normalize_bindings, AppMatcher, AppMatcherKind, AppearanceMode, Binding,
-    LegacyImportReport, LogicalControl, Profile, Settings,
+    DeviceSettings, LegacyImportReport, LogicalControl, Profile, Settings,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -49,7 +49,9 @@ pub fn import_legacy_value(value: Value, source_path: Option<String>) -> LegacyI
     }
 
     if let Some(settings) = value.get("settings").and_then(Value::as_object) {
-        config.settings = import_settings(settings, &mut warnings);
+        let (app_settings, device_defaults) = import_settings(settings, &mut warnings);
+        config.settings = app_settings;
+        config.device_defaults = device_defaults;
     }
 
     config.profiles.clear();
@@ -74,25 +76,33 @@ pub fn import_legacy_value(value: Value, source_path: Option<String>) -> LegacyI
 fn import_settings(
     settings: &serde_json::Map<String, Value>,
     warnings: &mut Vec<String>,
-) -> Settings {
-    let mut imported = default_config().settings;
+) -> (Settings, DeviceSettings) {
+    let defaults = default_config();
+    let mut imported = defaults.settings;
+    let mut device_defaults = defaults.device_defaults;
 
     for (key, value) in settings {
         match key.as_str() {
             "start_minimized" => imported.start_minimized = value.as_bool().unwrap_or(true),
             "start_with_windows" => imported.start_at_login = value.as_bool().unwrap_or(false),
             "invert_hscroll" => {
-                imported.invert_horizontal_scroll = value.as_bool().unwrap_or(false)
+                device_defaults.invert_horizontal_scroll = value.as_bool().unwrap_or(false)
             }
-            "invert_vscroll" => imported.invert_vertical_scroll = value.as_bool().unwrap_or(false),
-            "dpi" => imported.dpi = value.as_u64().unwrap_or(1000) as u16,
-            "gesture_threshold" => imported.gesture_threshold = value.as_u64().unwrap_or(50) as u16,
-            "gesture_deadzone" => imported.gesture_deadzone = value.as_u64().unwrap_or(40) as u16,
+            "invert_vscroll" => {
+                device_defaults.invert_vertical_scroll = value.as_bool().unwrap_or(false)
+            }
+            "dpi" => device_defaults.dpi = value.as_u64().unwrap_or(1000) as u16,
+            "gesture_threshold" => {
+                device_defaults.gesture_threshold = value.as_u64().unwrap_or(50) as u16
+            }
+            "gesture_deadzone" => {
+                device_defaults.gesture_deadzone = value.as_u64().unwrap_or(40) as u16
+            }
             "gesture_timeout_ms" => {
-                imported.gesture_timeout_ms = value.as_u64().unwrap_or(3000) as u32
+                device_defaults.gesture_timeout_ms = value.as_u64().unwrap_or(3000) as u32
             }
             "gesture_cooldown_ms" => {
-                imported.gesture_cooldown_ms = value.as_u64().unwrap_or(500) as u32
+                device_defaults.gesture_cooldown_ms = value.as_u64().unwrap_or(500) as u32
             }
             "appearance_mode" => {
                 imported.appearance_mode = match value.as_str() {
@@ -103,7 +113,7 @@ fn import_settings(
             }
             "debug_mode" => imported.debug_mode = value.as_bool().unwrap_or(false),
             "device_layout_overrides" => {
-                imported.device_layout_overrides = value
+                let overrides = value
                     .as_object()
                     .map(|entries| {
                         entries
@@ -116,6 +126,14 @@ fn import_settings(
                             .collect::<BTreeMap<_, _>>()
                     })
                     .unwrap_or_default();
+                if overrides.len() == 1 {
+                    device_defaults.manual_layout_override =
+                        overrides.values().next().cloned();
+                } else if !overrides.is_empty() {
+                    warnings.push(
+                        "Imported multiple legacy layout overrides; add the device first, then re-apply any per-device layout overrides in Mouser Tauri.".to_string(),
+                    );
+                }
             }
             unsupported => warnings.push(format!(
                 "Ignored unsupported legacy setting key `{unsupported}`"
@@ -123,7 +141,7 @@ fn import_settings(
         }
     }
 
-    imported
+    (imported, device_defaults)
 }
 
 fn import_profile(profile_id: &str, raw_profile: &Value, warnings: &mut Vec<String>) -> Profile {

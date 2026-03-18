@@ -16,9 +16,11 @@ hidapi = { version = "2.6.5", features = ["macos-shared-device"] }
 objc2-app-kit = { version = "0.3.2", features = ["NSRunningApplication", "NSWorkspace", "NSEvent", "NSGraphicsContext", "objc2-core-graphics"] }
 objc2-core-graphics = "0.3.2"
 objc2-foundation = { version = "0.3.2", features = ["NSGeometry"] }
+plist = "1.8.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 hidapi = { version = "2.6.5", default-features = false, features = ["windows-native"] }
+lnk = "0.6.3"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",

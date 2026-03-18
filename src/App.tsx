@@ -52,12 +52,17 @@ import { Slider } from "./components/ui/slider";
 import { Switch } from "./components/ui/switch";
 import { Textarea } from "./components/ui/textarea";
 import {
+  appDiscoveryRefresh,
+  appSettingsUpdate,
   bootstrapLoad,
-  configSave,
   debugClearLog,
+  deviceDefaultsUpdate,
   devicesAdd,
   devicesRemove,
   devicesSelect,
+  devicesUpdateNickname,
+  devicesUpdateProfile,
+  devicesUpdateSettings,
   importLegacyConfig,
   profilesCreate,
   profilesDelete,
@@ -67,11 +72,14 @@ import { sampleLegacyConfig } from "./lib/sampleLegacyConfig";
 import type {
   ActionDefinition,
   AppConfig,
+  AppMatcher,
+  AppMatcherKind,
   Binding,
   BootstrapPayload,
   DebugEventRecord,
   DeviceInfo,
   DeviceLayout,
+  DiscoveredApp,
   ImportLegacyRequest,
   KnownDeviceSpec,
   LogicalControl,
@@ -134,6 +142,16 @@ type AppSelectOption = {
 
 const EMPTY_SELECT_VALUE = "__empty__";
 const DPI_PRESETS = [400, 800, 1000, 1600, 2400, 4000, 6000, 8000];
+const DEFAULT_DEVICE_SETTINGS: NonNullable<AppConfig["deviceDefaults"]> = {
+  dpi: 1000,
+  invertHorizontalScroll: false,
+  invertVerticalScroll: false,
+  gestureThreshold: 50,
+  gestureDeadzone: 40,
+  gestureTimeoutMs: 3000,
+  gestureCooldownMs: 500,
+  manualLayoutOverride: null,
+};
 
 function normalizedIdentityKey(identityKey: string | null | undefined) {
   const trimmed = identityKey?.trim();
@@ -150,6 +168,179 @@ function samePhysicalDevice(left: DeviceInfo, right: DeviceInfo) {
     return false;
   }
   return left.modelKey === right.modelKey;
+}
+
+function normalizeDeviceSettings(
+  settings:
+    | AppConfig["deviceDefaults"]
+    | NonNullable<AppConfig["managedDevices"]>[number]["settings"]
+    | null
+    | undefined,
+): NonNullable<AppConfig["deviceDefaults"]> {
+  return {
+    dpi: settings?.dpi ?? DEFAULT_DEVICE_SETTINGS.dpi,
+    invertHorizontalScroll:
+      settings?.invertHorizontalScroll ??
+      DEFAULT_DEVICE_SETTINGS.invertHorizontalScroll,
+    invertVerticalScroll:
+      settings?.invertVerticalScroll ??
+      DEFAULT_DEVICE_SETTINGS.invertVerticalScroll,
+    gestureThreshold:
+      settings?.gestureThreshold ?? DEFAULT_DEVICE_SETTINGS.gestureThreshold,
+    gestureDeadzone:
+      settings?.gestureDeadzone ?? DEFAULT_DEVICE_SETTINGS.gestureDeadzone,
+    gestureTimeoutMs:
+      settings?.gestureTimeoutMs ?? DEFAULT_DEVICE_SETTINGS.gestureTimeoutMs,
+    gestureCooldownMs:
+      settings?.gestureCooldownMs ?? DEFAULT_DEVICE_SETTINGS.gestureCooldownMs,
+    manualLayoutOverride:
+      settings?.manualLayoutOverride ??
+      DEFAULT_DEVICE_SETTINGS.manualLayoutOverride,
+  };
+}
+
+function normalizeOptionalText(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function normalizeAppMatcherValue(kind: AppMatcherKind, value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  switch (kind) {
+    case "executable": {
+      const segments = trimmed.split("\\").join("/").split("/");
+      return (segments[segments.length - 1] ?? trimmed).toLowerCase();
+    }
+    case "executable_path":
+      return trimmed.split("\\").join("/").toLowerCase();
+    case "bundle_id":
+    case "package_family_name":
+      return trimmed.toLowerCase();
+  }
+}
+
+function matchersOverlap(left: AppMatcher[], right: AppMatcher[]) {
+  return left.some((leftMatcher) =>
+    right.some(
+      (rightMatcher) =>
+        leftMatcher.kind === rightMatcher.kind &&
+        normalizeAppMatcherValue(leftMatcher.kind, leftMatcher.value) ===
+          normalizeAppMatcherValue(rightMatcher.kind, rightMatcher.value),
+    ),
+  );
+}
+
+function profileMatchesDiscoveredApp(profile: Profile, app: DiscoveredApp) {
+  return profile.appMatchers.length > 0 && matchersOverlap(profile.appMatchers, app.matchers);
+}
+
+function resolveKnownApp(profile: Profile, knownApps: BootstrapPayload["knownApps"]) {
+  const executableMatcher = profile.appMatchers.find(
+    (matcher) => matcher.kind === "executable",
+  );
+  if (!executableMatcher) {
+    return null;
+  }
+
+  return (
+    knownApps.find(
+      (app) =>
+        normalizeAppMatcherValue("executable", app.executable) ===
+        normalizeAppMatcherValue("executable", executableMatcher.value),
+    ) ?? null
+  );
+}
+
+function resolveProfileApp(
+  profile: Profile,
+  discoveredApps: DiscoveredApp[],
+  knownApps: BootstrapPayload["knownApps"],
+) {
+  return (
+    discoveredApps.find((app) => profileMatchesDiscoveredApp(profile, app)) ??
+    resolveKnownApp(profile, knownApps)
+  );
+}
+
+function formatAppMatcher(matcher: AppMatcher) {
+  switch (matcher.kind) {
+    case "executable":
+      return matcher.value;
+    case "executable_path":
+      return `Path: ${matcher.value}`;
+    case "bundle_id":
+      return `Bundle ID: ${matcher.value}`;
+    case "package_family_name":
+      return `Package: ${matcher.value}`;
+  }
+}
+
+function parseDraftAppMatcher(value: string): AppMatcher {
+  const trimmed = value.trim();
+  const separators: Array<[AppMatcherKind, string]> = [
+    ["bundle_id", "bundle id:"],
+    ["bundle_id", "bundle:"],
+    ["package_family_name", "package family:"],
+    ["package_family_name", "package:"],
+    ["executable_path", "path:"],
+    ["executable", "exe:"],
+  ];
+
+  for (const [kind, prefix] of separators) {
+    if (trimmed.toLowerCase().startsWith(prefix)) {
+      return {
+        kind,
+        value: trimmed.slice(prefix.length).trim(),
+      };
+    }
+  }
+
+  return { kind: "executable", value: trimmed };
+}
+
+function formatDiscoverySource(
+  source: DiscoveredApp["sourceKinds"][number] | undefined,
+) {
+  switch (source) {
+    case "application_bundle":
+      return "Applications";
+    case "start_menu_shortcut":
+      return "Start Menu";
+    case "registry":
+      return "Registry";
+    case "package":
+      return "Package";
+    case "running_process":
+      return "Running";
+    case "catalog":
+      return "Catalog";
+    default:
+      return "Installed";
+  }
+}
+
+function findManagedDevice(
+  config: AppConfig,
+  deviceKey: string | null | undefined,
+) {
+  if (!deviceKey) {
+    return null;
+  }
+
+  return config.managedDevices?.find((device) => device.id === deviceKey) ?? null;
+}
+
+function selectedDeviceSettings(
+  config: AppConfig,
+  deviceKey: string | null | undefined,
+) {
+  return normalizeDeviceSettings(
+    findManagedDevice(config, deviceKey)?.settings ?? config.deviceDefaults,
+  );
 }
 
 function App() {
@@ -175,7 +366,9 @@ function App() {
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const [importSourcePath, setImportSourcePath] = useState("");
   const [isAddDeviceOpen, setAddDeviceOpen] = useState(false);
+  const [isAppSidebarOpen, setAppSidebarOpen] = useState(false);
   const [isAppSettingsOpen, setAppSettingsOpen] = useState(false);
+  const [appSearchQuery, setAppSearchQuery] = useState("");
   const lastActiveProfileIdRef = useRef<string | null>(null);
 
   const bootstrapQuery = useQuery({
@@ -198,8 +391,46 @@ function App() {
   const invalidateBootstrap = () =>
     queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
 
-  const configMutation = useMutation({
-    mutationFn: configSave,
+  const appSettingsMutation = useMutation({
+    mutationFn: appSettingsUpdate,
+    onSuccess: setBootstrapQueryData,
+  });
+  const deviceDefaultsMutation = useMutation({
+    mutationFn: deviceDefaultsUpdate,
+    onSuccess: setBootstrapQueryData,
+  });
+  const appDiscoveryRefreshMutation = useMutation({
+    mutationFn: appDiscoveryRefresh,
+    onSuccess: setBootstrapQueryData,
+  });
+  const updateDeviceSettingsMutation = useMutation({
+    mutationFn: ({
+      deviceKey,
+      settings,
+    }: {
+      deviceKey: string;
+      settings: NonNullable<AppConfig["deviceDefaults"]>;
+    }) => devicesUpdateSettings(deviceKey, settings),
+    onSuccess: setBootstrapQueryData,
+  });
+  const updateDeviceProfileMutation = useMutation({
+    mutationFn: ({
+      deviceKey,
+      profileId,
+    }: {
+      deviceKey: string;
+      profileId: string | null;
+    }) => devicesUpdateProfile(deviceKey, profileId),
+    onSuccess: setBootstrapQueryData,
+  });
+  const updateDeviceNicknameMutation = useMutation({
+    mutationFn: ({
+      deviceKey,
+      nickname,
+    }: {
+      deviceKey: string;
+      nickname: string | null;
+    }) => devicesUpdateNickname(deviceKey, nickname),
     onSuccess: setBootstrapQueryData,
   });
   const createProfileMutation = useMutation({
@@ -293,12 +524,19 @@ function App() {
   }, [bootstrapQuery.data, setShellMode, shellMode]);
 
   useEffect(() => {
+    if (shellMode === "dashboard") {
+      setAppSidebarOpen(false);
+    }
+  }, [shellMode]);
+
+  useEffect(() => {
     if (!bootstrapQuery.data?.config.settings.debugMode) {
       return;
     }
 
     const { config, engineSnapshot } = bootstrapQuery.data;
     const activeDevice = engineSnapshot.activeDevice;
+    const deviceSettings = selectedDeviceSettings(config, activeDevice?.key);
     const liveDevice =
       activeDevice == null
         ? null
@@ -307,9 +545,9 @@ function App() {
           ) ?? null);
 
     console.debug("[mouser:dpi]", {
-      configuredDpi: config.settings.dpi,
+      configuredDpi: deviceSettings.dpi,
       configuredMatchesLive: liveDevice
-        ? config.settings.dpi === liveDevice.currentDpi
+        ? deviceSettings.dpi === liveDevice.currentDpi
         : null,
       activeDevice: activeDevice
         ? {
@@ -343,7 +581,11 @@ function App() {
 
   const bootstrap = bootstrapQuery.data;
   const isMutating =
-    configMutation.isPending ||
+    appSettingsMutation.isPending ||
+    deviceDefaultsMutation.isPending ||
+    updateDeviceSettingsMutation.isPending ||
+    updateDeviceProfileMutation.isPending ||
+    updateDeviceNicknameMutation.isPending ||
     createProfileMutation.isPending ||
     updateProfileMutation.isPending ||
     deleteProfileMutation.isPending ||
@@ -378,10 +620,12 @@ function App() {
     config,
     availableActions,
     knownApps,
+    appDiscovery,
     engineSnapshot,
     layouts,
     platformCapabilities,
   } = bootstrap;
+  const discoveredApps = appDiscovery.browseApps;
   const selectedProfile =
     config.profiles.find((profile) => profile.id === selectedProfileId) ??
     config.profiles.find((profile) => profile.id === config.activeProfileId) ??
@@ -401,10 +645,20 @@ function App() {
     updateProfileMutation.mutate(nextProfile);
   };
 
-  const saveSettings = (mutateConfig: (nextConfig: AppConfig) => void) => {
-    const nextConfig = cloneConfig(config);
-    mutateConfig(nextConfig);
-    configMutation.mutate(nextConfig);
+  const saveAppSettings = (mutateSettings: (nextSettings: AppConfig["settings"]) => void) => {
+    const nextSettings = {
+      ...config.settings,
+    };
+    mutateSettings(nextSettings);
+    appSettingsMutation.mutate(nextSettings);
+  };
+
+  const saveDeviceDefaults = (
+    mutateSettings: (nextSettings: NonNullable<AppConfig["deviceDefaults"]>) => void,
+  ) => {
+    const nextSettings = normalizeDeviceSettings(config.deviceDefaults);
+    mutateSettings(nextSettings);
+    deviceDefaultsMutation.mutate(nextSettings);
   };
 
   const openDeviceDetail = (
@@ -445,8 +699,49 @@ function App() {
     setActiveSection("profiles");
   };
 
+  const openAppDiscovery = () => {
+    setAppSidebarOpen(true);
+    setAppSearchQuery("");
+    if (
+      appDiscovery.browseApps.length === 0 &&
+      !appDiscoveryRefreshMutation.isPending
+    ) {
+      appDiscoveryRefreshMutation.mutate();
+    }
+  };
+
+  const selectOrCreateProfileForApp = (app: DiscoveredApp) => {
+    const existingProfile = config.profiles.find((profile) =>
+      profileMatchesDiscoveredApp(profile, app),
+    );
+    if (existingProfile) {
+      setSelectedProfileId(existingProfile.id);
+      setActiveSection("profiles");
+      setAppSidebarOpen(false);
+      return;
+    }
+
+    const id = makeProfileId(app.label, config);
+    createProfileMutation.mutate(
+      {
+        id,
+        label: app.label,
+        appMatchers: app.matchers.map((matcher) => ({ ...matcher })),
+        bindings: selectedProfile.bindings.map((binding) => ({ ...binding })),
+      },
+      {
+        onSuccess: () => {
+          setSelectedProfileId(id);
+          setActiveSection("profiles");
+          setAppSidebarOpen(false);
+        },
+      },
+    );
+  };
+
   const shellTitle =
     activeDevice?.displayName ?? SECTION_META[activeSection].label;
+  const activeManagedDevice = findManagedDevice(config, activeDevice?.key);
   const batteryLabel =
     activeDevice?.batteryLevel != null
       ? `${activeDevice.batteryLevel}%`
@@ -495,11 +790,7 @@ function App() {
             <div className="flex items-center gap-2">
               {isMutating && <StatusPill tone="accent" value="Applying" />}
               {config.profiles.slice(0, 5).map((profile) => {
-                const app = profile.appMatchers[0]?.value
-                  ? knownApps.find(
-                      (a) => a.executable === profile.appMatchers[0]?.value,
-                    )
-                  : null;
+                const app = resolveProfileApp(profile, discoveredApps, knownApps);
                 return (
                   <button
                     className={cn(
@@ -532,10 +823,7 @@ function App() {
               })}
               <button
                 className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--muted-foreground)] transition hover:bg-black/5 hover:text-[var(--foreground)]"
-                onClick={() => {
-                  setShellMode("dashboard");
-                  setAddDeviceOpen(true);
-                }}
+                onClick={openAppDiscovery}
                 type="button"
               >
                 <Plus size={18} weight="bold" />
@@ -584,10 +872,21 @@ function App() {
             {activeSection === "devices" && (
               <DeviceDetailView
                 activeDevice={activeDevice}
+                activeManagedDevice={activeManagedDevice}
                 activeLayout={activeLayout}
                 config={config}
                 layoutChoices={bootstrap.manualLayoutChoices}
-                saveSettings={saveSettings}
+                profiles={config.profiles}
+                setSelectedProfileId={setSelectedProfileId}
+                updateDeviceNickname={(deviceKey, nickname) =>
+                  updateDeviceNicknameMutation.mutate({ deviceKey, nickname })
+                }
+                updateDeviceProfile={(deviceKey, profileId) =>
+                  updateDeviceProfileMutation.mutate({ deviceKey, profileId })
+                }
+                updateDeviceSettings={(deviceKey, settings) =>
+                  updateDeviceSettingsMutation.mutate({ deviceKey, settings })
+                }
               />
             )}
 
@@ -595,6 +894,7 @@ function App() {
               <ProfilesView
                 createProfileFromDraft={createProfileFromDraft}
                 deleteProfile={deleteProfileMutation.mutate}
+                discoveredApps={discoveredApps}
                 knownApps={knownApps}
                 newProfileApp={newProfileApp}
                 newProfileLabel={newProfileLabel}
@@ -622,7 +922,7 @@ function App() {
                   )
                 }
                 platformCapabilities={platformCapabilities}
-                saveSettings={saveSettings}
+                saveAppSettings={saveAppSettings}
                 setImportDraft={setImportDraft}
                 setImportSourcePath={setImportSourcePath}
               />
@@ -640,14 +940,38 @@ function App() {
               />
             </div>
           )}
+
+          <AnimatePresence initial={false}>
+            {isAppSidebarOpen ? (
+              <motion.aside
+                animate={{ opacity: 1, x: 0 }}
+                className="fixed right-0 top-0 z-40 flex h-full w-full max-w-[420px] flex-col border-l border-black/[0.06] bg-white/95 shadow-[-24px_0_64px_rgba(15,23,42,0.12)] backdrop-blur-xl"
+                exit={{ opacity: 0, x: 32 }}
+                initial={{ opacity: 0, x: 32 }}
+                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <AppDiscoverySheet
+                  appDiscovery={appDiscovery}
+                  isRefreshing={appDiscoveryRefreshMutation.isPending}
+                  onClose={() => setAppSidebarOpen(false)}
+                  onRefresh={() => appDiscoveryRefreshMutation.mutate()}
+                  onSelectApp={selectOrCreateProfileForApp}
+                  searchQuery={appSearchQuery}
+                  setSearchQuery={setAppSearchQuery}
+                />
+              </motion.aside>
+            ) : null}
+          </AnimatePresence>
         </div>
       )}
       <AppSettingsDialog
         config={config}
+        layoutChoices={bootstrap.manualLayoutChoices}
         onClose={() => setAppSettingsOpen(false)}
         open={isAppSettingsOpen}
         platformCapabilities={platformCapabilities}
-        saveSettings={saveSettings}
+        saveAppSettings={saveAppSettings}
+        saveDeviceDefaults={saveDeviceDefaults}
       />
     </main>
   );
@@ -1067,9 +1391,174 @@ function AddDeviceModal(props: {
   );
 }
 
+function AppDiscoverySheet(props: {
+  appDiscovery: BootstrapPayload["appDiscovery"];
+  isRefreshing: boolean;
+  onClose: () => void;
+  onRefresh: () => void;
+  onSelectApp: (app: DiscoveredApp) => void;
+  searchQuery: string;
+  setSearchQuery: (value: string) => void;
+}) {
+  const query = props.searchQuery.trim().toLowerCase();
+  const matchesQuery = (app: DiscoveredApp) => {
+    if (!query) {
+      return true;
+    }
+
+    return [
+      app.label,
+      app.description ?? "",
+      ...app.matchers.map((matcher) => matcher.value),
+    ].some((value) => value.toLowerCase().includes(query));
+  };
+
+  const suggestedApps = props.appDiscovery.suggestedApps.filter(matchesQuery);
+  const suggestedIds = new Set(suggestedApps.map((app) => app.id));
+  const browseApps = props.appDiscovery.browseApps.filter(
+    (app) => !suggestedIds.has(app.id) && matchesQuery(app),
+  );
+
+  return (
+    <>
+      <div className="flex items-center justify-between border-b border-black/[0.06] px-6 py-5">
+        <div>
+          <p className="text-[24px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+            Add app profile
+          </p>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+            Pick an installed app to create or jump to its profile.
+          </p>
+        </div>
+        <button
+          className="flex h-10 w-10 items-center justify-center rounded-2xl text-[var(--muted-foreground)] transition hover:bg-black/5 hover:text-[var(--foreground)]"
+          onClick={props.onClose}
+          type="button"
+        >
+          <X size={18} weight="bold" />
+        </button>
+      </div>
+
+      <div className="border-b border-black/[0.06] px-6 py-4">
+        <div className="flex items-center gap-3">
+          <Input
+            placeholder="Search installed apps"
+            value={props.searchQuery}
+            onChange={(event) => props.setSearchQuery(event.currentTarget.value)}
+          />
+          <Button
+            disabled={props.isRefreshing}
+            onClick={props.onRefresh}
+            type="button"
+            variant="outline"
+          >
+            {props.isRefreshing ? "Refreshing..." : "Refresh"}
+          </Button>
+        </div>
+      </div>
+
+      <ScrollArea className="flex-1">
+        <div className="space-y-8 px-6 py-6">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
+                Suggested For This Machine
+              </p>
+              <StatusPill tone="neutral" value={String(suggestedApps.length)} />
+            </div>
+
+            {suggestedApps.length > 0 ? (
+              suggestedApps.map((app) => (
+                <AppDiscoveryRow
+                  app={app}
+                  key={`suggested-${app.id}`}
+                  onSelect={() => props.onSelectApp(app)}
+                />
+              ))
+            ) : (
+              <EmptyState
+                body="Refresh discovery or broaden the search if you expected a curated app to appear here."
+                title="No suggested apps"
+              />
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
+                Browse Apps
+              </p>
+              <StatusPill tone="neutral" value={String(browseApps.length)} />
+            </div>
+
+            {browseApps.length > 0 ? (
+              browseApps.map((app) => (
+                <AppDiscoveryRow
+                  app={app}
+                  key={`browse-${app.id}`}
+                  onSelect={() => props.onSelectApp(app)}
+                />
+              ))
+            ) : (
+              <EmptyState
+                body="No additional installed apps matched the current search."
+                title="Nothing else to show"
+              />
+            )}
+          </div>
+        </div>
+      </ScrollArea>
+    </>
+  );
+}
+
+function AppDiscoveryRow(props: {
+  app: DiscoveredApp;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      className="flex w-full items-center gap-4 rounded-[24px] bg-[var(--card-muted)] px-4 py-4 text-left ring-1 ring-[var(--border)] transition hover:bg-[var(--card)]"
+      onClick={props.onSelect}
+      type="button"
+    >
+      {props.app.iconAsset ? (
+        <img
+          alt={props.app.label}
+          className="h-12 w-12 rounded-2xl border border-[var(--border)] bg-white object-cover"
+          src={props.app.iconAsset}
+        />
+      ) : (
+        <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-white text-sm font-semibold text-[var(--foreground)]">
+          {props.app.label.charAt(0).toUpperCase()}
+        </div>
+      )}
+
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="truncate text-sm font-semibold text-[var(--foreground)]">
+            {props.app.label}
+          </p>
+          {props.app.suggested ? (
+            <StatusPill tone="accent" value="Suggested" />
+          ) : null}
+        </div>
+        <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
+          {props.app.description ??
+            props.app.matchers.map(formatAppMatcher).join(", ")}
+        </p>
+        <p className="mt-2 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+          {formatDiscoverySource(props.app.sourceKinds[0])}
+        </p>
+      </div>
+    </button>
+  );
+}
+
 function ProfilesView(props: {
   profiles: Profile[];
   profile: Profile;
+  discoveredApps: DiscoveredApp[];
   knownApps: BootstrapPayload["knownApps"];
   createProfileFromDraft: () => void;
   newProfileApp: string;
@@ -1095,7 +1584,7 @@ function ProfilesView(props: {
               />
             </Field>
 
-            <Field label="App executable (optional)">
+            <Field label="Primary app matcher (optional)">
               <Input
                 list="known-apps"
                 placeholder="Code.exe"
@@ -1128,11 +1617,11 @@ function ProfilesView(props: {
         <Panel title="Profiles">
           <div className="space-y-3">
             {props.profiles.map((profile) => {
-              const profileApp = profile.appMatchers[0]?.value
-                ? (props.knownApps.find(
-                    (app) => app.executable === profile.appMatchers[0]?.value,
-                  ) ?? null)
-                : null;
+              const profileApp = resolveProfileApp(
+                profile,
+                props.discoveredApps,
+                props.knownApps,
+              );
               return (
                 <button
                   className={[
@@ -1150,9 +1639,8 @@ function ProfilesView(props: {
                       {profile.label}
                     </p>
                     <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
-                      {profile.appMatchers
-                        .map((matcher) => matcher.value)
-                        .join(", ") || "All applications"}
+                      {profile.appMatchers.map(formatAppMatcher).join(", ") ||
+                        "All applications"}
                     </p>
                   </div>
                   {profileApp?.iconAsset ? (
@@ -1185,12 +1673,12 @@ function ProfilesView(props: {
             />
           </Field>
 
-          <Field label="Executable matchers">
+          <Field label="App matchers">
             <Textarea
               className="min-h-[180px] resize-y"
               rows={6}
               value={props.profile.appMatchers
-                .map((matcher) => matcher.value)
+                .map(formatAppMatcher)
                 .join("\n")}
               onChange={(event) =>
                 props.updateSelectedProfile((nextProfile) => {
@@ -1198,7 +1686,7 @@ function ProfilesView(props: {
                     .split("\n")
                     .map((value) => value.trim())
                     .filter(Boolean)
-                    .map((value) => ({ kind: "executable", value }));
+                    .map((value) => parseDraftAppMatcher(value));
                 })
               }
             />
@@ -1235,28 +1723,72 @@ function ProfilesView(props: {
 function DeviceDetailView(props: {
   config: AppConfig;
   activeDevice: DeviceInfo | null;
+  activeManagedDevice: NonNullable<AppConfig["managedDevices"]>[number] | null;
   activeLayout: DeviceLayout;
   layoutChoices: BootstrapPayload["manualLayoutChoices"];
-  saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
+  profiles: Profile[];
+  setSelectedProfileId: (profileId: string | null) => void;
+  updateDeviceSettings: (
+    deviceKey: string,
+    settings: NonNullable<AppConfig["deviceDefaults"]>,
+  ) => void;
+  updateDeviceProfile: (deviceKey: string, profileId: string | null) => void;
+  updateDeviceNickname: (deviceKey: string, nickname: string | null) => void;
 }) {
   const activeDevice = props.activeDevice;
+  const deviceSettings = normalizeDeviceSettings(
+    props.activeManagedDevice?.settings ?? props.config.deviceDefaults,
+  );
   const dpiMin = activeDevice?.dpiMin ?? 200;
   const dpiMax = activeDevice?.dpiMax ?? 8000;
-  const configuredDpi = snapDpi(props.config.settings.dpi, dpiMin, dpiMax);
+  const configuredDpi = snapDpi(deviceSettings.dpi, dpiMin, dpiMax);
   const liveDpi = activeDevice
     ? snapDpi(activeDevice.currentDpi, dpiMin, dpiMax)
     : configuredDpi;
   const externalDpi = activeDevice?.connected ? liveDpi : configuredDpi;
   const [dpiDraft, setDpiDraft] = useState(externalDpi);
   const [pendingDpi, setPendingDpi] = useState<number | null>(null);
-  const saveSettingsRef = useRef(props.saveSettings);
+  const [nicknameDraft, setNicknameDraft] = useState(
+    props.activeManagedDevice?.nickname ?? "",
+  );
+  const updateDeviceSettingsRef = useRef(props.updateDeviceSettings);
   const availableDpiPresets = DPI_PRESETS.filter(
     (preset) => preset >= dpiMin && preset <= dpiMax,
   );
+  const assignedProfile = props.activeManagedDevice?.profileId
+    ? (props.profiles.find(
+        (profile) => profile.id === props.activeManagedDevice?.profileId,
+      ) ?? null)
+    : null;
+  const profileOptions = [
+    { label: "Auto by app", value: "" },
+    ...props.profiles.map(
+      (profile) =>
+        ({
+          label: profile.label,
+          value: profile.id,
+        }) satisfies AppSelectOption,
+    ),
+  ];
+  const updateManagedDeviceSettings = (
+    mutateSettings: (settings: NonNullable<AppConfig["deviceDefaults"]>) => void,
+  ) => {
+    if (!props.activeManagedDevice) {
+      return;
+    }
+
+    const nextSettings = normalizeDeviceSettings(props.activeManagedDevice.settings);
+    mutateSettings(nextSettings);
+    props.updateDeviceSettings(props.activeManagedDevice.id, nextSettings);
+  };
 
   useEffect(() => {
-    saveSettingsRef.current = props.saveSettings;
-  }, [props.saveSettings]);
+    updateDeviceSettingsRef.current = props.updateDeviceSettings;
+  }, [props.updateDeviceSettings]);
+
+  useEffect(() => {
+    setNicknameDraft(props.activeManagedDevice?.nickname ?? "");
+  }, [props.activeManagedDevice?.id, props.activeManagedDevice?.nickname]);
 
   useEffect(() => {
     if (!activeDevice) {
@@ -1285,18 +1817,19 @@ function DeviceDetailView(props: {
   ]);
 
   useEffect(() => {
-    if (!activeDevice || pendingDpi == null) {
+    if (!props.activeManagedDevice || pendingDpi == null) {
       return;
     }
 
+    const managedDevice = props.activeManagedDevice;
     const timeout = window.setTimeout(() => {
-      saveSettingsRef.current((nextConfig) => {
-        nextConfig.settings.dpi = pendingDpi;
-      });
+      const nextSettings = normalizeDeviceSettings(managedDevice.settings);
+      nextSettings.dpi = pendingDpi;
+      updateDeviceSettingsRef.current(managedDevice.id, nextSettings);
     }, 400);
 
     return () => window.clearTimeout(timeout);
-  }, [activeDevice, pendingDpi]);
+  }, [pendingDpi, props.activeManagedDevice]);
 
   if (!activeDevice) {
     return (
@@ -1306,6 +1839,20 @@ function DeviceDetailView(props: {
       />
     );
   }
+
+  const commitNickname = () => {
+    if (!props.activeManagedDevice) {
+      return;
+    }
+
+    const nextNickname = normalizeOptionalText(nicknameDraft);
+    const currentNickname = normalizeOptionalText(props.activeManagedDevice.nickname);
+    if (nextNickname === currentNickname) {
+      return;
+    }
+
+    props.updateDeviceNickname(props.activeManagedDevice.id, nextNickname);
+  };
 
   const layoutOptions = props.layoutChoices.map(
     (choice) =>
@@ -1361,6 +1908,37 @@ function DeviceDetailView(props: {
 
         <Panel title={`${activeDevice.displayName} Tuning`}>
           <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Nickname (optional)">
+              <Input
+                placeholder={activeDevice.displayName}
+                value={nicknameDraft}
+                onBlur={commitNickname}
+                onChange={(event) => setNicknameDraft(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitNickname();
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+            </Field>
+
+            <Field label="Assigned profile">
+              <AppSelect
+                ariaLabel="Assigned profile"
+                options={profileOptions}
+                value={props.activeManagedDevice?.profileId ?? ""}
+                onValueChange={(value) => {
+                  props.updateDeviceProfile(
+                    activeDevice.key,
+                    normalizeOptionalText(value),
+                  );
+                  props.setSelectedProfileId(normalizeOptionalText(value));
+                }}
+              />
+            </Field>
+
             <div className="space-y-2.5 md:col-span-2">
               <Label className="text-sm font-medium text-[var(--foreground)]">
                 DPI
@@ -1434,56 +2012,40 @@ function DeviceDetailView(props: {
                 ariaLabel="Manual layout override"
                 options={layoutOptions}
                 placeholder="Auto-detect"
-                value={
-                  props.config.settings.deviceLayoutOverrides[
-                    activeDevice.key
-                  ] ??
-                  props.config.settings.deviceLayoutOverrides[
-                    activeDevice.modelKey
-                  ] ??
-                  ""
-                }
+                value={deviceSettings.manualLayoutOverride ?? ""}
                 onValueChange={(value) =>
-                  props.saveSettings((nextConfig) => {
-                    if (value) {
-                      nextConfig.settings.deviceLayoutOverrides[
-                        activeDevice.key
-                      ] = value;
-                    } else {
-                      delete nextConfig.settings.deviceLayoutOverrides[
-                        activeDevice.key
-                      ];
-                    }
+                  updateManagedDeviceSettings((settings) => {
+                    settings.manualLayoutOverride = value || null;
                   })
                 }
               />
             </Field>
 
             <SwitchRow
-              checked={props.config.settings.invertHorizontalScroll}
+              checked={deviceSettings.invertHorizontalScroll}
               label="Invert thumb wheel"
               onChange={(value) =>
-                props.saveSettings((nextConfig) => {
-                  nextConfig.settings.invertHorizontalScroll = value;
+                updateManagedDeviceSettings((settings) => {
+                  settings.invertHorizontalScroll = value;
                 })
               }
             />
             <SwitchRow
-              checked={props.config.settings.invertVerticalScroll}
+              checked={deviceSettings.invertVerticalScroll}
               label="Invert vertical scroll"
               onChange={(value) =>
-                props.saveSettings((nextConfig) => {
-                  nextConfig.settings.invertVerticalScroll = value;
+                updateManagedDeviceSettings((settings) => {
+                  settings.invertVerticalScroll = value;
                 })
               }
             />
             <Field label="Gesture threshold">
               <Input
                 type="number"
-                value={props.config.settings.gestureThreshold}
+                value={deviceSettings.gestureThreshold}
                 onChange={(event) =>
-                  props.saveSettings((nextConfig) => {
-                    nextConfig.settings.gestureThreshold = Number(
+                  updateManagedDeviceSettings((settings) => {
+                    settings.gestureThreshold = Number(
                       event.currentTarget.value,
                     );
                   })
@@ -1493,10 +2055,36 @@ function DeviceDetailView(props: {
             <Field label="Gesture deadzone">
               <Input
                 type="number"
-                value={props.config.settings.gestureDeadzone}
+                value={deviceSettings.gestureDeadzone}
                 onChange={(event) =>
-                  props.saveSettings((nextConfig) => {
-                    nextConfig.settings.gestureDeadzone = Number(
+                  updateManagedDeviceSettings((settings) => {
+                    settings.gestureDeadzone = Number(
+                      event.currentTarget.value,
+                    );
+                  })
+                }
+              />
+            </Field>
+            <Field label="Gesture timeout (ms)">
+              <Input
+                type="number"
+                value={deviceSettings.gestureTimeoutMs}
+                onChange={(event) =>
+                  updateManagedDeviceSettings((settings) => {
+                    settings.gestureTimeoutMs = Number(
+                      event.currentTarget.value,
+                    );
+                  })
+                }
+              />
+            </Field>
+            <Field label="Gesture cooldown (ms)">
+              <Input
+                type="number"
+                value={deviceSettings.gestureCooldownMs}
+                onChange={(event) =>
+                  updateManagedDeviceSettings((settings) => {
+                    settings.gestureCooldownMs = Number(
                       event.currentTarget.value,
                     );
                   })
@@ -1531,6 +2119,10 @@ function DeviceDetailView(props: {
             value={props.activeLayout.label}
           />
           <CapabilityRow
+            label="Assigned profile"
+            value={assignedProfile?.label ?? "Auto by app"}
+          />
+          <CapabilityRow
             label="Product"
             value={activeDevice.productName ?? activeDevice.displayName}
           />
@@ -1546,16 +2138,60 @@ function DeviceDetailView(props: {
 
 function AppSettingsDialog(props: {
   config: AppConfig;
+  layoutChoices: BootstrapPayload["manualLayoutChoices"];
   open: boolean;
   onClose: () => void;
   platformCapabilities: BootstrapPayload["platformCapabilities"];
-  saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
+  saveAppSettings: (mutateSettings: (nextSettings: AppConfig["settings"]) => void) => void;
+  saveDeviceDefaults: (
+    mutateSettings: (nextSettings: NonNullable<AppConfig["deviceDefaults"]>) => void,
+  ) => void;
 }) {
   const appearanceOptions = [
     { label: "System", value: "system" },
     { label: "Light", value: "light" },
     { label: "Dark", value: "dark" },
   ] satisfies AppSelectOption[];
+  const defaultSettings = normalizeDeviceSettings(props.config.deviceDefaults);
+  const [defaultDpiDraft, setDefaultDpiDraft] = useState(defaultSettings.dpi);
+  const [pendingDefaultDpi, setPendingDefaultDpi] = useState<number | null>(null);
+  const saveDeviceDefaultsRef = useRef(props.saveDeviceDefaults);
+  const defaultLayoutOptions = props.layoutChoices.map(
+    (choice) =>
+      ({
+        label: choice.label,
+        value: choice.key,
+      }) satisfies AppSelectOption,
+  );
+
+  useEffect(() => {
+    saveDeviceDefaultsRef.current = props.saveDeviceDefaults;
+  }, [props.saveDeviceDefaults]);
+
+  useEffect(() => {
+    if (pendingDefaultDpi != null && defaultSettings.dpi !== pendingDefaultDpi) {
+      return;
+    }
+
+    setPendingDefaultDpi(null);
+    setDefaultDpiDraft(defaultSettings.dpi);
+  }, [defaultSettings.dpi, pendingDefaultDpi]);
+
+  useEffect(() => {
+    if (pendingDefaultDpi == null) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      const nextSettings = normalizeDeviceSettings(props.config.deviceDefaults);
+      nextSettings.dpi = pendingDefaultDpi;
+      saveDeviceDefaultsRef.current((settings) => {
+        Object.assign(settings, nextSettings);
+      });
+    }, 400);
+
+    return () => window.clearTimeout(timeout);
+  }, [pendingDefaultDpi, props.config.deviceDefaults]);
 
   return (
     <Dialog
@@ -1580,8 +2216,8 @@ function AppSettingsDialog(props: {
                     checked={props.config.settings.startMinimized}
                     label="Start minimized"
                     onChange={(value) =>
-                      props.saveSettings((nextConfig) => {
-                        nextConfig.settings.startMinimized = value;
+                      props.saveAppSettings((nextSettings) => {
+                        nextSettings.startMinimized = value;
                       })
                     }
                   />
@@ -1589,8 +2225,8 @@ function AppSettingsDialog(props: {
                     checked={props.config.settings.startAtLogin}
                     label="Start at login"
                     onChange={(value) =>
-                      props.saveSettings((nextConfig) => {
-                        nextConfig.settings.startAtLogin = value;
+                      props.saveAppSettings((nextSettings) => {
+                        nextSettings.startAtLogin = value;
                       })
                     }
                   />
@@ -1598,8 +2234,8 @@ function AppSettingsDialog(props: {
                     checked={props.config.settings.debugMode}
                     label="Enable debug mode"
                     onChange={(value) =>
-                      props.saveSettings((nextConfig) => {
-                        nextConfig.settings.debugMode = value;
+                      props.saveAppSettings((nextSettings) => {
+                        nextSettings.debugMode = value;
                       })
                     }
                   />
@@ -1609,33 +2245,174 @@ function AppSettingsDialog(props: {
                       options={appearanceOptions}
                       value={props.config.settings.appearanceMode}
                       onValueChange={(value) =>
-                        props.saveSettings((nextConfig) => {
-                          nextConfig.settings.appearanceMode =
+                        props.saveAppSettings((nextSettings) => {
+                          nextSettings.appearanceMode =
                             value as AppConfig["settings"]["appearanceMode"];
                         })
                       }
                     />
                   </Field>
-                  <Field label="Gesture timeout (ms)">
+                </div>
+              </Panel>
+
+              <Panel
+                subtitle="These values seed newly added devices before they get their own settings."
+                title="Defaults For New Devices"
+              >
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2.5 md:col-span-2">
+                    <Label className="text-sm font-medium text-[var(--foreground)]">
+                      Default DPI
+                    </Label>
+                    <div className="rounded-[24px] bg-[var(--card-muted)] p-5 ring-1 ring-[var(--border)]">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-[var(--foreground)]">
+                            Pointer speed for new devices
+                          </p>
+                          <p className="text-xs text-[var(--muted-foreground)]">
+                            Drag to choose a default, then pause briefly to save it.
+                          </p>
+                        </div>
+                        <div className="rounded-full bg-white px-3 py-1.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border)]">
+                          {defaultDpiDraft} DPI
+                        </div>
+                      </div>
+
+                      <div className="mt-5 flex items-center gap-3">
+                        <span className="w-12 text-xs text-[var(--muted-foreground)]">
+                          200
+                        </span>
+                        <Slider
+                          aria-label="Default pointer speed"
+                          className="flex-1"
+                          max={8000}
+                          min={200}
+                          step={50}
+                          value={[defaultDpiDraft]}
+                          onValueChange={(values) => {
+                            const nextValue = values[0];
+                            if (nextValue == null) {
+                              return;
+                            }
+                            const nextDpi = snapDpi(nextValue, 200, 8000);
+                            setDefaultDpiDraft(nextDpi);
+                            setPendingDefaultDpi(
+                              nextDpi === defaultSettings.dpi ? null : nextDpi,
+                            );
+                          }}
+                        />
+                        <span className="w-12 text-right text-xs text-[var(--muted-foreground)]">
+                          8000
+                        </span>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap items-center gap-2">
+                        {DPI_PRESETS.map((preset) => (
+                          <Button
+                            key={preset}
+                            size="sm"
+                            type="button"
+                            variant={
+                              defaultDpiDraft === preset ? "default" : "outline"
+                            }
+                            onClick={() => {
+                              setDefaultDpiDraft(preset);
+                              setPendingDefaultDpi(
+                                preset === defaultSettings.dpi ? null : preset,
+                              );
+                            }}
+                          >
+                            {preset}
+                          </Button>
+                        ))}
+                        {pendingDefaultDpi != null ? (
+                          <span className="text-xs text-[var(--muted-foreground)]">
+                            Saving {pendingDefaultDpi} DPI...
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+
+                  <Field label="Default manual layout override">
+                    <AppSelect
+                      ariaLabel="Default manual layout override"
+                      options={defaultLayoutOptions}
+                      placeholder="Auto-detect"
+                      value={defaultSettings.manualLayoutOverride ?? ""}
+                      onValueChange={(value) =>
+                        props.saveDeviceDefaults((nextSettings) => {
+                          nextSettings.manualLayoutOverride = value || null;
+                        })
+                      }
+                    />
+                  </Field>
+
+                  <SwitchRow
+                    checked={defaultSettings.invertHorizontalScroll}
+                    label="Invert thumb wheel by default"
+                    onChange={(value) =>
+                      props.saveDeviceDefaults((nextSettings) => {
+                        nextSettings.invertHorizontalScroll = value;
+                      })
+                    }
+                  />
+                  <SwitchRow
+                    checked={defaultSettings.invertVerticalScroll}
+                    label="Invert vertical scroll by default"
+                    onChange={(value) =>
+                      props.saveDeviceDefaults((nextSettings) => {
+                        nextSettings.invertVerticalScroll = value;
+                      })
+                    }
+                  />
+                  <Field label="Default gesture threshold">
                     <Input
                       type="number"
-                      value={props.config.settings.gestureTimeoutMs}
+                      value={defaultSettings.gestureThreshold}
                       onChange={(event) =>
-                        props.saveSettings((nextConfig) => {
-                          nextConfig.settings.gestureTimeoutMs = Number(
+                        props.saveDeviceDefaults((nextSettings) => {
+                          nextSettings.gestureThreshold = Number(
                             event.currentTarget.value,
                           );
                         })
                       }
                     />
                   </Field>
-                  <Field label="Gesture cooldown (ms)">
+                  <Field label="Default gesture deadzone">
                     <Input
                       type="number"
-                      value={props.config.settings.gestureCooldownMs}
+                      value={defaultSettings.gestureDeadzone}
                       onChange={(event) =>
-                        props.saveSettings((nextConfig) => {
-                          nextConfig.settings.gestureCooldownMs = Number(
+                        props.saveDeviceDefaults((nextSettings) => {
+                          nextSettings.gestureDeadzone = Number(
+                            event.currentTarget.value,
+                          );
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Default gesture timeout (ms)">
+                    <Input
+                      type="number"
+                      value={defaultSettings.gestureTimeoutMs}
+                      onChange={(event) =>
+                        props.saveDeviceDefaults((nextSettings) => {
+                          nextSettings.gestureTimeoutMs = Number(
+                            event.currentTarget.value,
+                          );
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Default gesture cooldown (ms)">
+                    <Input
+                      type="number"
+                      value={defaultSettings.gestureCooldownMs}
+                      onChange={(event) =>
+                        props.saveDeviceDefaults((nextSettings) => {
+                          nextSettings.gestureCooldownMs = Number(
                             event.currentTarget.value,
                           );
                         })
@@ -1699,7 +2476,7 @@ function DebugView(props: {
   importSourcePath: string;
   importWarnings: string[];
   isClearing: boolean;
-  saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
+  saveAppSettings: (mutateSettings: (nextSettings: AppConfig["settings"]) => void) => void;
   clearDebugLog: () => void;
   onImport: () => void;
   setImportDraft: (value: string) => void;
@@ -1770,8 +2547,8 @@ function DebugView(props: {
             checked={props.config.settings.debugMode}
             label="Enable debug mode"
             onChange={(value) =>
-              props.saveSettings((nextConfig) => {
-                nextConfig.settings.debugMode = value;
+              props.saveAppSettings((nextSettings) => {
+                nextSettings.debugMode = value;
               })
             }
           />
@@ -2564,24 +3341,6 @@ function cloneProfile(profile: Profile): Profile {
   };
 }
 
-function cloneManagedDevice(
-  device: NonNullable<AppConfig["managedDevices"]>[number],
-) {
-  return { ...device };
-}
-
-function cloneConfig(config: AppConfig): AppConfig {
-  return {
-    ...config,
-    profiles: config.profiles.map(cloneProfile),
-    managedDevices: (config.managedDevices ?? []).map(cloneManagedDevice),
-    settings: {
-      ...config.settings,
-      deviceLayoutOverrides: { ...config.settings.deviceLayoutOverrides },
-    },
-  };
-}
-
 function makeProfileId(label: string, config: AppConfig) {
   const base =
     label
@@ -2610,9 +3369,9 @@ function resolveActiveLayout(
     );
   }
 
-  const overrideKey =
-    config.settings.deviceLayoutOverrides[device.key] ??
-    config.settings.deviceLayoutOverrides[device.modelKey];
+  const overrideKey = normalizeDeviceSettings(
+    findManagedDevice(config, device.key)?.settings,
+  ).manualLayoutOverride;
   const targetKey = overrideKey || device.uiLayout;
   return layouts.find((layout) => layout.key === targetKey) ?? layouts[0];
 }

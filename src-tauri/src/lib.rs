@@ -6,8 +6,8 @@ use std::{
 };
 
 use mouser_core::{
-    AppConfig, BootstrapPayload, DebugEvent, DeviceInfo, EngineSnapshot, LegacyImportReport,
-    Profile,
+    AppConfig, AppDiscoverySnapshot, BootstrapPayload, DebugEvent, DeviceInfo, DeviceSettings,
+    EngineSnapshot, LegacyImportReport, Profile, Settings,
 };
 use mouser_import::{import_legacy_config as import_legacy_payload, ImportSource};
 use runtime::AppRuntime;
@@ -61,6 +61,11 @@ struct EngineStatusChangedEvent(pub mouser_core::EngineStatus);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, SpectaEvent)]
 #[serde(rename_all = "camelCase")]
+#[tauri_specta(event_name = "app_discovery_changed")]
+struct AppDiscoveryChangedEvent(pub AppDiscoverySnapshot);
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, SpectaEvent)]
+#[serde(rename_all = "camelCase")]
 #[tauri_specta(event_name = "debug_event")]
 struct DebugEventEnvelope(pub DebugEvent);
 
@@ -85,6 +90,36 @@ fn config_save(
 ) -> Result<BootstrapPayload, String> {
     let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
         runtime.save_config(config);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn app_settings_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.update_app_settings(settings);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn device_defaults_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: DeviceSettings,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.update_device_defaults(settings);
         (runtime.bootstrap_payload(), runtime.last_debug_event())
     })?;
     emit_runtime_events(&app, &payload, debug_event)?;
@@ -130,6 +165,68 @@ fn profiles_delete(
 ) -> Result<BootstrapPayload, String> {
     let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
         runtime.delete_profile(&profile_id);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn app_discovery_refresh(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.refresh_app_discovery();
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn devices_update_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_key: String,
+    settings: DeviceSettings,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.update_managed_device_settings(&device_key, settings);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn devices_update_profile(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_key: String,
+    profile_id: Option<String>,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.update_managed_device_profile(&device_key, profile_id);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn devices_update_nickname(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_key: String,
+    nickname: Option<String>,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.update_managed_device_nickname(&device_key, nickname);
         (runtime.bootstrap_payload(), runtime.last_debug_event())
     })?;
     emit_runtime_events(&app, &payload, debug_event)?;
@@ -286,6 +383,10 @@ fn emit_runtime_events(
         .emit(app)
         .map_err(|error| error.to_string())?;
 
+    AppDiscoveryChangedEvent(payload.app_discovery.clone())
+        .emit(app)
+        .map_err(|error| error.to_string())?;
+
     if let Some(debug_event) = debug_event {
         DebugEventEnvelope(debug_event)
             .emit(app)
@@ -429,11 +530,17 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             bootstrap_load,
             config_get,
             config_save,
+            app_settings_update,
+            device_defaults_update,
+            app_discovery_refresh,
             profiles_create,
             profiles_update,
             profiles_delete,
             devices_list,
             devices_add,
+            devices_update_settings,
+            devices_update_profile,
+            devices_update_nickname,
             devices_remove,
             devices_select,
             devices_select_mock,
@@ -444,10 +551,12 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             DeviceChangedEvent,
             ProfileChangedEvent,
             EngineStatusChangedEvent,
+            AppDiscoveryChangedEvent,
             DebugEventEnvelope
         ])
         .typ::<BootstrapPayload>()
         .typ::<AppConfig>()
+        .typ::<AppDiscoverySnapshot>()
         .typ::<DeviceInfo>()
         .typ::<EngineSnapshot>()
         .typ::<LegacyImportReport>()

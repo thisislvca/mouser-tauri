@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -59,10 +59,15 @@ pub struct Binding {
     pub action_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AppMatcherKind {
     Executable,
+    ExecutablePath,
+    BundleId,
+    PackageFamilyName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -70,6 +75,125 @@ pub enum AppMatcherKind {
 pub struct AppMatcher {
     pub kind: AppMatcherKind,
     pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AppIdentity {
+    pub label: Option<String>,
+    pub executable: Option<String>,
+    pub executable_path: Option<String>,
+    pub bundle_id: Option<String>,
+    pub package_family_name: Option<String>,
+}
+
+impl AppIdentity {
+    pub fn label_or_fallback(&self) -> Option<String> {
+        self.label
+            .clone()
+            .or_else(|| self.executable.clone())
+            .or_else(|| {
+                self.executable_path
+                    .as_deref()
+                    .and_then(|path| {
+                        Path::new(path)
+                            .file_name()
+                            .map(|value| value.to_string_lossy().to_string())
+                    })
+            })
+            .or_else(|| self.bundle_id.clone())
+            .or_else(|| self.package_family_name.clone())
+    }
+
+    pub fn preferred_matchers(&self) -> Vec<AppMatcher> {
+        let mut matchers = Vec::new();
+
+        for (kind, value) in [
+            (AppMatcherKind::BundleId, self.bundle_id.as_deref()),
+            (
+                AppMatcherKind::PackageFamilyName,
+                self.package_family_name.as_deref(),
+            ),
+            (
+                AppMatcherKind::ExecutablePath,
+                self.executable_path.as_deref(),
+            ),
+            (AppMatcherKind::Executable, self.executable.as_deref()),
+        ] {
+            if let Some(value) = value {
+                push_unique_matcher(&mut matchers, kind, value);
+            }
+        }
+
+        matchers
+    }
+
+    pub fn matches(&self, matcher: &AppMatcher) -> bool {
+        let candidate = match matcher.kind {
+            AppMatcherKind::Executable => self.executable.as_deref(),
+            AppMatcherKind::ExecutablePath => self.executable_path.as_deref(),
+            AppMatcherKind::BundleId => self.bundle_id.as_deref(),
+            AppMatcherKind::PackageFamilyName => self.package_family_name.as_deref(),
+        };
+
+        candidate.is_some_and(|candidate| {
+            normalize_app_match_value(matcher.kind, candidate)
+                == normalize_app_match_value(matcher.kind, &matcher.value)
+        })
+    }
+
+    pub fn stable_id(&self) -> String {
+        if let Some(bundle_id) = self.bundle_id.as_deref() {
+            return format!(
+                "bundle:{}",
+                normalize_app_match_value(AppMatcherKind::BundleId, bundle_id)
+            );
+        }
+
+        if let Some(package_family_name) = self.package_family_name.as_deref() {
+            return format!(
+                "package:{}",
+                normalize_app_match_value(
+                    AppMatcherKind::PackageFamilyName,
+                    package_family_name,
+                )
+            );
+        }
+
+        if let Some(executable_path) = self.executable_path.as_deref() {
+            return format!(
+                "path:{}",
+                normalize_app_match_value(AppMatcherKind::ExecutablePath, executable_path)
+            );
+        }
+
+        if let Some(executable) = self.executable.as_deref() {
+            return format!(
+                "exe:{}",
+                normalize_app_match_value(AppMatcherKind::Executable, executable)
+            );
+        }
+
+        format!(
+            "label:{}",
+            normalize_name(self.label.as_deref().unwrap_or("application"))
+        )
+    }
+
+    pub fn detail_label(&self) -> Option<String> {
+        self.bundle_id
+            .clone()
+            .or_else(|| self.package_family_name.clone())
+            .or_else(|| self.executable.clone())
+            .or_else(|| {
+                self.executable_path.as_deref().map(|path| {
+                    Path::new(path)
+                        .file_name()
+                        .map(|value| value.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.to_string())
+                })
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -85,16 +209,21 @@ pub enum AppearanceMode {
 pub struct Settings {
     pub start_minimized: bool,
     pub start_at_login: bool,
+    pub appearance_mode: AppearanceMode,
+    pub debug_mode: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSettings {
+    pub dpi: u16,
     pub invert_horizontal_scroll: bool,
     pub invert_vertical_scroll: bool,
-    pub dpi: u16,
     pub gesture_threshold: u16,
     pub gesture_deadzone: u16,
     pub gesture_timeout_ms: u32,
     pub gesture_cooldown_ms: u32,
-    pub appearance_mode: AppearanceMode,
-    pub debug_mode: bool,
-    pub device_layout_overrides: BTreeMap<String, String>,
+    pub manual_layout_override: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -145,6 +274,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub managed_devices: Vec<ManagedDevice>,
     pub settings: Settings,
+    #[serde(default = "default_device_settings")]
+    pub device_defaults: DeviceSettings,
 }
 
 impl AppConfig {
@@ -182,6 +313,11 @@ impl AppConfig {
 
         let before = self.profiles.len();
         self.profiles.retain(|profile| profile.id != profile_id);
+        for device in &mut self.managed_devices {
+            if device.profile_id.as_deref() == Some(profile_id) {
+                device.profile_id = None;
+            }
+        }
         if self.active_profile_id == profile_id {
             self.active_profile_id = "default".to_string();
         }
@@ -189,18 +325,27 @@ impl AppConfig {
         before != self.profiles.len()
     }
 
-    pub fn sync_active_profile_for_app(&mut self, executable: Option<&str>) -> bool {
-        let target = executable
-            .and_then(|exe| {
-                self.profiles.iter().find(|profile| {
-                    profile.app_matchers.iter().any(|matcher| {
-                        matcher.kind == AppMatcherKind::Executable
-                            && matcher.value.eq_ignore_ascii_case(exe)
-                    })
-                })
+    pub fn matched_profile_id_for_app(&self, app: Option<&AppIdentity>) -> String {
+        app.and_then(|app| {
+            self.profiles.iter().find(|profile| {
+                profile
+                    .app_matchers
+                    .iter()
+                    .any(|matcher| app.matches(matcher))
             })
+        })
             .map(|profile| profile.id.clone())
-            .unwrap_or_else(|| "default".to_string());
+            .unwrap_or_else(|| "default".to_string())
+    }
+
+    pub fn sync_active_profile(
+        &mut self,
+        preferred_profile_id: Option<&str>,
+        app: Option<&AppIdentity>,
+    ) -> bool {
+        let target = preferred_profile_id
+            .and_then(|profile_id| self.profile_by_id(profile_id).map(|_| profile_id.to_string()))
+            .unwrap_or_else(|| self.matched_profile_id_for_app(app));
 
         if self.active_profile_id == target {
             return false;
@@ -208,6 +353,10 @@ impl AppConfig {
 
         self.active_profile_id = target;
         true
+    }
+
+    pub fn sync_active_profile_for_app(&mut self, app: Option<&AppIdentity>) -> bool {
+        self.sync_active_profile(None, app)
     }
 
     pub fn ensure_invariants(&mut self) {
@@ -234,6 +383,13 @@ impl AppConfig {
             self.active_profile_id = "default".to_string();
         }
 
+        normalize_device_settings(None, &mut self.device_defaults);
+        let valid_profile_ids = self
+            .profiles
+            .iter()
+            .map(|profile| profile.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+
         let mut seen_managed_ids = std::collections::BTreeSet::new();
         self.managed_devices.retain(|device| {
             !device.id.trim().is_empty() && seen_managed_ids.insert(device.id.clone())
@@ -250,13 +406,33 @@ impl AppConfig {
             }
 
             if device
+                .profile_id
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                device.profile_id = None;
+            }
+
+            if device
+                .profile_id
+                .as_deref()
+                .is_some_and(|profile_id| !valid_profile_ids.contains(profile_id))
+            {
+                device.profile_id = None;
+            }
+
+            if device
                 .identity_key
                 .as_deref()
                 .is_some_and(|value| value.trim().is_empty())
             {
                 device.identity_key = None;
             }
+
+            normalize_device_settings(Some(&device.model_key), &mut device.settings);
         }
+
+        self.version = self.version.max(3);
     }
 }
 
@@ -276,6 +452,54 @@ pub struct KnownApp {
     pub icon_asset: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogApp {
+    pub id: String,
+    pub label: String,
+    pub icon_asset: Option<String>,
+    pub matchers: Vec<AppMatcher>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AppDiscoverySource {
+    Catalog,
+    ApplicationBundle,
+    StartMenuShortcut,
+    Registry,
+    Package,
+    RunningProcess,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledApp {
+    pub identity: AppIdentity,
+    pub source_kinds: Vec<AppDiscoverySource>,
+    pub source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredApp {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub matchers: Vec<AppMatcher>,
+    pub icon_asset: Option<String>,
+    pub source_kinds: Vec<AppDiscoverySource>,
+    pub source_path: Option<String>,
+    pub suggested: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppDiscoverySnapshot {
+    pub suggested_apps: Vec<DiscoveredApp>,
+    pub browse_apps: Vec<DiscoveredApp>,
+    pub last_scan_at_ms: Option<u64>,
+    pub scanning: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedDevice {
@@ -284,7 +508,11 @@ pub struct ManagedDevice {
     pub display_name: String,
     pub nickname: Option<String>,
     #[serde(default)]
+    pub profile_id: Option<String>,
+    #[serde(default)]
     pub identity_key: Option<String>,
+    #[serde(default = "default_device_settings")]
+    pub settings: DeviceSettings,
     pub created_at_ms: u64,
     pub last_seen_at_ms: Option<u64>,
     pub last_seen_transport: Option<String>,
@@ -467,6 +695,7 @@ pub struct BootstrapPayload {
     pub config: AppConfig,
     pub available_actions: Vec<ActionDefinition>,
     pub known_apps: Vec<KnownApp>,
+    pub app_discovery: AppDiscoverySnapshot,
     pub supported_devices: Vec<KnownDeviceSpec>,
     pub layouts: Vec<DeviceLayout>,
     pub engine_snapshot: EngineSnapshot,
@@ -487,16 +716,30 @@ pub fn default_settings() -> Settings {
     Settings {
         start_minimized: true,
         start_at_login: false,
+        appearance_mode: AppearanceMode::System,
+        debug_mode: false,
+    }
+}
+
+pub fn default_device_settings() -> DeviceSettings {
+    DeviceSettings {
+        dpi: 1000,
         invert_horizontal_scroll: false,
         invert_vertical_scroll: false,
-        dpi: 1000,
         gesture_threshold: 50,
         gesture_deadzone: 40,
         gesture_timeout_ms: 3000,
         gesture_cooldown_ms: 500,
-        appearance_mode: AppearanceMode::System,
-        debug_mode: false,
-        device_layout_overrides: BTreeMap::new(),
+        manual_layout_override: None,
+    }
+}
+
+pub fn default_app_discovery_snapshot() -> AppDiscoverySnapshot {
+    AppDiscoverySnapshot {
+        suggested_apps: Vec::new(),
+        browse_apps: Vec::new(),
+        last_scan_at_ms: None,
+        scanning: false,
     }
 }
 
@@ -532,11 +775,12 @@ pub fn default_profile() -> Profile {
 
 pub fn default_config() -> AppConfig {
     AppConfig {
-        version: 2,
+        version: 3,
         active_profile_id: "default".to_string(),
         profiles: vec![default_profile()],
         managed_devices: Vec::new(),
         settings: default_settings(),
+        device_defaults: default_device_settings(),
     }
 }
 
@@ -595,34 +839,100 @@ pub fn default_action_catalog() -> Vec<ActionDefinition> {
     ]
 }
 
-pub fn default_known_apps() -> Vec<KnownApp> {
+pub fn default_app_catalog() -> Vec<CatalogApp> {
     vec![
-        known_app("msedge.exe", "Microsoft Edge", None),
-        known_app(
-            "chrome.exe",
+        catalog_app(
+            "microsoft_edge",
+            "Microsoft Edge",
+            None,
+            &[
+                (AppMatcherKind::Executable, "msedge.exe"),
+                (AppMatcherKind::Executable, "Microsoft Edge"),
+                (AppMatcherKind::BundleId, "com.microsoft.edgemac"),
+            ],
+        ),
+        catalog_app(
+            "google_chrome",
             "Google Chrome",
             Some("/assets/apps/chrome.png"),
+            &[
+                (AppMatcherKind::Executable, "chrome.exe"),
+                (AppMatcherKind::Executable, "Google Chrome"),
+                (AppMatcherKind::BundleId, "com.google.Chrome"),
+            ],
         ),
-        known_app("Safari", "Safari", None),
-        known_app(
-            "Code.exe",
+        catalog_app(
+            "safari",
+            "Safari",
+            None,
+            &[
+                (AppMatcherKind::Executable, "Safari"),
+                (AppMatcherKind::BundleId, "com.apple.Safari"),
+            ],
+        ),
+        catalog_app(
+            "vscode",
             "Visual Studio Code",
             Some("/assets/apps/vscode.png"),
+            &[
+                (AppMatcherKind::Executable, "Code.exe"),
+                (AppMatcherKind::Executable, "Code"),
+                (AppMatcherKind::BundleId, "com.microsoft.VSCode"),
+            ],
         ),
-        known_app(
-            "Code",
-            "Visual Studio Code",
-            Some("/assets/apps/vscode.png"),
+        catalog_app(
+            "vlc",
+            "VLC Media Player",
+            Some("/assets/apps/vlc.png"),
+            &[
+                (AppMatcherKind::Executable, "vlc.exe"),
+                (AppMatcherKind::Executable, "VLC"),
+                (AppMatcherKind::BundleId, "org.videolan.vlc"),
+            ],
         ),
-        known_app("VLC", "VLC Media Player", Some("/assets/apps/vlc.png")),
-        known_app("vlc.exe", "VLC Media Player", Some("/assets/apps/vlc.png")),
-        known_app(
-            "Microsoft.Media.Player.exe",
+        catalog_app(
+            "windows_media_player",
             "Windows Media Player",
             Some("/assets/apps/media-player.webp"),
+            &[
+                (AppMatcherKind::Executable, "Microsoft.Media.Player.exe"),
+                (AppMatcherKind::Executable, "wmplayer.exe"),
+            ],
         ),
-        known_app("Finder", "Finder", None),
+        catalog_app(
+            "finder",
+            "Finder",
+            None,
+            &[
+                (AppMatcherKind::Executable, "Finder"),
+                (AppMatcherKind::BundleId, "com.apple.finder"),
+            ],
+        ),
     ]
+}
+
+pub fn default_known_apps() -> Vec<KnownApp> {
+    let mut apps = Vec::new();
+    for catalog in default_app_catalog() {
+        for matcher in catalog.matchers {
+            if matcher.kind != AppMatcherKind::Executable {
+                continue;
+            }
+
+            if apps.iter().any(|app: &KnownApp| {
+                app.executable.eq_ignore_ascii_case(&matcher.value)
+            }) {
+                continue;
+            }
+
+            apps.push(known_app(
+                &matcher.value,
+                &catalog.label,
+                catalog.icon_asset.as_deref(),
+            ));
+        }
+    }
+    apps
 }
 
 pub fn known_device_specs() -> Vec<KnownDeviceSpec> {
@@ -992,9 +1302,10 @@ pub fn build_connected_device_info(
 pub fn build_managed_device_info(
     managed: &ManagedDevice,
     live: Option<&DeviceInfo>,
-    current_dpi: u16,
 ) -> DeviceInfo {
-    let effective_current_dpi = live.map(|device| device.current_dpi).unwrap_or(current_dpi);
+    let effective_current_dpi = live
+        .map(|device| device.current_dpi)
+        .unwrap_or(managed.settings.dpi);
     let live_product_name = live
         .and_then(|device| device.product_name.as_deref())
         .and_then(|value| {
@@ -1085,6 +1396,21 @@ pub fn clamp_dpi(device: Option<&DeviceInfo>, value: u16) -> u16 {
     value.max(min).min(max)
 }
 
+pub fn normalize_device_settings(model_key: Option<&str>, settings: &mut DeviceSettings) {
+    let (dpi_min, dpi_max) = known_device_spec_by_key(model_key.unwrap_or_default())
+        .map(|spec| (spec.dpi_min, spec.dpi_max))
+        .unwrap_or((200, 8000));
+    settings.dpi = settings.dpi.max(dpi_min).min(dpi_max);
+
+    if settings
+        .manual_layout_override
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        settings.manual_layout_override = None;
+    }
+}
+
 pub fn layout_by_key(layouts: &[DeviceLayout], layout_key: &str) -> Option<DeviceLayout> {
     layouts
         .iter()
@@ -1092,19 +1418,12 @@ pub fn layout_by_key(layouts: &[DeviceLayout], layout_key: &str) -> Option<Devic
         .cloned()
 }
 
-pub fn effective_layout_key(
-    settings: &Settings,
-    device_key: Option<&str>,
-    default_layout_key: &str,
-) -> String {
-    if let Some(device_key) = device_key {
-        if let Some(override_key) = settings.device_layout_overrides.get(device_key) {
-            if !override_key.is_empty() {
-                return override_key.clone();
-            }
-        }
-    }
-    default_layout_key.to_string()
+pub fn effective_layout_key(manual_override: Option<&str>, default_layout_key: &str) -> String {
+    manual_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default_layout_key)
+        .to_string()
 }
 
 struct KnownDeviceSeed<'a> {
@@ -1133,6 +1452,25 @@ fn action(id: &str, label: &str, category: &str) -> ActionDefinition {
         id: id.to_string(),
         label: label.to_string(),
         category: category.to_string(),
+    }
+}
+
+fn catalog_app(
+    id: &str,
+    label: &str,
+    icon_asset: Option<&str>,
+    matchers: &[(AppMatcherKind, &str)],
+) -> CatalogApp {
+    let mut app_matchers = Vec::new();
+    for (kind, value) in matchers {
+        push_unique_matcher(&mut app_matchers, *kind, value);
+    }
+
+    CatalogApp {
+        id: id.to_string(),
+        label: label.to_string(),
+        icon_asset: icon_asset.map(str::to_string),
+        matchers: app_matchers,
     }
 }
 
@@ -1168,6 +1506,39 @@ fn non_empty_name(value: Option<&str>) -> Option<String> {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
+}
+
+pub fn normalize_app_match_value(kind: AppMatcherKind, value: &str) -> String {
+    let trimmed = value.trim();
+    match kind {
+        AppMatcherKind::Executable => Path::new(trimmed.replace('\\', "/").as_str())
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_else(|| trimmed.to_ascii_lowercase()),
+        AppMatcherKind::ExecutablePath => trimmed.replace('\\', "/").to_ascii_lowercase(),
+        AppMatcherKind::BundleId | AppMatcherKind::PackageFamilyName => {
+            trimmed.to_ascii_lowercase()
+        }
+    }
+}
+
+fn push_unique_matcher(matchers: &mut Vec<AppMatcher>, kind: AppMatcherKind, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let normalized = normalize_app_match_value(kind, trimmed);
+    if matchers.iter().any(|matcher| {
+        matcher.kind == kind && normalize_app_match_value(kind, &matcher.value) == normalized
+    }) {
+        return;
+    }
+
+    matchers.push(AppMatcher {
+        kind,
+        value: trimmed.to_string(),
+    });
 }
 
 pub fn hydrate_identity_key(product_id: Option<u16>, fingerprint: &mut DeviceFingerprint) {
@@ -1253,6 +1624,14 @@ fn hotspot(spec: HotspotSpec<'_>) -> DeviceHotspot {
 mod tests {
     use super::*;
 
+    fn test_app_identity(executable: &str) -> AppIdentity {
+        AppIdentity {
+            label: Some(executable.to_string()),
+            executable: Some(executable.to_string()),
+            ..AppIdentity::default()
+        }
+    }
+
     #[test]
     fn config_round_trip_preserves_defaults() {
         let config = default_config();
@@ -1274,9 +1653,9 @@ mod tests {
             bindings: default_profile_bindings(),
         });
 
-        assert!(config.sync_active_profile_for_app(Some("code.exe")));
+        assert!(config.sync_active_profile_for_app(Some(&test_app_identity("code.exe"))));
         assert_eq!(config.active_profile_id, "vscode");
-        assert!(config.sync_active_profile_for_app(Some("Finder")));
+        assert!(config.sync_active_profile_for_app(Some(&test_app_identity("Finder"))));
         assert_eq!(config.active_profile_id, "default");
     }
 
@@ -1323,7 +1702,9 @@ mod tests {
             model_key: "mx_master_3".to_string(),
             display_name: "MX Master 3".to_string(),
             nickname: None,
+            profile_id: None,
             identity_key: None,
+            settings: default_device_settings(),
             created_at_ms: 1,
             last_seen_at_ms: None,
             last_seen_transport: Some("Bluetooth Low Energy".to_string()),
@@ -1338,9 +1719,70 @@ mod tests {
             DeviceFingerprint::default(),
         );
 
-        let merged = build_managed_device_info(&managed, Some(&live), 1000);
+        let merged = build_managed_device_info(&managed, Some(&live));
 
         assert_eq!(merged.display_name, "MX Master 3 Mac");
         assert_eq!(merged.product_name.as_deref(), Some("MX Master 3 Mac"));
+    }
+
+    #[test]
+    fn profile_resolution_prefers_device_assignment() {
+        let mut config = default_config();
+        config.upsert_profile(Profile {
+            id: "vscode".to_string(),
+            label: "VS Code".to_string(),
+            app_matchers: vec![AppMatcher {
+                kind: AppMatcherKind::Executable,
+                value: "Code.exe".to_string(),
+            }],
+            bindings: default_profile_bindings(),
+        });
+        config.managed_devices.push(ManagedDevice {
+            id: "mx_master_3-1".to_string(),
+            model_key: "mx_master_3".to_string(),
+            display_name: "MX Master 3 Mac".to_string(),
+            nickname: None,
+            profile_id: Some("default".to_string()),
+            identity_key: None,
+            settings: default_device_settings(),
+            created_at_ms: 1,
+            last_seen_at_ms: None,
+            last_seen_transport: None,
+        });
+
+        assert!(!config.sync_active_profile(
+            Some("default"),
+            Some(&test_app_identity("Code.exe")),
+        ));
+        assert_eq!(config.active_profile_id, "default");
+    }
+
+    #[test]
+    fn deleting_profile_clears_managed_device_assignment() {
+        let mut config = default_config();
+        config.upsert_profile(Profile {
+            id: "vscode".to_string(),
+            label: "VS Code".to_string(),
+            app_matchers: vec![AppMatcher {
+                kind: AppMatcherKind::Executable,
+                value: "Code.exe".to_string(),
+            }],
+            bindings: default_profile_bindings(),
+        });
+        config.managed_devices.push(ManagedDevice {
+            id: "mx_master_3-1".to_string(),
+            model_key: "mx_master_3".to_string(),
+            display_name: "MX Master 3 Mac".to_string(),
+            nickname: None,
+            profile_id: Some("vscode".to_string()),
+            identity_key: None,
+            settings: default_device_settings(),
+            created_at_ms: 1,
+            last_seen_at_ms: None,
+            last_seen_transport: None,
+        });
+
+        assert!(config.delete_profile("vscode"));
+        assert_eq!(config.managed_devices[0].profile_id, None);
     }
 }
