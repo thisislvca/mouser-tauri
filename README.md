@@ -40,13 +40,38 @@ It also emits:
 - `engine_status_changed`
 - `debug_event`
 
+## First-Time Setup
+
+If this is your first time running the repo, install these first:
+
+- Rust via `rustup`: [https://rustup.rs](https://rustup.rs)
+- Bun: [https://bun.sh/docs/installation](https://bun.sh/docs/installation)
+- Node.js LTS: [https://nodejs.org](https://nodejs.org)
+- Tauri system prerequisites for your OS: [https://v2.tauri.app/start/prerequisites/](https://v2.tauri.app/start/prerequisites/)
+
+Quick setup:
+
+```bash
+cd /Users/luca/Documents/dev/mouser-tauri
+bun install
+cargo test --manifest-path src-tauri/Cargo.toml
+bun run test:run
+bun run tauri dev
+```
+
+Notes:
+
+- This repo's frontend scripts call `bun`, so Bun needs to be installed even if you also use `npm`.
+- `rustup` installs both `rustc` and `cargo`.
+- Tauri needs extra native dependencies that vary by OS, so follow the official prerequisites page before running the desktop app.
+
 ## Development
 
 ```bash
 cd /Users/luca/Documents/dev/mouser-tauri
-npm install
-npm run test:run
-npm run build
+bun install
+bun run test:run
+bun run build
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
@@ -54,7 +79,7 @@ For the desktop app:
 
 ```bash
 cd /Users/luca/Documents/dev/mouser-tauri
-npm run tauri dev
+bun run tauri dev
 ```
 
 ## Current scope
