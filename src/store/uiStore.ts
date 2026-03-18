@@ -21,7 +21,7 @@ interface UiState {
 
 export const useUiStore = create<UiState>((set) => ({
   shellMode: "dashboard",
-  activeSection: "devices",
+  activeSection: "buttons",
   selectedProfileId: null,
   importDraft: "",
   eventLog: [],

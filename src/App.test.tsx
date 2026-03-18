@@ -538,12 +538,10 @@ describe("App", () => {
     });
   });
 
-  it("saves device tuning changes through config_save", async () => {
+  it("saves device tuning changes through the debounced DPI controls", async () => {
     const { user } = renderApp();
     await user.click(await screen.findByRole("button", { name: "Tune" }));
-    const dpiInput = await screen.findByTestId("dpi-input");
-    await user.clear(dpiInput);
-    await user.type(dpiInput, "900");
+    await user.click(await screen.findByTestId("dpi-preset-1600"));
 
     await waitFor(() => {
       expect(apiMocks.configSave).toHaveBeenCalled();
@@ -551,7 +549,7 @@ describe("App", () => {
       const lastCall = calls[calls.length - 1];
       expect(lastCall?.[0]).toEqual(
         expect.objectContaining({
-          settings: expect.objectContaining({ dpi: 900 }),
+          settings: expect.objectContaining({ dpi: 1600 }),
         }),
       );
     });

@@ -99,6 +99,7 @@ impl AppRuntime {
                 self.config.active_profile_id, self.config.settings.dpi
             ),
         );
+        self.log_dpi_state("DPI snapshot");
 
         if !debug_mode_was_enabled && self.config.settings.debug_mode {
             self.log_debug_session_state();
@@ -192,6 +193,7 @@ impl AppRuntime {
             format!("Added managed device `{model_key}`"),
         );
         self.log_device_inventory("Device library");
+        self.log_dpi_state("DPI snapshot");
         Some(device_id)
     }
 
@@ -234,6 +236,7 @@ impl AppRuntime {
                 format!("Selected device `{device_key}`"),
             );
             self.log_device_inventory("Device library");
+            self.log_dpi_state("DPI snapshot");
         }
     }
 
@@ -311,13 +314,41 @@ impl AppRuntime {
 
     fn apply_config(&mut self, mut config: AppConfig) -> bool {
         let debug_mode_was_enabled = self.config.settings.debug_mode;
+        let previous_dpi = self.config.settings.dpi;
         config.ensure_invariants();
         let selected_model_key = self.selected_managed_device().map(|device| device.model_key.as_str());
-        config.settings.dpi = self.catalog.clamp_dpi(selected_model_key, config.settings.dpi);
+        let requested_dpi = config.settings.dpi;
+        let clamped_dpi = self.catalog.clamp_dpi(selected_model_key, requested_dpi);
+        if requested_dpi != clamped_dpi {
+            self.push_debug_if_enabled(
+                DebugEventKind::Warning,
+                format!(
+                    "Clamped requested DPI from {requested_dpi} to {clamped_dpi} for {}",
+                    selected_model_key.unwrap_or("generic pointer")
+                ),
+            );
+        }
+        config.settings.dpi = clamped_dpi;
         self.config = config;
         self.ensure_selected_device();
 
-        if let Some(device) = self.active_device_info() {
+        let active_device = self.active_device_info();
+        if previous_dpi != self.config.settings.dpi {
+            self.push_debug_if_enabled(
+                DebugEventKind::Info,
+                format!(
+                    "Applying DPI request {} -> {} for {}",
+                    previous_dpi,
+                    self.config.settings.dpi,
+                    active_device
+                        .as_ref()
+                        .map(|device| device.display_name.as_str())
+                        .unwrap_or("generic pointer"),
+                ),
+            );
+        }
+
+        if let Some(device) = active_device.as_ref() {
             if let Some(backend_key) = self.selected_backend_device_key() {
                 if let Err(error) = self
                     .hid_backend
@@ -334,6 +365,9 @@ impl AppRuntime {
         self.persist_config();
         self.sync_active_profile();
         self.sync_hook_backend();
+        if previous_dpi != self.config.settings.dpi {
+            self.log_dpi_state("DPI apply request");
+        }
         debug_mode_was_enabled
     }
 
@@ -406,6 +440,17 @@ impl AppRuntime {
         if let Some(device) = self.active_device_info() {
             let device_dpi = clamp_dpi(Some(&device), self.config.settings.dpi);
             if self.config.settings.dpi != device_dpi {
+                self.push_debug_if_enabled(
+                    DebugEventKind::Warning,
+                    format!(
+                        "Clamped configured DPI from {} to {} for {} (range {}-{})",
+                        self.config.settings.dpi,
+                        device_dpi,
+                        device.display_name,
+                        device.dpi_min,
+                        device.dpi_max,
+                    ),
+                );
                 self.config.settings.dpi = device_dpi;
                 changed_config = true;
             }
@@ -417,6 +462,7 @@ impl AppRuntime {
 
         if self.describe_devices() != previous_summary {
             self.log_device_inventory("Device probe");
+            self.log_dpi_state("DPI snapshot");
         }
     }
 
@@ -540,6 +586,7 @@ impl AppRuntime {
             );
         }
         self.log_device_inventory("Device probe");
+        self.log_dpi_state("DPI snapshot");
         self.log_active_profile_snapshot("Active bindings");
     }
 
@@ -554,6 +601,66 @@ impl AppRuntime {
         self.push_debug_if_enabled(
             DebugEventKind::Info,
             format!("{prefix}: {}", self.describe_active_profile()),
+        );
+    }
+
+    fn log_dpi_state(&mut self, prefix: &str) {
+        let configured_dpi = self.config.settings.dpi;
+        let selected_device_key = self
+            .selected_device_key
+            .clone()
+            .unwrap_or_else(|| "none".to_string());
+        let managed_label = self
+            .selected_managed_device()
+            .map(|device| format!("{} ({})", device.display_name, device.model_key))
+            .unwrap_or_else(|| "none".to_string());
+        let live_summary = self
+            .selected_live_device_raw()
+            .map(|device| {
+                format!(
+                    "{} model={} transport={} live_dpi={} range={}-{}",
+                    device.display_name,
+                    device.model_key,
+                    device.transport.as_deref().unwrap_or("unknown"),
+                    device.current_dpi,
+                    device.dpi_min,
+                    device.dpi_max,
+                )
+            })
+            .unwrap_or_else(|| "none".to_string());
+        let displayed_summary = self
+            .active_device_info()
+            .map(|device| {
+                format!(
+                    "{} displayed_dpi={} range={}-{} connected={}",
+                    device.display_name,
+                    device.current_dpi,
+                    device.dpi_min,
+                    device.dpi_max,
+                    device.connected,
+                )
+            })
+            .unwrap_or_else(|| "none".to_string());
+        let sync_summary = self
+            .selected_live_device_raw()
+            .map(|device| {
+                if configured_dpi == device.current_dpi {
+                    "configured_vs_live=in_sync".to_string()
+                } else {
+                    format!(
+                        "configured_vs_live=drift(configured={}, live={})",
+                        configured_dpi,
+                        device.current_dpi,
+                    )
+                }
+            })
+            .unwrap_or_else(|| "configured_vs_live=no-live-device".to_string());
+
+        self.push_debug_if_enabled(
+            DebugEventKind::Info,
+            format!(
+                "{prefix}: selected_key={selected_device_key}; managed={managed_label}; configured_dpi={configured_dpi}; displayed={displayed_summary}; live={live_summary}; {sync_summary}",
+            ),
         );
     }
 

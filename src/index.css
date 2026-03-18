@@ -18,7 +18,7 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  --app-bg: #edf2f7;
+  --app-bg: #ffffff;
   --surface: rgba(252, 253, 255, 0.86);
   --sidebar: oklch(0.985 0 0);
   --sidebar-surface: rgba(255, 255, 255, 0.74);
@@ -71,10 +71,7 @@ body,
 body {
   margin: 0;
   min-width: 320px;
-  background:
-    radial-gradient(circle at top left, rgba(37, 99, 235, 0.09), transparent 26%),
-    radial-gradient(circle at right 18%, rgba(30, 64, 175, 0.08), transparent 22%),
-    linear-gradient(180deg, #eef3f8 0%, #e8eef5 100%);
+  background: #ffffff;
   color: var(--foreground);
 }
 

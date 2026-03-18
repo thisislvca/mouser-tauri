@@ -354,6 +354,8 @@ pub mod macos {
     const FEAT_UNIFIED_BATT: u16 = 0x1004;
     const FEAT_BATTERY_STATUS: u16 = 0x1000;
     const MY_SW: u8 = 0x0A;
+    const HIDPP_GET_SENSOR_DPI_FN: u8 = 0x02;
+    const HIDPP_SET_SENSOR_DPI_FN: u8 = 0x03;
 
     pub struct MacOsHidBackend;
     pub struct MacOsAppFocusBackend;
@@ -712,7 +714,7 @@ pub mod macos {
 
         let hi = ((dpi >> 8) & 0xFF) as u8;
         let lo = (dpi & 0xFF) as u8;
-        Ok(request(device, feature_index, 1, &[0, hi, lo])?.is_some())
+        Ok(request(device, feature_index, HIDPP_SET_SENSOR_DPI_FN, &[0, hi, lo])?.is_some())
     }
 
     #[cfg(target_os = "macos")]
@@ -723,13 +725,19 @@ pub mod macos {
             return Ok(None);
         };
 
-        let Some(response) = request(device, feature_index, 0, &[0])? else {
+        let Some(response) = request(device, feature_index, HIDPP_GET_SENSOR_DPI_FN, &[0])? else {
             return Ok(None);
         };
-        if response.len() < 2 {
-            return Ok(None);
+        Ok(parse_sensor_dpi_response(&response))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn parse_sensor_dpi_response(response: &[u8]) -> Option<u16> {
+        if response.len() < 3 {
+            return None;
         }
-        Ok(Some(u16::from(response[0]) << 8 | u16::from(response[1])))
+
+        Some(u16::from(response[1]) << 8 | u16::from(response[2]))
     }
 
     #[cfg(target_os = "macos")]

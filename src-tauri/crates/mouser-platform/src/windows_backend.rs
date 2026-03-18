@@ -39,6 +39,8 @@ const FEAT_UNIFIED_BATT: u16 = 0x1004;
 const FEAT_BATTERY_STATUS: u16 = 0x1000;
 const FEAT_REPROG_V4: u16 = 0x1B04;
 const MY_SW: u8 = 0x0A;
+const HIDPP_GET_SENSOR_DPI_FN: u8 = 0x02;
+const HIDPP_SET_SENSOR_DPI_FN: u8 = 0x03;
 const DEVICE_INDICES: [u8; 3] = [0xFF, 0x00, 0x01];
 const DEFAULT_GESTURE_CIDS: [u16; 3] = [0x00C3, 0x00D7, 0x0056];
 const GESTURE_DIVERT_FLAGS: u8 = 0x01;
@@ -1165,7 +1167,7 @@ fn set_hidpp_dpi(device: &HidDevice, dpi: u16) -> Result<bool, PlatformError> {
 
     let hi = ((dpi >> 8) & 0xFF) as u8;
     let lo = (dpi & 0xFF) as u8;
-    Ok(request(device, feature_index, 1, &[0, hi, lo])?.is_some())
+    Ok(request(device, feature_index, HIDPP_SET_SENSOR_DPI_FN, &[0, hi, lo])?.is_some())
 }
 
 #[cfg(target_os = "windows")]
@@ -1174,14 +1176,18 @@ fn read_hidpp_current_dpi(device: &HidDevice) -> Result<Option<u16>, PlatformErr
         return Ok(None);
     };
 
-    let Some(response) = request(device, feature_index, 0, &[0])? else {
+    let Some(response) = request(device, feature_index, HIDPP_GET_SENSOR_DPI_FN, &[0])? else {
         return Ok(None);
     };
-    if response.len() < 2 {
-        return Ok(None);
+    Ok(parse_sensor_dpi_response(&response))
+}
+
+fn parse_sensor_dpi_response(response: &[u8]) -> Option<u16> {
+    if response.len() < 3 {
+        return None;
     }
 
-    Ok(Some(u16::from(response[0]) << 8 | u16::from(response[1])))
+    Some(u16::from(response[1]) << 8 | u16::from(response[2]))
 }
 
 #[cfg(target_os = "windows")]

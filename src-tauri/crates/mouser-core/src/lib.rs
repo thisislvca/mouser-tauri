@@ -946,6 +946,8 @@ pub fn build_managed_device_info(
     live: Option<&DeviceInfo>,
     current_dpi: u16,
 ) -> DeviceInfo {
+    let effective_current_dpi = live.map(|device| device.current_dpi).unwrap_or(current_dpi);
+
     if let Some(spec) = known_device_spec_by_key(&managed.model_key) {
         let display_name = managed
             .nickname
@@ -977,7 +979,7 @@ pub fn build_managed_device_info(
             dpi_max: spec.dpi_max,
             connected: live.is_some(),
             battery_level: live.and_then(|device| device.battery_level),
-            current_dpi: current_dpi.max(spec.dpi_min).min(spec.dpi_max),
+            current_dpi: effective_current_dpi.max(spec.dpi_min).min(spec.dpi_max),
         };
     }
 
@@ -1009,7 +1011,7 @@ pub fn build_managed_device_info(
         dpi_max: 8000,
         connected: live.is_some(),
         battery_level: live.and_then(|device| device.battery_level),
-        current_dpi: current_dpi.max(200).min(8000),
+        current_dpi: effective_current_dpi.max(200).min(8000),
     }
 }
 

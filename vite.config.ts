@@ -36,7 +36,8 @@ export default defineConfig(async () => ({
           }
 
           if (
-            id.includes("@base-ui/react") ||
+            id.includes("radix-ui") ||
+            id.includes("lucide-react") ||
             id.includes("class-variance-authority") ||
             id.includes("clsx") ||
             id.includes("tailwind-merge")

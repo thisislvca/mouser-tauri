@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type ComponentProps,
@@ -9,11 +10,12 @@ import {
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  House,
+  CaretLeft,
   BugBeetle,
+  GearSix,
   MouseLeftClick,
   MouseScroll,
-  SlidersHorizontal,
+  Plus,
   Stack,
   X,
 } from "@phosphor-icons/react";
@@ -27,9 +29,26 @@ import {
   CardHeader,
   CardTitle,
 } from "./components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "./components/ui/dialog";
 import { Input } from "./components/ui/input";
+import { Label } from "./components/ui/label";
 import { ScrollArea } from "./components/ui/scroll-area";
-import { Select, type SelectOption } from "./components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "./components/ui/select";
+import { Slider } from "./components/ui/slider";
 import { Switch } from "./components/ui/switch";
 import { Textarea } from "./components/ui/textarea";
 import {
@@ -63,8 +82,8 @@ import { cn } from "./lib/utils";
 import { type SectionName, useUiStore } from "./store/uiStore";
 
 const SECTION_ORDER: SectionName[] = [
-  "devices",
   "buttons",
+  "devices",
   "profiles",
   "debug",
 ];
@@ -81,7 +100,7 @@ const SECTION_META: Record<
     icon: MouseLeftClick,
   },
   devices: {
-    label: "Devices",
+    label: "Point & Scroll",
     icon: MouseScroll,
   },
   profiles: {
@@ -107,12 +126,14 @@ const CONTROL_LABELS: Record<LogicalControl, string> = {
   hscroll_right: "Thumb wheel right",
 };
 
-const BUTTONS_SHEET_TRANSITION = {
-  type: "spring" as const,
-  stiffness: 340,
-  damping: 32,
-  mass: 0.92,
+type AppSelectOption = {
+  label: string;
+  value: string;
+  group?: string;
 };
+
+const EMPTY_SELECT_VALUE = "__empty__";
+const DPI_PRESETS = [400, 800, 1000, 1600, 2400, 4000, 6000, 8000];
 
 function App() {
   const queryClient = useQueryClient();
@@ -245,6 +266,57 @@ function App() {
     }
   }, [bootstrapQuery.data, setShellMode, shellMode]);
 
+  useEffect(() => {
+    if (!bootstrapQuery.data?.config.settings.debugMode) {
+      return;
+    }
+
+    const { config, engineSnapshot } = bootstrapQuery.data;
+    const activeDevice = engineSnapshot.activeDevice;
+    const liveDevice =
+      activeDevice == null
+        ? null
+        : engineSnapshot.detectedDevices.find(
+            (device) => device.modelKey === activeDevice.modelKey,
+          ) ?? null;
+
+    console.debug("[mouser:dpi]", {
+      configuredDpi: config.settings.dpi,
+      configuredMatchesLive: liveDevice
+        ? config.settings.dpi === liveDevice.currentDpi
+        : null,
+      activeDevice: activeDevice
+        ? {
+            key: activeDevice.key,
+            displayName: activeDevice.displayName,
+            currentDpi: activeDevice.currentDpi,
+            dpiMin: activeDevice.dpiMin,
+            dpiMax: activeDevice.dpiMax,
+          }
+        : null,
+      liveDevice: liveDevice
+        ? {
+            key: liveDevice.key,
+            displayName: liveDevice.displayName,
+            currentDpi: liveDevice.currentDpi,
+            dpiMin: liveDevice.dpiMin,
+            dpiMax: liveDevice.dpiMax,
+            transport: liveDevice.transport,
+            source: liveDevice.source,
+          }
+        : null,
+      detectedDevices: engineSnapshot.detectedDevices.map((device) => ({
+        key: device.key,
+        modelKey: device.modelKey,
+        currentDpi: device.currentDpi,
+        dpiMin: device.dpiMin,
+        dpiMax: device.dpiMax,
+      })),
+    });
+  }, [
+    bootstrapQuery.data,
+  ]);
+
   const bootstrap = bootstrapQuery.data;
   const isMutating =
     configMutation.isPending ||
@@ -310,7 +382,7 @@ function App() {
     configMutation.mutate(nextConfig);
   };
 
-  const openDeviceDetail = (deviceKey: string, section: SectionName = "devices") => {
+  const openDeviceDetail = (deviceKey: string, section: SectionName = "buttons") => {
     selectDeviceMutation.mutate(deviceKey, {
       onSuccess: () => {
         setShellMode("detail");
@@ -370,28 +442,72 @@ function App() {
           supportedDevices={bootstrap.supportedDevices}
         />
       ) : (
-        <div className="min-h-screen lg:pl-[18rem]">
-          <aside className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:flex lg:w-[18rem] lg:flex-col lg:bg-[var(--sidebar)] lg:px-5 lg:py-6">
-            <div className="space-y-5 px-3 pb-6 pt-3">
-              <Button
-                className="w-full justify-start"
+        <div className="relative min-h-screen bg-white">
+          <header className="fixed inset-x-0 top-0 z-30 flex items-center justify-between px-8 py-4">
+            <div className="flex items-center gap-3">
+              <button
+                className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--foreground)] transition hover:bg-black/5"
                 onClick={() => setShellMode("dashboard")}
-                variant="ghost"
+                type="button"
               >
-                <House size={18} />
-                Dashboard
-              </Button>
-              <div>
-                <p className="text-[13px] font-semibold uppercase tracking-[0.28em] text-[var(--sidebar-foreground)]">
-                  Mouser
-                </p>
-                <p className="mt-2 text-sm font-semibold text-[var(--foreground)]">
-                  {activeDevice?.displayName ?? "Device"}
-                </p>
-              </div>
+                <CaretLeft size={20} weight="bold" />
+              </button>
+              <h1 className="text-[22px] font-bold tracking-[-0.04em] text-[var(--foreground)]">
+                {shellTitle}
+              </h1>
             </div>
 
-            <nav className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              {isMutating && <StatusPill tone="accent" value="Applying" />}
+              {config.profiles.slice(0, 5).map((profile) => {
+                const app = profile.appMatchers[0]?.value
+                  ? knownApps.find((a) => a.executable === profile.appMatchers[0]?.value)
+                  : null;
+                return (
+                  <button
+                    className={cn(
+                      "flex h-9 w-9 items-center justify-center rounded-xl border-2 transition",
+                      profile.id === selectedProfile.id
+                        ? "border-[#10b981] bg-[#10b981]/10"
+                        : "border-transparent bg-black/[0.04] hover:bg-black/[0.07]",
+                    )}
+                    key={profile.id}
+                    onClick={() => {
+                      setSelectedProfileId(profile.id);
+                      setActiveSection("profiles");
+                    }}
+                    title={profile.label}
+                    type="button"
+                  >
+                    {app?.iconAsset ? (
+                      <img
+                        alt={profile.label}
+                        className="h-6 w-6 rounded-lg object-cover"
+                        src={app.iconAsset}
+                      />
+                    ) : (
+                      <span className="text-xs font-bold text-[var(--foreground)]">
+                        {profile.label.charAt(0).toUpperCase()}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+              <button
+                className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--muted-foreground)] transition hover:bg-black/5 hover:text-[var(--foreground)]"
+                onClick={() => {
+                  setShellMode("dashboard");
+                  setAddDeviceOpen(true);
+                }}
+                type="button"
+              >
+                <Plus size={18} weight="bold" />
+              </button>
+            </div>
+          </header>
+
+          <nav className="fixed left-7 top-1/2 z-20 hidden -translate-y-1/2 lg:block">
+            <div className="flex flex-col gap-0.5 rounded-[20px] bg-white/80 p-2 shadow-[0_8px_40px_rgba(0,0,0,0.06)] ring-1 ring-black/[0.04] backdrop-blur-xl">
               {SECTION_ORDER.map((section) => (
                 <SectionNavButton
                   active={activeSection === section}
@@ -401,79 +517,19 @@ function App() {
                   onClick={() => setActiveSection(section)}
                 />
               ))}
-            </nav>
-
-            <div className="mt-auto space-y-3">
-              <Card className="bg-[var(--sidebar-surface)]">
-                <CardContent className="flex items-center justify-between px-4 py-4">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--muted-foreground)]">
-                      Battery
-                    </p>
-                    <p className="mt-1 text-sm font-semibold text-[var(--foreground)]">{batteryLabel}</p>
-                  </div>
-                  <StatusPill tone={connectionStatus.tone} value={connectionStatus.value} />
-                </CardContent>
-              </Card>
-              <Button
-                className="w-full"
+              <div className="mx-3 my-1 h-px bg-black/[0.06]" />
+              <button
+                className="flex items-center gap-3 rounded-2xl px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)] transition hover:bg-black/5 hover:text-[var(--foreground)]"
                 onClick={() => setAppSettingsOpen(true)}
-                variant="outline"
+                type="button"
               >
-                <SlidersHorizontal size={18} />
-                App settings
-              </Button>
+                <GearSix className="h-[18px] w-[18px]" />
+                <span>Settings</span>
+              </button>
             </div>
-          </aside>
+          </nav>
 
-          <div className="min-h-screen p-3 sm:p-4 lg:p-5">
-            <div className="flex min-h-[calc(100vh-1.5rem)] flex-col overflow-hidden rounded-[32px] bg-[var(--surface)] shadow-[0_36px_120px_rgba(15,23,42,0.10)] ring-1 ring-[var(--border-soft)] sm:min-h-[calc(100vh-2rem)]">
-              <header className="border-b border-[var(--border)] px-5 py-5 sm:px-8">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <h2 className="truncate text-[24px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
-                      {shellTitle}
-                    </h2>
-                  </div>
-
-                  <div className="flex shrink-0 items-center gap-3">
-                    {isMutating && <StatusPill tone="accent" value="Applying" />}
-                    <Button onClick={() => setAppSettingsOpen(true)} variant="outline">
-                      App settings
-                    </Button>
-                    <Button onClick={() => setAddDeviceOpen(true)} variant="outline">
-                      + Add device
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="mt-5 lg:hidden">
-                  <div className="flex gap-2 pb-1">
-                    <Button onClick={() => setShellMode("dashboard")} size="sm" variant="ghost">
-                      <House size={16} />
-                      Dashboard
-                    </Button>
-                    <ScrollArea className="w-full whitespace-nowrap">
-                      <div className="flex gap-2 pb-1">
-                        {SECTION_ORDER.map((section) => (
-                          <SectionNavButton
-                            active={activeSection === section}
-                            compact
-                            icon={SECTION_META[section].icon}
-                            key={section}
-                            label={SECTION_META[section].label}
-                            onClick={() => setActiveSection(section)}
-                          />
-                        ))}
-                      </div>
-                    </ScrollArea>
-                  </div>
-                </div>
-              </header>
-
-              <div className="min-h-0 flex-1">
-                <ScrollArea className="h-full">
-                  <section className="min-w-0 px-5 py-6 sm:px-8 sm:py-8">
+          <div className="min-h-screen overflow-y-auto px-6 pb-8 pt-[72px] lg:pl-[220px]">
                     {activeSection === "buttons" && (
                       <ButtonsView
                         actionLookup={actionLookup}
@@ -534,11 +590,14 @@ function App() {
                         setImportSourcePath={setImportSourcePath}
                       />
                     )}
-                  </section>
-                </ScrollArea>
-              </div>
-            </div>
           </div>
+
+          {activeDevice && (
+            <div className="fixed bottom-6 left-8 z-20 flex items-center gap-3">
+              <span className="text-sm font-semibold text-[var(--foreground)]">{batteryLabel}</span>
+              <StatusPill tone={connectionStatus.tone} value={connectionStatus.value} />
+            </div>
+          )}
         </div>
       )}
       <AppSettingsDialog
@@ -586,27 +645,23 @@ function ButtonsView(props: {
   };
 
   return (
-    <div className="min-h-full">
+    <div className="relative min-h-[calc(100vh-120px)]">
       {props.activeDevice ? (
-        <div className="grid min-h-[760px] gap-6 xl:grid-cols-[minmax(0,1fr)_380px] xl:gap-8">
-          <motion.div layout className="min-w-0" transition={BUTTONS_SHEET_TRANSITION}>
-            <StagePanel title={props.activeDevice.displayName}>
-              <ButtonsWorkbench
-                actionLookup={props.actionLookup}
-                activeDevice={props.activeDevice}
-                layout={props.activeLayout}
-                profile={props.profile}
-                selectedControl={selectedControl}
-                onSelectControl={setSelectedControl}
-              />
-            </StagePanel>
-          </motion.div>
+        <>
+          <ButtonsWorkbench
+            actionLookup={props.actionLookup}
+            activeDevice={props.activeDevice}
+            layout={props.activeLayout}
+            profile={props.profile}
+            selectedControl={selectedControl}
+            onSelectControl={setSelectedControl}
+          />
 
           <AnimatePresence initial={false}>
-            {selectedHotspot ? (
+            {selectedHotspot && (
               <motion.aside
                 animate={{ opacity: 1, x: 0 }}
-                className="min-w-0 xl:border-l xl:border-[var(--border)] xl:pl-8"
+                className="fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l border-black/[0.06] bg-white/95 px-8 pb-8 pt-20 backdrop-blur-xl"
                 exit={{ opacity: 0, x: 24 }}
                 initial={{ opacity: 0, x: 24 }}
                 key={selectedHotspot.control}
@@ -623,21 +678,9 @@ function ButtonsView(props: {
                   onClose={() => setSelectedControl(null)}
                 />
               </motion.aside>
-            ) : (
-              <motion.aside
-                animate={{ opacity: 1 }}
-                className="hidden xl:block xl:border-l xl:border-[var(--border)] xl:pl-8"
-                initial={{ opacity: 0 }}
-              >
-                <Card className="h-full bg-[var(--card-muted)]">
-                  <CardHeader className="flex h-full items-center justify-center">
-                    <CardTitle className="text-[22px]">Select a control</CardTitle>
-                  </CardHeader>
-                </Card>
-              </motion.aside>
             )}
           </AnimatePresence>
-        </div>
+        </>
       ) : (
         <EmptyStage
           body="Connect a supported mouse to inspect mapped controls."
@@ -674,17 +717,12 @@ function DashboardShell(props: {
     props.engineSnapshot.activeDeviceKey ?? props.activeDevice?.key ?? null;
 
   return (
-    <div className="min-h-screen bg-white">
-      <div className="mx-auto max-w-[1680px] px-6 py-8 sm:px-10 sm:py-10">
+    <div className="flex min-h-screen flex-col bg-white">
+      <div className="mx-auto w-full max-w-[1680px] px-6 py-8 sm:px-10 sm:py-10">
         <header className="flex flex-wrap items-start justify-between gap-6">
           <div>
             <p className="text-[38px] font-semibold tracking-[-0.06em] text-[var(--foreground)] sm:text-[48px]">
               {currentGreeting()}
-            </p>
-            <p className="mt-3 max-w-2xl text-sm text-[var(--muted-foreground)]">
-              {props.engineSnapshot.devices.length > 0
-                ? "Your device library lives here. Pick a device to tune it, remap buttons, or inspect its live status."
-                : "Add supported devices to build your library before you start customizing them."}
             </p>
           </div>
 
@@ -693,17 +731,24 @@ function DashboardShell(props: {
             <Button onClick={props.onOpenAddDevice} variant="ghost">
               + Add device
             </Button>
-            <Button onClick={props.onOpenAppSettings} variant="ghost">
-              App settings
+            <Button
+              aria-label="App settings"
+              onClick={props.onOpenAppSettings}
+              size="icon"
+              variant="ghost"
+            >
+              <GearSix className="size-4" />
             </Button>
           </div>
         </header>
+      </div>
 
-        <div className="mt-10 rounded-[40px] bg-white">
+      <div className="mx-auto flex w-full max-w-[1680px] flex-1 flex-col px-6 pb-10 sm:px-10">
+        <div className="flex flex-1 items-center justify-center">
           {props.engineSnapshot.devices.length > 0 ? (
-            <div className="grid gap-10 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="flex flex-wrap items-start justify-center gap-10">
               {props.engineSnapshot.devices.map((device) => (
-                <div className="min-w-0" key={device.key}>
+                <div className="w-[280px] shrink-0" key={device.key}>
                   <button
                     className="group w-full text-center"
                     data-testid={
@@ -714,30 +759,12 @@ function DashboardShell(props: {
                     onClick={() => props.onOpenDevice(device.key, "devices")}
                     type="button"
                   >
-                    <div
-                      className={[
-                        "mx-auto flex h-[320px] w-full items-center justify-center rounded-[36px] transition-all duration-300",
-                        device.key === selectedDeviceKey
-                          ? "bg-[radial-gradient(circle_at_center,rgba(15,23,42,0.06),rgba(255,255,255,0)_68%)]"
-                          : "opacity-80 hover:opacity-100",
-                      ].join(" ")}
-                    >
-                      <img
-                        alt={device.displayName}
-                        className={[
-                          "max-h-[260px] w-auto object-contain drop-shadow-[0_24px_28px_rgba(15,23,42,0.18)] transition-transform duration-300",
-                          device.key === selectedDeviceKey
-                            ? "scale-[1.02]"
-                            : "group-hover:scale-[1.02]",
-                        ].join(" ")}
-                        data-testid={
-                          device.key === selectedDeviceKey
-                            ? "device-layout-image"
-                            : undefined
-                        }
-                        src={device.imageAsset}
-                      />
-                    </div>
+                    <DeviceHeroImage
+                      alt={device.displayName}
+                      connected={device.connected}
+                      selected={device.key === selectedDeviceKey}
+                      src={device.imageAsset}
+                    />
 
                     <div className="mt-5 flex items-center justify-center gap-2">
                       <StatusPill
@@ -856,6 +883,45 @@ function DashboardShell(props: {
   );
 }
 
+function DeviceHeroImage(props: {
+  alt: string;
+  connected: boolean;
+  selected: boolean;
+  src: string;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const active = hovered;
+
+  return (
+    <div
+      className="relative mx-auto flex h-[320px] w-full items-center justify-center"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <motion.div
+        animate={{
+          opacity: active ? 0.5 : props.connected ? 0.18 : 0.08,
+          scale: active ? 1.15 : 1,
+        }}
+        className="pointer-events-none absolute bg-[radial-gradient(ellipse_50%_50%_at_center,rgba(100,116,139,0.55)_0%,transparent_100%)]"
+        style={{ width: 340, height: 200, bottom: -10 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+      />
+      <motion.img
+        alt={props.alt}
+        animate={{
+          scale: active ? 1.15 : 1,
+          opacity: props.connected ? 1 : 0.55,
+        }}
+        className="relative max-h-[260px] w-auto object-contain"
+        data-testid={props.selected ? "device-layout-image" : undefined}
+        src={props.src}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+      />
+    </div>
+  );
+}
+
 function AddDeviceModal(props: {
   detectedModelKeys: Set<string>;
   managedDevices: DeviceInfo[];
@@ -864,32 +930,23 @@ function AddDeviceModal(props: {
   open: boolean;
   supportedDevices: KnownDeviceSpec[];
 }) {
-  if (!props.open) {
-    return null;
-  }
-
   const managedCounts = props.managedDevices.reduce<Map<string, number>>((counts, device) => {
     counts.set(device.modelKey, (counts.get(device.modelKey) ?? 0) + 1);
     return counts;
   }, new Map<string, number>());
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(15,23,42,0.28)] px-4">
-      <Card className="max-h-[85vh] w-full max-w-4xl overflow-hidden">
-        <CardHeader className="flex flex-row items-start justify-between gap-4 border-b border-[var(--border)] pb-5">
-          <div>
-            <CardTitle className="text-[24px]">Add Device</CardTitle>
-            <CardDescription className="mt-2">
-              Add supported devices to your managed library, then connect them when ready.
-            </CardDescription>
-          </div>
-          <Button onClick={props.onClose} variant="ghost">
-            <X size={16} />
-          </Button>
-        </CardHeader>
+    <Dialog open={props.open} onOpenChange={(nextOpen) => !nextOpen && props.onClose()}>
+      <DialogContent className="max-w-4xl overflow-hidden p-0 sm:max-w-4xl">
+        <DialogHeader className="border-b border-[var(--border)] px-6 py-5">
+          <DialogTitle className="text-[24px]">Add Device</DialogTitle>
+          <DialogDescription>
+            Add supported devices to your managed library, then connect them when ready.
+          </DialogDescription>
+        </DialogHeader>
 
         <ScrollArea className="max-h-[70vh]">
-          <CardContent className="grid gap-4 px-6 py-6 sm:grid-cols-2">
+          <div className="grid gap-4 px-6 py-6 sm:grid-cols-2">
             {props.supportedDevices.map((device) => {
               const addedCount = managedCounts.get(device.key) ?? 0;
               const isDetected = props.detectedModelKeys.has(device.key);
@@ -933,10 +990,10 @@ function AddDeviceModal(props: {
                 </div>
               );
             })}
-          </CardContent>
+          </div>
         </ScrollArea>
-      </Card>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1102,7 +1159,65 @@ function DeviceDetailView(props: {
   layoutChoices: BootstrapPayload["manualLayoutChoices"];
   saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
 }) {
-  if (!props.activeDevice) {
+  const activeDevice = props.activeDevice;
+  const dpiMin = activeDevice?.dpiMin ?? 200;
+  const dpiMax = activeDevice?.dpiMax ?? 8000;
+  const configuredDpi = snapDpi(props.config.settings.dpi, dpiMin, dpiMax);
+  const liveDpi = activeDevice
+    ? snapDpi(activeDevice.currentDpi, dpiMin, dpiMax)
+    : configuredDpi;
+  const externalDpi = activeDevice?.connected ? liveDpi : configuredDpi;
+  const [dpiDraft, setDpiDraft] = useState(externalDpi);
+  const [pendingDpi, setPendingDpi] = useState<number | null>(null);
+  const saveSettingsRef = useRef(props.saveSettings);
+  const availableDpiPresets = DPI_PRESETS.filter(
+    (preset) => preset >= dpiMin && preset <= dpiMax,
+  );
+
+  useEffect(() => {
+    saveSettingsRef.current = props.saveSettings;
+  }, [props.saveSettings]);
+
+  useEffect(() => {
+    if (!activeDevice) {
+      setPendingDpi(null);
+      setDpiDraft(configuredDpi);
+      return;
+    }
+
+    if (pendingDpi != null) {
+      const pendingSettled = configuredDpi === pendingDpi || liveDpi === pendingDpi;
+      if (!pendingSettled) {
+        return;
+      }
+      setPendingDpi(null);
+    }
+
+    setDpiDraft(externalDpi);
+  }, [
+    activeDevice?.connected,
+    activeDevice?.key,
+    configuredDpi,
+    externalDpi,
+    liveDpi,
+    pendingDpi,
+  ]);
+
+  useEffect(() => {
+    if (!activeDevice || pendingDpi == null) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      saveSettingsRef.current((nextConfig) => {
+        nextConfig.settings.dpi = pendingDpi;
+      });
+    }, 400);
+
+    return () => window.clearTimeout(timeout);
+  }, [activeDevice, pendingDpi]);
+
+  if (!activeDevice) {
     return (
       <EmptyStage
         body="Pick a device from the dashboard to tune scroll behavior, DPI, and layout handling."
@@ -1111,72 +1226,127 @@ function DeviceDetailView(props: {
     );
   }
 
-  const activeDevice = props.activeDevice;
   const layoutOptions = props.layoutChoices.map(
     (choice) =>
       ({
         label: choice.label,
         value: choice.key,
-      }) satisfies SelectOption,
+      }) satisfies AppSelectOption,
   );
+  const queueDpiChange = (value: number) => {
+    const nextDpi = snapDpi(value, activeDevice.dpiMin, activeDevice.dpiMax);
+    setDpiDraft(nextDpi);
+    setPendingDpi(
+      nextDpi === configuredDpi && (!activeDevice.connected || nextDpi === liveDpi)
+        ? null
+        : nextDpi,
+    );
+  };
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
-      <div className="space-y-6">
-        <StagePanel
-          subtitle="This page is device-specific. App-wide behavior lives in App settings."
-          title={activeDevice.displayName}
-        >
-          <div className="rounded-[30px] bg-white/90 p-6 ring-1 ring-[var(--border)]">
-            <div className="flex min-h-[420px] flex-col items-center justify-center rounded-[26px] bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.98),rgba(241,244,250,0.90)_46%,rgba(236,240,246,0.74))] px-8 py-10 text-center">
-              <img
-                alt={activeDevice.displayName}
-                className="max-h-[300px] w-auto object-contain drop-shadow-[0_28px_44px_rgba(15,23,42,0.16)]"
-                data-testid="device-layout-image"
-                src={props.activeLayout.imageAsset}
+    <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="space-y-8">
+        <div>
+          <div className="flex min-h-[420px] flex-col items-center justify-center px-8 py-10 text-center">
+            <img
+              alt={activeDevice.displayName}
+              className="max-h-[300px] w-auto object-contain drop-shadow-[0_28px_44px_rgba(15,23,42,0.16)]"
+              data-testid="device-layout-image"
+              src={props.activeLayout.imageAsset}
+            />
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+              <StatusPill
+                tone={activeDevice.connected ? "success" : "neutral"}
+                value={
+                  activeDevice.batteryLevel != null
+                    ? `${activeDevice.batteryLevel}% battery`
+                    : activeDevice.connected
+                      ? "Connected"
+                      : "Added"
+                }
               />
-              <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-                <StatusPill
-                  tone={activeDevice.connected ? "success" : "neutral"}
-                  value={
-                    activeDevice.batteryLevel != null
-                      ? `${activeDevice.batteryLevel}% battery`
-                      : activeDevice.connected
-                        ? "Connected"
-                        : "Added"
-                  }
-                />
-                <StatusPill
-                  tone={activeDevice.connected ? "success" : "neutral"}
-                  value={activeDevice.transport ?? "Unknown transport"}
-                />
-                <StatusPill tone="neutral" value={`DPI ${activeDevice.dpiMin}-${activeDevice.dpiMax}`} />
-              </div>
+              <StatusPill
+                tone={activeDevice.connected ? "success" : "neutral"}
+                value={activeDevice.transport ?? "Unknown transport"}
+              />
+              <StatusPill tone="neutral" value={`DPI ${activeDevice.dpiMin}-${activeDevice.dpiMax}`} />
             </div>
           </div>
-        </StagePanel>
+        </div>
 
         <Panel title={`${activeDevice.displayName} Tuning`}>
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="DPI">
-              <Input
-                data-testid="dpi-input"
-                max={activeDevice.dpiMax}
-                min={activeDevice.dpiMin}
-                type="number"
-                value={props.config.settings.dpi}
-                onChange={(event) =>
-                  props.saveSettings((nextConfig) => {
-                    nextConfig.settings.dpi = Number(event.currentTarget.value);
-                  })
-                }
-              />
-            </Field>
+            <div className="space-y-2.5 md:col-span-2">
+              <Label className="text-sm font-medium text-[var(--foreground)]">DPI</Label>
+              <div className="rounded-[24px] bg-[var(--card-muted)] p-5 ring-1 ring-[var(--border)]">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-[var(--foreground)]">
+                      Pointer speed
+                    </p>
+                    <p className="text-xs text-[var(--muted-foreground)]">
+                      Drag to choose a DPI, then pause briefly to apply it.
+                      {activeDevice.connected
+                        ? ` The device is currently reporting ${liveDpi} DPI.`
+                        : " Changes will apply once the device reconnects."}
+                    </p>
+                  </div>
+                  <div className="rounded-full bg-white px-3 py-1.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border)]">
+                    {dpiDraft} DPI
+                  </div>
+                </div>
+
+                <div className="mt-5 flex items-center gap-3">
+                  <span className="w-12 text-xs text-[var(--muted-foreground)]">
+                    {activeDevice.dpiMin}
+                  </span>
+                  <Slider
+                    aria-label="Pointer speed"
+                    className="flex-1"
+                    data-testid="dpi-slider"
+                    max={activeDevice.dpiMax}
+                    min={activeDevice.dpiMin}
+                    step={50}
+                    value={[dpiDraft]}
+                    onValueChange={(values) => {
+                      const nextValue = values[0];
+                      if (nextValue != null) {
+                        queueDpiChange(nextValue);
+                      }
+                    }}
+                  />
+                  <span className="w-12 text-right text-xs text-[var(--muted-foreground)]">
+                    {activeDevice.dpiMax}
+                  </span>
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  {availableDpiPresets.map((preset) => (
+                    <Button
+                      key={preset}
+                      data-testid={`dpi-preset-${preset}`}
+                      size="sm"
+                      type="button"
+                      variant={dpiDraft === preset ? "default" : "outline"}
+                      onClick={() => queueDpiChange(preset)}
+                    >
+                      {preset}
+                    </Button>
+                  ))}
+                  {pendingDpi != null ? (
+                    <span className="text-xs text-[var(--muted-foreground)]">
+                      Applying {pendingDpi} DPI...
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
 
             <Field label="Manual layout override">
-              <Select
+              <AppSelect
                 ariaLabel="Manual layout override"
                 options={layoutOptions}
+                placeholder="Auto-detect"
                 value={
                   props.config.settings.deviceLayoutOverrides[activeDevice.key] ??
                   props.config.settings.deviceLayoutOverrides[activeDevice.modelKey] ??
@@ -1240,7 +1410,11 @@ function DeviceDetailView(props: {
 
       <Panel title="Status">
         <div className="space-y-3">
-          <CapabilityRow label="Selected DPI" value={`${props.config.settings.dpi}`} />
+          <CapabilityRow
+            label="Live DPI"
+            value={activeDevice.connected ? `${liveDpi}` : "Not connected"}
+          />
+          <CapabilityRow label="Configured DPI" value={`${configuredDpi}`} />
           <CapabilityRow label="Transport" value={activeDevice.transport ?? "Unknown"} />
           <CapabilityRow label="Battery" value={activeDevice.batteryLevel != null ? `${activeDevice.batteryLevel}%` : "N/A"} />
           <CapabilityRow label="Layout family" value={props.activeLayout.label} />
@@ -1259,54 +1433,24 @@ function AppSettingsDialog(props: {
   platformCapabilities: BootstrapPayload["platformCapabilities"];
   saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
 }) {
-  useEffect(() => {
-    if (!props.open) {
-      return;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        props.onClose();
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [props.onClose, props.open]);
-
-  if (!props.open) {
-    return null;
-  }
-
   const appearanceOptions = [
     { label: "System", value: "system" },
     { label: "Light", value: "light" },
     { label: "Dark", value: "dark" },
-  ] satisfies SelectOption[];
+  ] satisfies AppSelectOption[];
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(15,23,42,0.30)] px-4"
-      onClick={props.onClose}
-    >
-      <Card
-        className="max-h-[88vh] w-full max-w-4xl overflow-hidden"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <CardHeader className="flex flex-row items-start justify-between gap-4 border-b border-[var(--border)] pb-5">
-          <div>
-            <CardTitle className="text-[24px]">App Settings</CardTitle>
-            <CardDescription className="mt-2">
-              Settings here affect Mouser globally, not just the currently selected device.
-            </CardDescription>
-          </div>
-          <Button aria-label="Close app settings" onClick={props.onClose} variant="ghost">
-            <X size={16} />
-          </Button>
-        </CardHeader>
+    <Dialog open={props.open} onOpenChange={(nextOpen) => !nextOpen && props.onClose()}>
+      <DialogContent className="max-w-4xl overflow-hidden p-0 sm:max-w-4xl">
+        <DialogHeader className="border-b border-[var(--border)] px-6 py-5">
+          <DialogTitle className="text-[24px]">App Settings</DialogTitle>
+          <DialogDescription>
+            Settings here affect Mouser globally, not just the currently selected device.
+          </DialogDescription>
+        </DialogHeader>
 
         <ScrollArea className="max-h-[76vh]">
-          <CardContent className="grid gap-6 px-6 py-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="grid gap-6 px-6 py-6 xl:grid-cols-[minmax(0,1fr)_320px]">
             <div className="space-y-6">
               <Panel title="General">
                 <div className="grid gap-4 md:grid-cols-2">
@@ -1338,7 +1482,7 @@ function AppSettingsDialog(props: {
                     }
                   />
                   <Field label="Appearance mode">
-                    <Select
+                    <AppSelect
                       ariaLabel="Appearance mode"
                       options={appearanceOptions}
                       value={props.config.settings.appearanceMode}
@@ -1386,10 +1530,10 @@ function AppSettingsDialog(props: {
                 <CapabilityRow label="Focus backend" value={props.platformCapabilities.activeFocusBackend} />
               </div>
             </Panel>
-          </CardContent>
+          </div>
         </ScrollArea>
-      </Card>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1518,19 +1662,18 @@ function SectionNavButton(props: {
 
   return (
     <button
-      aria-label={props.compact ? `${props.label} quick nav` : props.label}
+      aria-label={props.label}
       className={cn(
-        "flex items-center gap-3 rounded-[20px] px-4 py-3 text-left transition-all duration-200",
-        props.compact ? "shrink-0 whitespace-nowrap" : "w-full",
+        "flex items-center gap-3 rounded-2xl px-4 py-2.5 text-left text-sm font-semibold transition-all",
         props.active
-          ? "bg-[var(--accent)] text-white shadow-[0_18px_36px_rgba(37,99,235,0.22)]"
-          : "bg-transparent text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-surface)]",
+          ? "bg-[#10b981] text-white shadow-[0_4px_12px_rgba(16,185,129,0.3)]"
+          : "text-[var(--muted-foreground)] hover:bg-black/5 hover:text-[var(--foreground)]",
       )}
       onClick={props.onClick}
       type="button"
     >
-      <Icon className="h-5 w-5" />
-      <span className="text-sm font-semibold">{props.label}</span>
+      <Icon className="h-[18px] w-[18px]" />
+      <span>{props.label}</span>
     </button>
   );
 }
@@ -1547,24 +1690,69 @@ function Panel(props: { title: string; subtitle?: string; children: ReactNode })
   );
 }
 
-function StagePanel(props: { title: string; subtitle?: string; children: ReactNode }) {
+function Field(props: { label: string; children: ReactNode }) {
   return (
-    <Card className="overflow-hidden bg-[var(--card-muted)]">
-      <CardHeader className="pb-0">
-        <CardTitle className="text-[28px]">{props.title}</CardTitle>
-        {props.subtitle ? <CardDescription>{props.subtitle}</CardDescription> : null}
-      </CardHeader>
-      <CardContent className="pt-6">{props.children}</CardContent>
-    </Card>
+    <div className="space-y-2.5">
+      <Label className="text-sm font-medium text-[var(--foreground)]">{props.label}</Label>
+      {props.children}
+    </div>
   );
 }
 
-function Field(props: { label: string; children: ReactNode }) {
+function AppSelect(props: {
+  ariaLabel: string;
+  className?: string;
+  onValueChange: (value: string) => void;
+  options: AppSelectOption[];
+  placeholder?: string;
+  value: string;
+}) {
+  const groupedOptions = props.options.reduce<Map<string, AppSelectOption[]>>((groups, option) => {
+    const groupKey = option.group ?? "";
+    const next = groups.get(groupKey) ?? [];
+    next.push(option);
+    groups.set(groupKey, next);
+    return groups;
+  }, new Map<string, AppSelectOption[]>());
+  const selectValue = props.value === "" ? EMPTY_SELECT_VALUE : props.value;
+
   return (
-    <label className="block">
-      <span className="mb-2.5 block text-sm font-medium text-[var(--foreground)]">{props.label}</span>
-      {props.children}
-    </label>
+    <Select
+      onValueChange={(value) =>
+        props.onValueChange(value === EMPTY_SELECT_VALUE ? "" : value)
+      }
+      value={selectValue}
+    >
+      <SelectTrigger aria-label={props.ariaLabel} className={props.className}>
+        <SelectValue placeholder={props.placeholder} />
+      </SelectTrigger>
+      <SelectContent>
+        {[...groupedOptions.entries()].map(([group, options]) =>
+          group ? (
+            <SelectGroup key={group}>
+              <SelectLabel>{group}</SelectLabel>
+              {options.map((option) => (
+                <SelectItem
+                  key={option.value || EMPTY_SELECT_VALUE}
+                  value={option.value === "" ? EMPTY_SELECT_VALUE : option.value}
+                >
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          ) : (
+            options.map((option) => (
+              <SelectItem
+                key={option.value || EMPTY_SELECT_VALUE}
+                value={option.value === "" ? EMPTY_SELECT_VALUE : option.value}
+              >
+                {option.label}
+              </SelectItem>
+            ))
+          ),
+        )}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -1573,11 +1761,15 @@ function SwitchRow(props: {
   checked: boolean;
   onChange: (value: boolean) => void;
 }) {
+  const switchId = useId();
+
   return (
-    <label className="flex items-center justify-between rounded-[24px] bg-[var(--card-muted)] px-4 py-4 text-sm font-medium text-[var(--foreground)] ring-1 ring-[var(--border)]">
-      <span>{props.label}</span>
-      <Switch checked={props.checked} onCheckedChange={props.onChange} />
-    </label>
+    <div className="flex items-center justify-between rounded-[24px] bg-[var(--card-muted)] px-4 py-4 text-sm ring-1 ring-[var(--border)]">
+      <Label className="font-medium text-[var(--foreground)]" htmlFor={switchId}>
+        {props.label}
+      </Label>
+      <Switch checked={props.checked} id={switchId} onCheckedChange={props.onChange} />
+    </div>
   );
 }
 
@@ -1603,17 +1795,9 @@ function ButtonsWorkbench(props: {
   const imageTop = 124;
 
   return (
-    <section className="relative rounded-[30px] bg-white/90 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] ring-1 ring-[var(--border)]">
-      <div
-        className="relative overflow-x-auto rounded-[26px] bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.95),rgba(241,244,250,0.88)_42%,rgba(236,240,246,0.74))]"
-        ref={workbenchRef}
-      >
-        <div className="relative mx-auto min-h-[720px] min-w-full px-4 py-6 sm:px-8">
-          <div className="relative mx-auto" style={{ width: canvasWidth, height: canvasHeight }}>
-            <div
-              className="absolute inset-x-8 inset-y-10 rounded-[40px] border border-white/70 bg-white/50 blur-0"
-              aria-hidden="true"
-            />
+    <div className="relative" ref={workbenchRef}>
+      <div className="relative mx-auto min-h-[720px] min-w-full px-4 py-6 sm:px-8">
+        <div className="relative mx-auto" style={{ width: canvasWidth, height: canvasHeight }}>
             <img
               alt={props.layout.label}
               className="absolute object-contain drop-shadow-[0_28px_44px_rgba(15,23,42,0.16)]"
@@ -1669,14 +1853,14 @@ function ButtonsWorkbench(props: {
                     }}
                     title={hotspot.label}
                   />
-                  <button
+                    <button
                     aria-label={hotspot.label}
                     aria-pressed={isSelected}
                     className={cn(
-                      "absolute z-20 rounded-[24px] px-5 py-4 text-left transition ring-1",
+                      "absolute z-20 rounded-2xl px-4 py-3 text-left transition",
                       isSelected
-                        ? "bg-white shadow-[0_18px_30px_rgba(37,99,235,0.14)] ring-[var(--accent)]"
-                        : "bg-white/90 shadow-[0_14px_24px_rgba(15,23,42,0.08)] ring-[var(--border)] hover:bg-white hover:ring-[var(--border-strong)]",
+                        ? "bg-white shadow-[0_8px_24px_rgba(0,0,0,0.12)]"
+                        : "bg-white/95 shadow-[0_4px_16px_rgba(0,0,0,0.06)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.10)]",
                     )}
                     data-testid={`hotspot-card-${hotspot.control}`}
                     onClick={() => props.onSelectControl(hotspot.control)}
@@ -1701,7 +1885,6 @@ function ButtonsWorkbench(props: {
           </div>
         </div>
       </div>
-    </section>
   );
 }
 
@@ -1798,7 +1981,7 @@ function SheetActionField(props: {
           group,
           label: action.label,
           value: action.id,
-        }) satisfies SelectOption,
+        }) satisfies AppSelectOption,
     ),
   );
 
@@ -1811,7 +1994,7 @@ function SheetActionField(props: {
             {actionFor(props.profile, props.control, props.actionLookup)}
           </Badge>
         </div>
-        <Select
+        <AppSelect
           ariaLabel={props.label}
           className="mt-4"
           onValueChange={props.onChange}
@@ -1827,16 +2010,35 @@ function StatusPill(props: {
   tone: "success" | "accent" | "neutral" | "warning";
   value: string;
 }) {
-  const toneClass: ComponentProps<typeof Badge>["variant"] =
+  const toneProps: {
+    className: string;
+    variant: ComponentProps<typeof Badge>["variant"];
+  } =
     props.tone === "success"
-      ? "success"
+      ? {
+          variant: "secondary",
+          className: "border-emerald-200 bg-emerald-50 text-emerald-700",
+        }
       : props.tone === "accent"
-        ? "accent"
+        ? {
+            variant: "secondary",
+            className: "border-sky-200 bg-sky-50 text-sky-700",
+          }
         : props.tone === "warning"
-          ? "warning"
-          : "default";
+          ? {
+              variant: "secondary",
+              className: "border-amber-200 bg-amber-50 text-amber-700",
+            }
+          : {
+              variant: "outline",
+              className: "bg-white text-muted-foreground",
+            };
 
-  return <Badge variant={toneClass}>{props.value}</Badge>;
+  return (
+    <Badge className={toneProps.className} variant={toneProps.variant}>
+      {props.value}
+    </Badge>
+  );
 }
 
 function CapabilityRow(props: { label: string; value: string }) {
@@ -1926,6 +2128,10 @@ function useElementSize<T extends HTMLElement>(ref: RefObject<T | null>) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function snapDpi(value: number, min: number, max: number) {
+  return clamp(Math.round(value / 50) * 50, min, max);
 }
 
 function editorControlsFor(control: LogicalControl) {
