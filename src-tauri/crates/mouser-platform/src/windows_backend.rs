@@ -1601,7 +1601,7 @@ fn foreground_process_name(process_id: u32) -> Result<String, PlatformError> {
 
 #[cfg(target_os = "windows")]
 unsafe fn process_image_name(process: HANDLE) -> Result<String, PlatformError> {
-    let mut buffer = vec![0u16; 260];
+    let mut buffer = vec![0u16; 32_768];
     let mut size = buffer.len() as u32;
     if QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut size) == 0 {
         return Err(PlatformError::Message(
