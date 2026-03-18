@@ -346,7 +346,6 @@ function App() {
     mutationFn: importLegacyConfig,
     onSuccess: (report) => {
       setImportWarnings(report.warnings);
-      setSelectedProfileId(report.config.activeProfileId);
       void invalidateBootstrap();
     },
   });
@@ -377,7 +376,8 @@ function App() {
     const profileIds = new Set(
       bootstrapQuery.data.config.profiles.map((profile) => profile.id),
     );
-    const activeProfileId = bootstrapQuery.data.config.activeProfileId;
+    const activeProfileId =
+      bootstrapQuery.data.engineSnapshot.engineStatus.activeProfileId;
     const activeProfileChanged =
       lastActiveProfileIdRef.current != null &&
       lastActiveProfileIdRef.current !== activeProfileId;
@@ -505,7 +505,9 @@ function App() {
   } = bootstrap;
   const selectedProfile =
     config.profiles.find((profile) => profile.id === selectedProfileId) ??
-    config.profiles.find((profile) => profile.id === config.activeProfileId) ??
+    config.profiles.find(
+      (profile) => profile.id === engineSnapshot.engineStatus.activeProfileId,
+    ) ??
     config.profiles[0];
   const activeDevice = engineSnapshot.activeDevice;
   const activeLayout = resolveActiveLayout(activeDevice, config, layouts);

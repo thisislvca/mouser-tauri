@@ -354,7 +354,11 @@ fn emit_runtime_events(
         .map_err(|error| error.to_string())?;
 
     ProfileChangedEvent {
-        active_profile_id: payload.config.active_profile_id.clone(),
+        active_profile_id: payload
+            .engine_snapshot
+            .engine_status
+            .active_profile_id
+            .clone(),
         frontmost_app: payload.engine_snapshot.engine_status.frontmost_app.clone(),
     }
     .emit(app)
@@ -476,8 +480,18 @@ fn spawn_runtime_poller(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(900));
 
+        let Ok((hid_backend, app_focus_backend, hook_backend)) =
+            with_manager_runtime(&app, |runtime| runtime.poll_backends())
+        else {
+            break;
+        };
+
+        let devices = hid_backend.list_devices();
+        let frontmost_app = app_focus_backend.current_frontmost_app();
+        let hook_events = hook_backend.drain_events();
+
         let Ok((changed, payload, debug_event)) = with_manager_runtime(&app, |runtime| {
-            let changed = runtime.poll();
+            let changed = runtime.apply_poll_results(devices, frontmost_app, hook_events);
             let payload = if changed {
                 Some(runtime.bootstrap_payload())
             } else {

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -219,17 +219,25 @@ impl AppConfig {
             .unwrap_or_else(|| "default".to_string())
     }
 
+    pub fn resolved_profile_id(
+        &self,
+        preferred_profile_id: Option<&str>,
+        executable: Option<&str>,
+    ) -> String {
+        preferred_profile_id
+            .and_then(|profile_id| {
+                self.profile_by_id(profile_id)
+                    .map(|_| profile_id.to_string())
+            })
+            .unwrap_or_else(|| self.matched_profile_id_for_app(executable))
+    }
+
     pub fn sync_active_profile(
         &mut self,
         preferred_profile_id: Option<&str>,
         executable: Option<&str>,
     ) -> bool {
-        let target = preferred_profile_id
-            .and_then(|profile_id| {
-                self.profile_by_id(profile_id)
-                    .map(|_| profile_id.to_string())
-            })
-            .unwrap_or_else(|| self.matched_profile_id_for_app(executable));
+        let target = self.resolved_profile_id(preferred_profile_id, executable);
 
         if self.active_profile_id == target {
             return false;
@@ -414,7 +422,7 @@ pub struct DeviceLayout {
     pub hotspots: Vec<DeviceHotspot>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceFingerprint {
     pub identity_key: Option<String>,
@@ -424,20 +432,6 @@ pub struct DeviceFingerprint {
     pub usage_page: Option<u16>,
     pub usage: Option<u16>,
     pub location_id: Option<u32>,
-}
-
-impl Default for DeviceFingerprint {
-    fn default() -> Self {
-        Self {
-            identity_key: None,
-            serial_number: None,
-            hid_path: None,
-            interface_number: None,
-            usage_page: None,
-            usage: None,
-            location_id: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -658,174 +652,202 @@ pub fn normalize_bindings(bindings: Vec<Binding>) -> Vec<Binding> {
 }
 
 pub fn default_action_catalog() -> Vec<ActionDefinition> {
-    vec![
-        action("alt_tab", "Alt + Tab (Switch Windows)", "Navigation"),
-        action(
-            "alt_shift_tab",
-            "Alt + Shift + Tab (Switch Windows Reverse)",
-            "Navigation",
-        ),
-        action(
-            "show_desktop",
-            "Show Desktop (Win + D / Mission Control)",
-            "Navigation",
-        ),
-        action("task_view", "Task View / App Expose", "Navigation"),
-        action("mission_control", "Mission Control", "Navigation"),
-        action("app_expose", "App Expose", "Navigation"),
-        action("launchpad", "Launchpad", "Navigation"),
-        action("space_left", "Previous Space", "Navigation"),
-        action("space_right", "Next Space", "Navigation"),
-        action("browser_back", "Browser Back", "Browser"),
-        action("browser_forward", "Browser Forward", "Browser"),
-        action("close_tab", "Close Tab (Ctrl/Cmd + W)", "Browser"),
-        action("new_tab", "New Tab (Ctrl/Cmd + T)", "Browser"),
-        action("copy", "Copy (Ctrl/Cmd + C)", "Editing"),
-        action("paste", "Paste (Ctrl/Cmd + V)", "Editing"),
-        action("cut", "Cut (Ctrl/Cmd + X)", "Editing"),
-        action("undo", "Undo (Ctrl/Cmd + Z)", "Editing"),
-        action("select_all", "Select All (Ctrl/Cmd + A)", "Editing"),
-        action("save", "Save (Ctrl/Cmd + S)", "Editing"),
-        action("find", "Find (Ctrl/Cmd + F)", "Editing"),
-        action("volume_up", "Volume Up", "Media"),
-        action("volume_down", "Volume Down", "Media"),
-        action("volume_mute", "Volume Mute", "Media"),
-        action("play_pause", "Play / Pause", "Media"),
-        action("next_track", "Next Track", "Media"),
-        action("prev_track", "Previous Track", "Media"),
-        action("none", "Do Nothing (Pass-through)", "Other"),
-    ]
+    default_action_catalog_ref().to_vec()
+}
+
+pub fn default_action_catalog_ref() -> &'static [ActionDefinition] {
+    static ACTIONS: OnceLock<Vec<ActionDefinition>> = OnceLock::new();
+    ACTIONS.get_or_init(|| {
+        vec![
+            action("alt_tab", "Alt + Tab (Switch Windows)", "Navigation"),
+            action(
+                "alt_shift_tab",
+                "Alt + Shift + Tab (Switch Windows Reverse)",
+                "Navigation",
+            ),
+            action(
+                "show_desktop",
+                "Show Desktop (Win + D / Mission Control)",
+                "Navigation",
+            ),
+            action("task_view", "Task View / App Expose", "Navigation"),
+            action("mission_control", "Mission Control", "Navigation"),
+            action("app_expose", "App Expose", "Navigation"),
+            action("launchpad", "Launchpad", "Navigation"),
+            action("space_left", "Previous Space", "Navigation"),
+            action("space_right", "Next Space", "Navigation"),
+            action("browser_back", "Browser Back", "Browser"),
+            action("browser_forward", "Browser Forward", "Browser"),
+            action("close_tab", "Close Tab (Ctrl/Cmd + W)", "Browser"),
+            action("new_tab", "New Tab (Ctrl/Cmd + T)", "Browser"),
+            action("copy", "Copy (Ctrl/Cmd + C)", "Editing"),
+            action("paste", "Paste (Ctrl/Cmd + V)", "Editing"),
+            action("cut", "Cut (Ctrl/Cmd + X)", "Editing"),
+            action("undo", "Undo (Ctrl/Cmd + Z)", "Editing"),
+            action("select_all", "Select All (Ctrl/Cmd + A)", "Editing"),
+            action("save", "Save (Ctrl/Cmd + S)", "Editing"),
+            action("find", "Find (Ctrl/Cmd + F)", "Editing"),
+            action("volume_up", "Volume Up", "Media"),
+            action("volume_down", "Volume Down", "Media"),
+            action("volume_mute", "Volume Mute", "Media"),
+            action("play_pause", "Play / Pause", "Media"),
+            action("next_track", "Next Track", "Media"),
+            action("prev_track", "Previous Track", "Media"),
+            action("none", "Do Nothing (Pass-through)", "Other"),
+        ]
+    })
 }
 
 pub fn default_known_apps() -> Vec<KnownApp> {
-    vec![
-        known_app("msedge.exe", "Microsoft Edge", None),
-        known_app(
-            "chrome.exe",
-            "Google Chrome",
-            Some("/assets/apps/chrome.png"),
-        ),
-        known_app("Safari", "Safari", None),
-        known_app(
-            "Code.exe",
-            "Visual Studio Code",
-            Some("/assets/apps/vscode.png"),
-        ),
-        known_app(
-            "Code",
-            "Visual Studio Code",
-            Some("/assets/apps/vscode.png"),
-        ),
-        known_app("VLC", "VLC Media Player", Some("/assets/apps/vlc.png")),
-        known_app("vlc.exe", "VLC Media Player", Some("/assets/apps/vlc.png")),
-        known_app(
-            "Microsoft.Media.Player.exe",
-            "Windows Media Player",
-            Some("/assets/apps/media-player.webp"),
-        ),
-        known_app("Finder", "Finder", None),
-    ]
+    default_known_apps_ref().to_vec()
+}
+
+pub fn default_known_apps_ref() -> &'static [KnownApp] {
+    static KNOWN_APPS: OnceLock<Vec<KnownApp>> = OnceLock::new();
+    KNOWN_APPS.get_or_init(|| {
+        vec![
+            known_app("msedge.exe", "Microsoft Edge", None),
+            known_app(
+                "chrome.exe",
+                "Google Chrome",
+                Some("/assets/apps/chrome.png"),
+            ),
+            known_app("Safari", "Safari", None),
+            known_app(
+                "Code.exe",
+                "Visual Studio Code",
+                Some("/assets/apps/vscode.png"),
+            ),
+            known_app(
+                "Code",
+                "Visual Studio Code",
+                Some("/assets/apps/vscode.png"),
+            ),
+            known_app("VLC", "VLC Media Player", Some("/assets/apps/vlc.png")),
+            known_app("vlc.exe", "VLC Media Player", Some("/assets/apps/vlc.png")),
+            known_app(
+                "Microsoft.Media.Player.exe",
+                "Windows Media Player",
+                Some("/assets/apps/media-player.webp"),
+            ),
+            known_app("Finder", "Finder", None),
+        ]
+    })
 }
 
 pub fn known_device_specs() -> Vec<KnownDeviceSpec> {
-    vec![
-        known_device(KnownDeviceSeed {
-            key: "mx_master_3s",
-            display_name: "MX Master 3S",
-            product_ids: &[0xB034],
-            aliases: &["Logitech MX Master 3S", "MX Master 3S for Mac"],
-            gesture_cids: &[0x00C3, 0x00D7],
-            ui_layout: "mx_master",
-            image_asset: "/assets/mouse.png",
-            dpi_range: (200, 8000),
-        }),
-        known_device(KnownDeviceSeed {
-            key: "mx_master_3",
-            display_name: "MX Master 3",
-            product_ids: &[0xB023],
-            aliases: &[
-                "Wireless Mouse MX Master 3",
-                "MX Master 3 for Mac",
-                "MX Master 3 Mac",
-            ],
-            gesture_cids: &[0x00C3, 0x00D7],
-            ui_layout: "mx_master",
-            image_asset: "/assets/mouse.png",
-            dpi_range: (200, 8000),
-        }),
-        known_device(KnownDeviceSeed {
-            key: "mx_master_2s",
-            display_name: "MX Master 2S",
-            product_ids: &[0xB019],
-            aliases: &["Wireless Mouse MX Master 2S"],
-            gesture_cids: &[0x00C3, 0x00D7],
-            ui_layout: "mx_master",
-            image_asset: "/assets/mouse.png",
-            dpi_range: (200, 4000),
-        }),
-        known_device(KnownDeviceSeed {
-            key: "mx_master",
-            display_name: "MX Master",
-            product_ids: &[0xB012],
-            aliases: &["Wireless Mouse MX Master"],
-            gesture_cids: &[0x00C3, 0x00D7],
-            ui_layout: "mx_master",
-            image_asset: "/assets/mouse.png",
-            dpi_range: (200, 4000),
-        }),
-        known_device(KnownDeviceSeed {
-            key: "mx_vertical",
-            display_name: "MX Vertical",
-            product_ids: &[0xB020],
-            aliases: &[
-                "MX Vertical Wireless Mouse",
-                "MX Vertical Advanced Ergonomic Mouse",
-            ],
-            gesture_cids: &[0x00C3, 0x00D7],
-            ui_layout: "mx_vertical",
-            image_asset: "/assets/icons/mouse-simple.svg",
-            dpi_range: (200, 4000),
-        }),
-        known_device(KnownDeviceSeed {
-            key: "mx_anywhere_3s",
-            display_name: "MX Anywhere 3S",
-            product_ids: &[0xB037],
-            aliases: &["MX Anywhere 3S for Mac"],
-            gesture_cids: &[0x00C3],
-            ui_layout: "mx_anywhere",
-            image_asset: "/assets/icons/mouse-simple.svg",
-            dpi_range: (200, 8000),
-        }),
-        known_device(KnownDeviceSeed {
-            key: "mx_anywhere_3",
-            display_name: "MX Anywhere 3",
-            product_ids: &[0xB025],
-            aliases: &["MX Anywhere 3 for Mac"],
-            gesture_cids: &[0x00C3],
-            ui_layout: "mx_anywhere",
-            image_asset: "/assets/icons/mouse-simple.svg",
-            dpi_range: (200, 4000),
-        }),
-        known_device(KnownDeviceSeed {
-            key: "mx_anywhere_2s",
-            display_name: "MX Anywhere 2S",
-            product_ids: &[0xB01A],
-            aliases: &["Wireless Mobile Mouse MX Anywhere 2S"],
-            gesture_cids: &[0x00C3],
-            ui_layout: "mx_anywhere",
-            image_asset: "/assets/icons/mouse-simple.svg",
-            dpi_range: (200, 4000),
-        }),
-    ]
+    known_device_specs_ref().to_vec()
+}
+
+pub fn known_device_specs_ref() -> &'static [KnownDeviceSpec] {
+    static KNOWN_DEVICE_SPECS: OnceLock<Vec<KnownDeviceSpec>> = OnceLock::new();
+    KNOWN_DEVICE_SPECS.get_or_init(|| {
+        vec![
+            known_device(KnownDeviceSeed {
+                key: "mx_master_3s",
+                display_name: "MX Master 3S",
+                product_ids: &[0xB034],
+                aliases: &["Logitech MX Master 3S", "MX Master 3S for Mac"],
+                gesture_cids: &[0x00C3, 0x00D7],
+                ui_layout: "mx_master",
+                image_asset: "/assets/mouse.png",
+                dpi_range: (200, 8000),
+            }),
+            known_device(KnownDeviceSeed {
+                key: "mx_master_3",
+                display_name: "MX Master 3",
+                product_ids: &[0xB023],
+                aliases: &[
+                    "Wireless Mouse MX Master 3",
+                    "MX Master 3 for Mac",
+                    "MX Master 3 Mac",
+                ],
+                gesture_cids: &[0x00C3, 0x00D7],
+                ui_layout: "mx_master",
+                image_asset: "/assets/mouse.png",
+                dpi_range: (200, 8000),
+            }),
+            known_device(KnownDeviceSeed {
+                key: "mx_master_2s",
+                display_name: "MX Master 2S",
+                product_ids: &[0xB019],
+                aliases: &["Wireless Mouse MX Master 2S"],
+                gesture_cids: &[0x00C3, 0x00D7],
+                ui_layout: "mx_master",
+                image_asset: "/assets/mouse.png",
+                dpi_range: (200, 4000),
+            }),
+            known_device(KnownDeviceSeed {
+                key: "mx_master",
+                display_name: "MX Master",
+                product_ids: &[0xB012],
+                aliases: &["Wireless Mouse MX Master"],
+                gesture_cids: &[0x00C3, 0x00D7],
+                ui_layout: "mx_master",
+                image_asset: "/assets/mouse.png",
+                dpi_range: (200, 4000),
+            }),
+            known_device(KnownDeviceSeed {
+                key: "mx_vertical",
+                display_name: "MX Vertical",
+                product_ids: &[0xB020],
+                aliases: &[
+                    "MX Vertical Wireless Mouse",
+                    "MX Vertical Advanced Ergonomic Mouse",
+                ],
+                gesture_cids: &[0x00C3, 0x00D7],
+                ui_layout: "mx_vertical",
+                image_asset: "/assets/icons/mouse-simple.svg",
+                dpi_range: (200, 4000),
+            }),
+            known_device(KnownDeviceSeed {
+                key: "mx_anywhere_3s",
+                display_name: "MX Anywhere 3S",
+                product_ids: &[0xB037],
+                aliases: &["MX Anywhere 3S for Mac"],
+                gesture_cids: &[0x00C3],
+                ui_layout: "mx_anywhere",
+                image_asset: "/assets/icons/mouse-simple.svg",
+                dpi_range: (200, 8000),
+            }),
+            known_device(KnownDeviceSeed {
+                key: "mx_anywhere_3",
+                display_name: "MX Anywhere 3",
+                product_ids: &[0xB025],
+                aliases: &["MX Anywhere 3 for Mac"],
+                gesture_cids: &[0x00C3],
+                ui_layout: "mx_anywhere",
+                image_asset: "/assets/icons/mouse-simple.svg",
+                dpi_range: (200, 4000),
+            }),
+            known_device(KnownDeviceSeed {
+                key: "mx_anywhere_2s",
+                display_name: "MX Anywhere 2S",
+                product_ids: &[0xB01A],
+                aliases: &["Wireless Mobile Mouse MX Anywhere 2S"],
+                gesture_cids: &[0x00C3],
+                ui_layout: "mx_anywhere",
+                image_asset: "/assets/icons/mouse-simple.svg",
+                dpi_range: (200, 4000),
+            }),
+        ]
+    })
 }
 
 pub fn known_device_spec_by_key(model_key: &str) -> Option<KnownDeviceSpec> {
-    known_device_specs()
-        .into_iter()
+    known_device_specs_ref()
+        .iter()
         .find(|spec| spec.key == model_key)
+        .cloned()
 }
 
 pub fn default_layouts() -> Vec<DeviceLayout> {
+    default_layouts_ref().to_vec()
+}
+
+pub fn default_layouts_ref() -> &'static [DeviceLayout] {
+    static LAYOUTS: OnceLock<Vec<DeviceLayout>> = OnceLock::new();
+    LAYOUTS.get_or_init(|| {
     vec![
         DeviceLayout {
             key: "mx_master".to_string(),
@@ -921,6 +943,7 @@ pub fn default_layouts() -> Vec<DeviceLayout> {
             hotspots: Vec::new(),
         },
     ]
+    })
 }
 
 pub fn manual_layout_choices(layouts: &[DeviceLayout]) -> Vec<LayoutChoice> {
@@ -1010,15 +1033,18 @@ pub fn resolve_known_device(
     product_name: Option<&str>,
 ) -> Option<KnownDeviceSpec> {
     let normalized_name = normalize_name(product_name.unwrap_or_default());
-    known_device_specs().into_iter().find(|spec| {
-        product_id
-            .map(|product_id| spec.product_ids.contains(&product_id))
-            .unwrap_or(false)
-            || (!normalized_name.is_empty()
-                && std::iter::once(spec.display_name.as_str())
-                    .chain(spec.aliases.iter().map(String::as_str))
-                    .any(|candidate| normalize_name(candidate) == normalized_name))
-    })
+    known_device_specs_ref()
+        .iter()
+        .find(|spec| {
+            product_id
+                .map(|product_id| spec.product_ids.contains(&product_id))
+                .unwrap_or(false)
+                || (!normalized_name.is_empty()
+                    && std::iter::once(spec.display_name.as_str())
+                        .chain(spec.aliases.iter().map(String::as_str))
+                        .any(|candidate| normalize_name(candidate) == normalized_name))
+        })
+        .cloned()
 }
 
 pub fn build_connected_device_info(
@@ -1170,7 +1196,7 @@ pub fn build_managed_device_info(managed: &ManagedDevice, live: Option<&DeviceIn
         dpi_max: 8000,
         connected: live.is_some(),
         battery_level: live.and_then(|device| device.battery_level),
-        current_dpi: effective_current_dpi.max(200).min(8000),
+        current_dpi: effective_current_dpi.clamp(200, 8000),
         fingerprint: live
             .map(|device| device.fingerprint.clone())
             .unwrap_or_else(|| DeviceFingerprint {
@@ -1462,7 +1488,7 @@ mod tests {
             last_seen_transport: None,
         });
 
-        assert!(config.sync_active_profile(Some("default"), Some("Code.exe")));
+        assert!(!config.sync_active_profile(Some("default"), Some("Code.exe")));
         assert_eq!(config.active_profile_id, "default");
     }
 

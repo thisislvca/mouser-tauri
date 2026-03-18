@@ -1,34 +1,36 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use mouser_core::{
     build_managed_device_info, clamp_dpi, default_action_catalog, effective_layout_key,
-    known_device_spec_by_key, known_device_specs, layout_by_key, manual_layout_choices, AppConfig,
+    known_device_spec_by_key, known_device_specs, manual_layout_choices, AppConfig,
     BootstrapPayload, DebugEvent, DebugEventKind, DeviceInfo, DeviceSettings, EngineSnapshot,
     EngineStatus, ManagedDevice, PlatformCapabilities, Profile,
 };
 use mouser_platform::{
     macos::{MacOsAppFocusBackend, MacOsHidBackend, MacOsHookBackend},
     windows::{WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend},
-    AppFocusBackend, ConfigStore, DeviceCatalog, HidBackend, HookBackend, HookBackendSettings,
-    JsonConfigStore, StaticDeviceCatalog,
+    AppFocusBackend, ConfigStore, HidBackend, HookBackend, HookBackendEvent, HookBackendSettings,
+    JsonConfigStore, PlatformError, StaticDeviceCatalog,
 };
 
 pub struct AppRuntime {
     catalog: StaticDeviceCatalog,
     config_store: JsonConfigStore,
-    hid_backend: Box<dyn HidBackend>,
-    hook_backend: Box<dyn HookBackend>,
-    app_focus_backend: Box<dyn AppFocusBackend>,
+    hid_backend: Arc<dyn HidBackend>,
+    hook_backend: Arc<dyn HookBackend>,
+    app_focus_backend: Arc<dyn AppFocusBackend>,
     config: AppConfig,
+    resolved_profile_id: String,
     detected_devices: Vec<DeviceInfo>,
     selected_device_key: Option<String>,
     frontmost_app: Option<String>,
     enabled: bool,
-    debug_log: Vec<DebugEvent>,
+    debug_log: VecDeque<DebugEvent>,
 }
 
 impl AppRuntime {
@@ -45,12 +47,13 @@ impl AppRuntime {
             hid_backend: current_hid_backend(),
             hook_backend: current_hook_backend(),
             app_focus_backend: current_app_focus_backend(),
+            resolved_profile_id: config.active_profile_id.clone(),
             config,
             detected_devices: Vec::new(),
             selected_device_key: None,
             frontmost_app: None,
             enabled: true,
-            debug_log: Vec::new(),
+            debug_log: VecDeque::new(),
         };
 
         if let Some(load_warning) = load_warning {
@@ -74,15 +77,16 @@ impl AppRuntime {
     }
 
     pub fn bootstrap_payload(&self) -> BootstrapPayload {
+        let layouts = self.catalog.layouts().to_vec();
         BootstrapPayload {
             config: self.config.clone(),
             available_actions: default_action_catalog(),
-            known_apps: self.catalog.known_apps(),
+            known_apps: self.catalog.known_apps_ref().to_vec(),
             supported_devices: known_device_specs(),
-            layouts: self.catalog.all_layouts(),
+            layouts: layouts.clone(),
             engine_snapshot: self.engine_snapshot(),
             platform_capabilities: self.platform_capabilities(),
-            manual_layout_choices: manual_layout_choices(&self.catalog.all_layouts()),
+            manual_layout_choices: manual_layout_choices(&layouts),
         }
     }
 
@@ -91,12 +95,12 @@ impl AppRuntime {
     }
 
     pub fn save_config(&mut self, config: AppConfig) {
-        let debug_mode_was_enabled = self.apply_config(config);
+        let debug_mode_was_enabled = self.replace_config(config);
         self.push_debug(
             DebugEventKind::Info,
             format!(
                 "Saved config for `{}` at {} DPI",
-                self.config.active_profile_id,
+                self.resolved_profile_id,
                 self.selected_device_settings().dpi
             ),
         );
@@ -244,9 +248,9 @@ impl AppRuntime {
     }
 
     pub fn update_app_settings(&mut self, settings: mouser_core::Settings) {
-        let mut config = self.config.clone();
-        config.settings = settings;
-        let debug_mode_was_enabled = self.apply_config(config);
+        let debug_mode_was_enabled = self.apply_config_edit(|config| {
+            config.settings = settings;
+        });
         self.push_debug(DebugEventKind::Info, "Updated app settings");
         if !debug_mode_was_enabled && self.config.settings.debug_mode {
             self.log_debug_session_state();
@@ -254,9 +258,9 @@ impl AppRuntime {
     }
 
     pub fn update_device_defaults(&mut self, settings: DeviceSettings) {
-        let mut config = self.config.clone();
-        config.device_defaults = settings;
-        self.apply_config(config);
+        self.apply_config_edit(|config| {
+            config.device_defaults = settings;
+        });
         self.push_debug(
             DebugEventKind::Info,
             "Updated default settings for new devices",
@@ -264,16 +268,21 @@ impl AppRuntime {
     }
 
     pub fn update_managed_device_settings(&mut self, device_key: &str, settings: DeviceSettings) {
-        let mut config = self.config.clone();
-        let Some(device) = config
-            .managed_devices
-            .iter_mut()
-            .find(|device| device.id == device_key)
-        else {
+        let mut updated = false;
+        self.apply_config_edit(|config| {
+            let Some(device) = config
+                .managed_devices
+                .iter_mut()
+                .find(|device| device.id == device_key)
+            else {
+                return;
+            };
+            device.settings = settings;
+            updated = true;
+        });
+        if !updated {
             return;
-        };
-        device.settings = settings;
-        self.apply_config(config);
+        }
         self.push_debug(
             DebugEventKind::Info,
             format!("Updated settings for device `{device_key}`"),
@@ -282,16 +291,21 @@ impl AppRuntime {
     }
 
     pub fn update_managed_device_profile(&mut self, device_key: &str, profile_id: Option<String>) {
-        let mut config = self.config.clone();
-        let Some(device) = config
-            .managed_devices
-            .iter_mut()
-            .find(|device| device.id == device_key)
-        else {
+        let mut updated = false;
+        self.apply_config_edit(|config| {
+            let Some(device) = config
+                .managed_devices
+                .iter_mut()
+                .find(|device| device.id == device_key)
+            else {
+                return;
+            };
+            device.profile_id = profile_id;
+            updated = true;
+        });
+        if !updated {
             return;
-        };
-        device.profile_id = profile_id;
-        self.apply_config(config);
+        }
         self.push_debug(
             DebugEventKind::Info,
             format!("Updated profile assignment for device `{device_key}`"),
@@ -300,16 +314,21 @@ impl AppRuntime {
     }
 
     pub fn update_managed_device_nickname(&mut self, device_key: &str, nickname: Option<String>) {
-        let mut config = self.config.clone();
-        let Some(device) = config
-            .managed_devices
-            .iter_mut()
-            .find(|device| device.id == device_key)
-        else {
+        let mut updated = false;
+        self.apply_config_edit(|config| {
+            let Some(device) = config
+                .managed_devices
+                .iter_mut()
+                .find(|device| device.id == device_key)
+            else {
+                return;
+            };
+            device.nickname = nickname;
+            updated = true;
+        });
+        if !updated {
             return;
-        };
-        device.nickname = nickname;
-        self.apply_config(config);
+        }
         self.push_debug(
             DebugEventKind::Info,
             format!("Updated nickname for device `{device_key}`"),
@@ -318,7 +337,7 @@ impl AppRuntime {
     }
 
     pub fn apply_imported_config(&mut self, config: AppConfig) {
-        let debug_mode_was_enabled = self.apply_config(config);
+        let debug_mode_was_enabled = self.replace_config(config);
         self.push_debug(DebugEventKind::Info, "Imported legacy Mouser config");
         self.log_active_profile_snapshot("Imported bindings");
         if !debug_mode_was_enabled && self.config.settings.debug_mode {
@@ -331,18 +350,37 @@ impl AppRuntime {
     }
 
     pub fn last_debug_event(&self) -> Option<DebugEvent> {
-        self.debug_log.first().cloned()
+        self.debug_log.front().cloned()
     }
 
     pub fn clear_debug_log(&mut self) {
         self.debug_log.clear();
     }
 
-    pub fn poll(&mut self) -> bool {
+    pub fn poll_backends(
+        &self,
+    ) -> (
+        Arc<dyn HidBackend>,
+        Arc<dyn AppFocusBackend>,
+        Arc<dyn HookBackend>,
+    ) {
+        (
+            Arc::clone(&self.hid_backend),
+            Arc::clone(&self.app_focus_backend),
+            Arc::clone(&self.hook_backend),
+        )
+    }
+
+    pub fn apply_poll_results(
+        &mut self,
+        devices: Result<Vec<DeviceInfo>, PlatformError>,
+        frontmost_app: Result<Option<String>, PlatformError>,
+        hook_events: Vec<HookBackendEvent>,
+    ) -> bool {
         let before = self.engine_snapshot();
         let config_before = self.config.clone();
-        self.refresh_live_state();
-        self.collect_hook_events();
+        self.refresh_live_state_with_results(devices, frontmost_app);
+        self.collect_hook_events(hook_events);
         before != self.engine_snapshot() || config_before != self.config
     }
 
@@ -360,8 +398,8 @@ impl AppRuntime {
                     &device.ui_layout,
                 );
                 device.ui_layout = layout_key.clone();
-                if let Some(layout) = layout_by_key(&self.catalog.all_layouts(), &layout_key) {
-                    device.image_asset = layout.image_asset;
+                if let Some(layout) = self.catalog.layout_by_key(&layout_key) {
+                    device.image_asset = layout.image_asset.clone();
                 }
                 device
             });
@@ -376,11 +414,11 @@ impl AppRuntime {
                 connected: active_device
                     .as_ref()
                     .is_some_and(|device| device.connected),
-                active_profile_id: self.config.active_profile_id.clone(),
+                active_profile_id: self.resolved_profile_id.clone(),
                 frontmost_app: self.frontmost_app.clone(),
                 selected_device_key: self.selected_device_key.clone(),
                 debug_mode: self.config.settings.debug_mode,
-                debug_log: self.debug_log.clone(),
+                debug_log: self.debug_log.iter().cloned().collect(),
             },
         }
     }
@@ -394,11 +432,39 @@ impl AppRuntime {
         }
     }
 
-    fn apply_config(&mut self, mut config: AppConfig) -> bool {
+    fn replace_config(&mut self, config: AppConfig) -> bool {
         let debug_mode_was_enabled = self.config.settings.debug_mode;
         let previous_dpi = self.selected_device_settings().dpi;
-        config.ensure_invariants();
         self.config = config;
+        self.config.ensure_invariants();
+        if self
+            .config
+            .profile_by_id(&self.resolved_profile_id)
+            .is_none()
+        {
+            self.resolved_profile_id = self.config.active_profile_id.clone();
+        }
+        self.apply_config_post_edit(previous_dpi);
+        debug_mode_was_enabled
+    }
+
+    fn apply_config_edit(&mut self, edit: impl FnOnce(&mut AppConfig)) -> bool {
+        let debug_mode_was_enabled = self.config.settings.debug_mode;
+        let previous_dpi = self.selected_device_settings().dpi;
+        edit(&mut self.config);
+        self.config.ensure_invariants();
+        if self
+            .config
+            .profile_by_id(&self.resolved_profile_id)
+            .is_none()
+        {
+            self.resolved_profile_id = self.config.active_profile_id.clone();
+        }
+        self.apply_config_post_edit(previous_dpi);
+        debug_mode_was_enabled
+    }
+
+    fn apply_config_post_edit(&mut self, previous_dpi: u16) {
         self.ensure_selected_device();
 
         let active_device = self.active_device_info();
@@ -435,13 +501,23 @@ impl AppRuntime {
         if previous_dpi != configured_dpi {
             self.log_dpi_state("DPI apply request");
         }
-        debug_mode_was_enabled
     }
 
     fn refresh_live_state(&mut self) {
+        self.refresh_live_state_with_results(
+            self.hid_backend.list_devices(),
+            self.app_focus_backend.current_frontmost_app(),
+        );
+    }
+
+    fn refresh_live_state_with_results(
+        &mut self,
+        devices: Result<Vec<DeviceInfo>, PlatformError>,
+        frontmost_app: Result<Option<String>, PlatformError>,
+    ) {
         let previous_frontmost_app = self.frontmost_app.clone();
 
-        match self.hid_backend.list_devices() {
+        match devices {
             Ok(devices) => self.replace_detected_devices(devices),
             Err(error) => self.push_debug(
                 DebugEventKind::Warning,
@@ -449,7 +525,7 @@ impl AppRuntime {
             ),
         }
 
-        match self.app_focus_backend.current_frontmost_app() {
+        match frontmost_app {
             Ok(frontmost_app) => {
                 self.frontmost_app = frontmost_app;
                 if self.frontmost_app != previous_frontmost_app {
@@ -461,7 +537,9 @@ impl AppRuntime {
                         ),
                     );
                 }
-                self.sync_active_profile();
+                if self.sync_active_profile() {
+                    self.sync_hook_backend();
+                }
             }
             Err(error) => self.push_debug(
                 DebugEventKind::Warning,
@@ -554,29 +632,31 @@ impl AppRuntime {
         }
     }
 
-    fn sync_active_profile(&mut self) {
+    fn sync_active_profile(&mut self) -> bool {
         let selected_profile_id = self
             .selected_managed_device()
             .and_then(|device| device.profile_id.clone());
-        if self.config.sync_active_profile(
+        let next_profile_id = self.config.resolved_profile_id(
             selected_profile_id.as_deref(),
             self.frontmost_app.as_deref(),
-        ) {
-            self.persist_config();
+        );
+        if self.resolved_profile_id != next_profile_id {
+            self.resolved_profile_id = next_profile_id;
             self.push_debug(
                 DebugEventKind::Info,
                 format!(
                     "Resolved profile for app {:?} -> {}",
-                    self.frontmost_app, self.config.active_profile_id
+                    self.frontmost_app, self.resolved_profile_id
                 ),
             );
             self.log_active_profile_snapshot("Active bindings");
-            self.sync_hook_backend();
+            return true;
         }
+        false
     }
 
     fn sync_hook_backend(&mut self) {
-        let Some(profile) = self.config.active_profile().cloned() else {
+        let Some(profile) = self.active_profile().cloned() else {
             return;
         };
         let hook_settings = HookBackendSettings::from_app_and_device(
@@ -596,11 +676,11 @@ impl AppRuntime {
             );
         }
 
-        self.collect_hook_events();
+        self.collect_hook_events(self.hook_backend.drain_events());
     }
 
-    fn collect_hook_events(&mut self) {
-        for event in self.hook_backend.drain_events() {
+    fn collect_hook_events(&mut self, events: Vec<HookBackendEvent>) {
+        for event in events {
             self.push_debug(event.kind, event.message);
         }
     }
@@ -632,15 +712,14 @@ impl AppRuntime {
     }
 
     fn push_debug(&mut self, kind: DebugEventKind, message: impl Into<String>) {
-        self.debug_log.insert(
-            0,
-            DebugEvent {
-                kind,
-                message: message.into(),
-                timestamp_ms: now_ms(),
-            },
-        );
-        self.debug_log.truncate(48);
+        self.debug_log.push_front(DebugEvent {
+            kind,
+            message: message.into(),
+            timestamp_ms: now_ms(),
+        });
+        while self.debug_log.len() > 48 {
+            let _ = self.debug_log.pop_back();
+        }
     }
 
     fn push_debug_if_enabled(&mut self, kind: DebugEventKind, message: impl Into<String>) {
@@ -761,7 +840,7 @@ impl AppRuntime {
     }
 
     fn describe_active_profile(&self) -> String {
-        let Some(profile) = self.config.active_profile() else {
+        let Some(profile) = self.active_profile() else {
             return "no active profile".to_string();
         };
 
@@ -999,6 +1078,10 @@ impl AppRuntime {
             .map(|device| device.key.as_str())
     }
 
+    fn active_profile(&self) -> Option<&Profile> {
+        self.config.profile_by_id(&self.resolved_profile_id)
+    }
+
     fn active_device_info(&self) -> Option<DeviceInfo> {
         let selected_device_key = self.selected_device_key.as_ref()?;
         self.managed_device_infos()
@@ -1007,27 +1090,27 @@ impl AppRuntime {
     }
 }
 
-fn current_hid_backend() -> Box<dyn HidBackend> {
+fn current_hid_backend() -> Arc<dyn HidBackend> {
     if cfg!(target_os = "macos") {
-        Box::new(MacOsHidBackend)
+        Arc::new(MacOsHidBackend)
     } else {
-        Box::new(WindowsHidBackend)
+        Arc::new(WindowsHidBackend)
     }
 }
 
-fn current_hook_backend() -> Box<dyn HookBackend> {
+fn current_hook_backend() -> Arc<dyn HookBackend> {
     if cfg!(target_os = "macos") {
-        Box::new(MacOsHookBackend::new())
+        Arc::new(MacOsHookBackend::new())
     } else {
-        Box::new(WindowsHookBackend::new())
+        Arc::new(WindowsHookBackend::new())
     }
 }
 
-fn current_app_focus_backend() -> Box<dyn AppFocusBackend> {
+fn current_app_focus_backend() -> Arc<dyn AppFocusBackend> {
     if cfg!(target_os = "macos") {
-        Box::new(MacOsAppFocusBackend)
+        Arc::new(MacOsAppFocusBackend)
     } else {
-        Box::new(WindowsAppFocusBackend)
+        Arc::new(WindowsAppFocusBackend)
     }
 }
 
@@ -1055,7 +1138,68 @@ fn live_matches_managed_device(managed: &ManagedDevice, live: &DeviceInfo) -> bo
         normalized_identity_key(live.fingerprint.identity_key.as_deref()),
     ) {
         (Some(managed_identity), Some(live_identity)) => managed_identity == live_identity,
-        (Some(_), None) => true,
+        (Some(_), None) => false,
         (None, _) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mouser_core::{default_device_settings, DeviceFingerprint};
+
+    fn managed_device(identity_key: Option<&str>) -> ManagedDevice {
+        ManagedDevice {
+            id: "mx-master".to_string(),
+            model_key: "mx_master_3s".to_string(),
+            display_name: "MX Master 3S".to_string(),
+            nickname: None,
+            profile_id: None,
+            identity_key: identity_key.map(str::to_string),
+            settings: default_device_settings(),
+            created_at_ms: 1,
+            last_seen_at_ms: None,
+            last_seen_transport: Some("Bluetooth Low Energy".to_string()),
+        }
+    }
+
+    fn live_device(identity_key: Option<&str>) -> DeviceInfo {
+        DeviceInfo {
+            key: "live-device".to_string(),
+            model_key: "mx_master_3s".to_string(),
+            display_name: "MX Master 3S".to_string(),
+            nickname: None,
+            product_id: Some(0xB034),
+            product_name: Some("MX Master 3S".to_string()),
+            transport: Some("Bluetooth Low Energy".to_string()),
+            source: Some("hidapi".to_string()),
+            ui_layout: "mx_master".to_string(),
+            image_asset: "/assets/mouse.png".to_string(),
+            supported_controls: Vec::new(),
+            gesture_cids: vec![0x00C3, 0x00D7],
+            dpi_min: 200,
+            dpi_max: 8000,
+            connected: true,
+            battery_level: Some(80),
+            current_dpi: 1000,
+            fingerprint: DeviceFingerprint {
+                identity_key: identity_key.map(str::to_string),
+                ..DeviceFingerprint::default()
+            },
+        }
+    }
+
+    #[test]
+    fn identityless_live_device_does_not_steal_managed_identity_match() {
+        let managed = managed_device(Some("serial:123"));
+        let live = live_device(None);
+        assert!(!live_matches_managed_device(&managed, &live));
+    }
+
+    #[test]
+    fn unmanaged_identity_can_still_match_same_model_live_device() {
+        let managed = managed_device(None);
+        let live = live_device(Some("serial:123"));
+        assert!(live_matches_managed_device(&managed, &live));
     }
 }
