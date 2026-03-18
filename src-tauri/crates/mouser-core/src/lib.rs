@@ -248,6 +248,14 @@ impl AppConfig {
             if device.nickname.as_deref().is_some_and(|value| value.trim().is_empty()) {
                 device.nickname = None;
             }
+
+            if device
+                .identity_key
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                device.identity_key = None;
+            }
         }
     }
 }
@@ -275,6 +283,8 @@ pub struct ManagedDevice {
     pub model_key: String,
     pub display_name: String,
     pub nickname: Option<String>,
+    #[serde(default)]
+    pub identity_key: Option<String>,
     pub created_at_ms: u64,
     pub last_seen_at_ms: Option<u64>,
     pub last_seen_transport: Option<String>,
@@ -340,6 +350,32 @@ pub struct DeviceLayout {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct DeviceFingerprint {
+    pub identity_key: Option<String>,
+    pub serial_number: Option<String>,
+    pub hid_path: Option<String>,
+    pub interface_number: Option<i32>,
+    pub usage_page: Option<u16>,
+    pub usage: Option<u16>,
+    pub location_id: Option<u32>,
+}
+
+impl Default for DeviceFingerprint {
+    fn default() -> Self {
+        Self {
+            identity_key: None,
+            serial_number: None,
+            hid_path: None,
+            interface_number: None,
+            usage_page: None,
+            usage: None,
+            location_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceInfo {
     pub key: String,
     pub model_key: String,
@@ -358,6 +394,8 @@ pub struct DeviceInfo {
     pub connected: bool,
     pub battery_level: Option<u8>,
     pub current_dpi: u16,
+    #[serde(default)]
+    pub fingerprint: DeviceFingerprint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -820,6 +858,7 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
             connected: true,
             battery_level: Some(84),
             current_dpi: 1200,
+            fingerprint: DeviceFingerprint::default(),
         },
         DeviceInfo {
             key: "mx_anywhere_3s".to_string(),
@@ -839,6 +878,7 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
             connected: false,
             battery_level: Some(62),
             current_dpi: 1000,
+            fingerprint: DeviceFingerprint::default(),
         },
         DeviceInfo {
             key: "mystery_logitech_mouse".to_string(),
@@ -858,6 +898,7 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
             connected: false,
             battery_level: None,
             current_dpi: 900,
+            fingerprint: DeviceFingerprint::default(),
         },
     ]
 }
@@ -885,16 +926,20 @@ pub fn build_connected_device_info(
     source: Option<&str>,
     battery_level: Option<u8>,
     current_dpi: u16,
+    mut fingerprint: DeviceFingerprint,
 ) -> DeviceInfo {
+    hydrate_identity_key(product_id, &mut fingerprint);
     if let Some(spec) = resolve_known_device(product_id, product_name) {
         let model_key = spec.key.clone();
+        let display_name = non_empty_name(product_name).unwrap_or_else(|| spec.display_name.clone());
+        let key = live_device_key(&model_key, &fingerprint);
         return DeviceInfo {
-            key: spec.key,
+            key,
             model_key,
-            display_name: spec.display_name,
+            display_name,
             nickname: None,
             product_id,
-            product_name: product_name.map(str::to_string),
+            product_name: non_empty_name(product_name),
             transport: transport.map(str::to_string),
             source: source.map(str::to_string),
             ui_layout: spec.ui_layout,
@@ -906,6 +951,7 @@ pub fn build_connected_device_info(
             connected: true,
             battery_level,
             current_dpi,
+            fingerprint,
         };
     }
 
@@ -919,9 +965,10 @@ pub fn build_connected_device_info(
     } else {
         key
     };
+    let key = live_device_key(&fallback_key, &fingerprint);
 
     DeviceInfo {
-        key: fallback_key.clone(),
+        key,
         model_key: fallback_key,
         display_name: display_name.clone(),
         nickname: None,
@@ -938,6 +985,7 @@ pub fn build_connected_device_info(
         connected: true,
         battery_level,
         current_dpi,
+        fingerprint,
     }
 }
 
@@ -947,12 +995,19 @@ pub fn build_managed_device_info(
     current_dpi: u16,
 ) -> DeviceInfo {
     let effective_current_dpi = live.map(|device| device.current_dpi).unwrap_or(current_dpi);
+    let live_product_name = live
+        .and_then(|device| device.product_name.as_deref())
+        .and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
 
     if let Some(spec) = known_device_spec_by_key(&managed.model_key) {
         let display_name = managed
             .nickname
             .clone()
             .filter(|value| !value.trim().is_empty())
+            .or_else(|| live_product_name.clone())
             .unwrap_or_else(|| managed.display_name.clone());
         return DeviceInfo {
             key: managed.id.clone(),
@@ -962,9 +1017,7 @@ pub fn build_managed_device_info(
             product_id: live
                 .and_then(|device| device.product_id)
                 .or_else(|| spec.product_ids.first().copied()),
-            product_name: live
-                .and_then(|device| device.product_name.clone())
-                .or_else(|| Some(spec.display_name.clone())),
+            product_name: live_product_name.or_else(|| Some(spec.display_name.clone())),
             transport: live
                 .and_then(|device| device.transport.clone())
                 .or_else(|| managed.last_seen_transport.clone()),
@@ -980,6 +1033,12 @@ pub fn build_managed_device_info(
             connected: live.is_some(),
             battery_level: live.and_then(|device| device.battery_level),
             current_dpi: effective_current_dpi.max(spec.dpi_min).min(spec.dpi_max),
+            fingerprint: live
+                .map(|device| device.fingerprint.clone())
+                .unwrap_or_else(|| DeviceFingerprint {
+                    identity_key: managed.identity_key.clone(),
+                    ..DeviceFingerprint::default()
+                }),
         };
     }
 
@@ -987,6 +1046,7 @@ pub fn build_managed_device_info(
         .nickname
         .clone()
         .filter(|value| !value.trim().is_empty())
+        .or_else(|| live_product_name.clone())
         .unwrap_or_else(|| managed.display_name.clone());
     DeviceInfo {
         key: managed.id.clone(),
@@ -994,9 +1054,7 @@ pub fn build_managed_device_info(
         display_name,
         nickname: managed.nickname.clone(),
         product_id: live.and_then(|device| device.product_id),
-        product_name: live
-            .and_then(|device| device.product_name.clone())
-            .or_else(|| Some(managed.display_name.clone())),
+        product_name: live_product_name.or_else(|| Some(managed.display_name.clone())),
         transport: live
             .and_then(|device| device.transport.clone())
             .or_else(|| managed.last_seen_transport.clone()),
@@ -1012,6 +1070,12 @@ pub fn build_managed_device_info(
         connected: live.is_some(),
         battery_level: live.and_then(|device| device.battery_level),
         current_dpi: effective_current_dpi.max(200).min(8000),
+        fingerprint: live
+            .map(|device| device.fingerprint.clone())
+            .unwrap_or_else(|| DeviceFingerprint {
+                identity_key: managed.identity_key.clone(),
+                ..DeviceFingerprint::default()
+            }),
     }
 }
 
@@ -1099,6 +1163,68 @@ fn known_device(spec: KnownDeviceSeed<'_>) -> KnownDeviceSpec {
     }
 }
 
+fn non_empty_name(value: Option<&str>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+pub fn hydrate_identity_key(product_id: Option<u16>, fingerprint: &mut DeviceFingerprint) {
+    if fingerprint.identity_key.is_some() {
+        return;
+    }
+
+    fingerprint.identity_key = fingerprint
+        .serial_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|serial| {
+            format!(
+                "serial:{:04x}:{}",
+                product_id.unwrap_or_default(),
+                serial,
+            )
+        })
+        .or_else(|| {
+            fingerprint.location_id.map(|location_id| {
+                format!(
+                    "location:{:04x}:{location_id:08x}:{:04x}:{:04x}",
+                    product_id.unwrap_or_default(),
+                    fingerprint.usage_page.unwrap_or_default(),
+                    fingerprint.usage.unwrap_or_default(),
+                )
+            })
+        })
+        .or_else(|| {
+            fingerprint
+                .hid_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|path| format!("path:{path}"))
+        })
+        .or_else(|| match (
+            fingerprint.interface_number,
+            fingerprint.usage_page,
+            fingerprint.usage,
+        ) {
+            (Some(interface_number), Some(usage_page), Some(usage)) => Some(format!(
+                "interface:{:04x}:{interface_number}:{usage_page:04x}:{usage:04x}",
+                product_id.unwrap_or_default(),
+            )),
+            _ => None,
+        });
+}
+
+fn live_device_key(model_key: &str, fingerprint: &DeviceFingerprint) -> String {
+    fingerprint
+        .identity_key
+        .clone()
+        .unwrap_or_else(|| model_key.to_string())
+}
+
 fn normalize_name(value: &str) -> String {
     value
         .trim()
@@ -1171,5 +1297,50 @@ mod tests {
         assert_eq!(device.ui_layout, "mx_master");
         assert_eq!(clamp_dpi(Some(device), 9000), 8000);
         assert_eq!(clamp_dpi(Some(device), 100), 200);
+    }
+
+    #[test]
+    fn connected_device_info_prefers_live_product_name_for_display() {
+        let device = build_connected_device_info(
+            Some(0xB023),
+            Some("MX Master 3 Mac"),
+            Some("Bluetooth Low Energy"),
+            Some("iokit"),
+            Some(100),
+            1000,
+            DeviceFingerprint::default(),
+        );
+
+        assert_eq!(device.model_key, "mx_master_3");
+        assert_eq!(device.display_name, "MX Master 3 Mac");
+        assert_eq!(device.product_name.as_deref(), Some("MX Master 3 Mac"));
+    }
+
+    #[test]
+    fn managed_device_info_prefers_live_product_name_without_nickname() {
+        let managed = ManagedDevice {
+            id: "mx_master_3-1".to_string(),
+            model_key: "mx_master_3".to_string(),
+            display_name: "MX Master 3".to_string(),
+            nickname: None,
+            identity_key: None,
+            created_at_ms: 1,
+            last_seen_at_ms: None,
+            last_seen_transport: Some("Bluetooth Low Energy".to_string()),
+        };
+        let live = build_connected_device_info(
+            Some(0xB023),
+            Some("MX Master 3 Mac"),
+            Some("Bluetooth Low Energy"),
+            Some("iokit"),
+            Some(100),
+            1000,
+            DeviceFingerprint::default(),
+        );
+
+        let merged = build_managed_device_info(&managed, Some(&live), 1000);
+
+        assert_eq!(merged.display_name, "MX Master 3 Mac");
+        assert_eq!(merged.product_name.as_deref(), Some("MX Master 3 Mac"));
     }
 }

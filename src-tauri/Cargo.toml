@@ -28,7 +28,7 @@ mouser-mock = { path = "crates/mouser-mock" }
 mouser-platform = { path = "crates/mouser-platform" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-specta = "=2.0.0-rc.22"
+specta = { version = "=2.0.0-rc.22", features = ["derive"] }
 specta-typescript = "0.0.9"
 tauri = { version = "2", features = ["tray-icon", "specta"] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }

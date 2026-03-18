@@ -92,6 +92,8 @@ pub struct MacOsIoKitInfo {
     pub usage: u32,
     pub transport: Option<String>,
     pub product_string: Option<String>,
+    pub serial_number: Option<String>,
+    pub location_id: Option<u32>,
 }
 
 #[cfg(target_os = "macos")]
@@ -131,12 +133,17 @@ pub fn enumerate_iokit_infos() -> Result<Vec<MacOsIoKitInfo>, PlatformError> {
                 .unwrap_or(0) as u32;
             let transport = get_string_property(device_ref as IOHIDDeviceRef, "Transport");
             let product_string = get_string_property(device_ref as IOHIDDeviceRef, "Product");
+            let serial_number = get_string_property(device_ref as IOHIDDeviceRef, "SerialNumber");
+            let location_id =
+                get_number_property(device_ref as IOHIDDeviceRef, "LocationID").map(|value| value as u32);
             let dedupe_key = (
                 product_id,
                 usage_page,
                 usage,
                 transport.clone().unwrap_or_default(),
                 product_string.clone().unwrap_or_default(),
+                serial_number.clone().unwrap_or_default(),
+                location_id.unwrap_or_default(),
             );
             if seen.insert(dedupe_key) {
                 infos.push(MacOsIoKitInfo {
@@ -145,6 +152,8 @@ pub fn enumerate_iokit_infos() -> Result<Vec<MacOsIoKitInfo>, PlatformError> {
                     usage,
                     transport,
                     product_string,
+                    serial_number,
+                    location_id,
                 });
             }
         }

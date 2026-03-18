@@ -1,11 +1,13 @@
 #[cfg(target_os = "macos")]
 use crate::macos_iokit::{enumerate_iokit_infos, MacOsIoKitInfo, MacOsNativeHidDevice};
-use crate::{
-    horizontal_scroll_control, push_bounded_hook_event, HookBackend, HookBackendEvent,
-    HookCapabilities, PlatformError,
-};
 #[cfg(target_os = "macos")]
-use mouser_core::{build_connected_device_info, Binding, DebugEventKind, LogicalControl};
+use crate::{horizontal_scroll_control, push_bounded_hook_event};
+use crate::{HookBackend, HookBackendEvent, HookCapabilities, PlatformError};
+#[cfg(target_os = "macos")]
+use mouser_core::{
+    build_connected_device_info, hydrate_identity_key, Binding, DebugEventKind, DeviceFingerprint,
+    LogicalControl,
+};
 use mouser_core::{Profile, Settings};
 
 #[cfg(not(target_os = "macos"))]
@@ -71,6 +73,7 @@ use core_foundation::{
     base::TCFType,
     string::{CFString, CFStringRef},
 };
+#[cfg(target_os = "macos")]
 use core_graphics::{
     event::{
         CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions,
@@ -1014,6 +1017,16 @@ fn initialize_gesture_session(
     device: MacOsNativeHidDevice,
 ) -> Result<GestureSession, PlatformError> {
     let transport = iokit_transport_label(info.transport.as_deref());
+    let mut fingerprint = DeviceFingerprint {
+        identity_key: None,
+        serial_number: info.serial_number.clone(),
+        hid_path: None,
+        interface_number: None,
+        usage_page: Some(info.usage_page as u16),
+        usage: Some(info.usage as u16),
+        location_id: info.location_id,
+    };
+    hydrate_identity_key(Some(info.product_id), &mut fingerprint);
     let device_info = build_connected_device_info(
         Some(info.product_id),
         info.product_string.as_deref(),
@@ -1021,6 +1034,7 @@ fn initialize_gesture_session(
         Some("iokit"),
         None,
         1000,
+        fingerprint,
     );
     let gesture_candidates = gesture_candidates_for(&device_info.gesture_cids);
 
@@ -1115,6 +1129,8 @@ fn iokit_open_candidates(info: &MacOsIoKitInfo) -> Vec<MacOsIoKitInfo> {
             usage: 0,
             transport: Some("Bluetooth Low Energy".to_string()),
             product_string: info.product_string.clone(),
+            serial_number: info.serial_number.clone(),
+            location_id: info.location_id,
         });
     }
     candidates

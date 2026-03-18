@@ -12,8 +12,8 @@ use std::{
 };
 
 use mouser_core::{
-    build_connected_device_info, default_config, DebugEventKind, DeviceInfo, LogicalControl,
-    Profile, Settings,
+    build_connected_device_info, default_config, hydrate_identity_key, DebugEventKind,
+    DeviceFingerprint, DeviceInfo, LogicalControl, Profile, Settings,
 };
 
 use crate::{
@@ -645,6 +645,7 @@ impl HidBackend for WindowsHidBackend {
                     info.product_string(),
                     Some(transport_label(info.bus_type())),
                     "hidapi",
+                    fingerprint_from_hid_info(info),
                     dpi,
                 ) && set_hidpp_dpi(&device, dpi)?
                 {
@@ -1013,6 +1014,7 @@ fn initialize_gesture_session(
     info: &HidDeviceInfo,
     device: HidDevice,
 ) -> Result<GestureSession, PlatformError> {
+    let fingerprint = fingerprint_from_hid_info(info);
     let device_info = build_connected_device_info(
         Some(info.product_id()),
         info.product_string(),
@@ -1020,6 +1022,7 @@ fn initialize_gesture_session(
         Some("hidapi"),
         None,
         1000,
+        fingerprint,
     );
     let gesture_candidates = gesture_candidates_for(&device_info.gesture_cids);
 
@@ -1118,6 +1121,7 @@ fn probe_hidapi_device(device: &HidDevice, info: &HidDeviceInfo) -> Option<Devic
         .flatten()
         .unwrap_or(1000);
     let battery_level = read_hidpp_battery(device).ok().flatten();
+    let fingerprint = fingerprint_from_hid_info(info);
     Some(build_connected_device_info(
         Some(info.product_id()),
         info.product_string(),
@@ -1125,7 +1129,23 @@ fn probe_hidapi_device(device: &HidDevice, info: &HidDeviceInfo) -> Option<Devic
         Some("hidapi"),
         battery_level,
         current_dpi,
+        fingerprint,
     ))
+}
+
+#[cfg(target_os = "windows")]
+fn fingerprint_from_hid_info(info: &HidDeviceInfo) -> DeviceFingerprint {
+    let mut fingerprint = DeviceFingerprint {
+        identity_key: None,
+        serial_number: info.serial_number().map(str::to_string),
+        hid_path: Some(info.path().to_string_lossy().into_owned()),
+        interface_number: Some(info.interface_number()),
+        usage_page: Some(info.usage_page()),
+        usage: Some(info.usage()),
+        location_id: None,
+    };
+    hydrate_identity_key(Some(info.product_id()), &mut fingerprint);
+    fingerprint
 }
 
 #[cfg(target_os = "windows")]
@@ -1142,9 +1162,19 @@ fn device_key_matches(
     product_name: Option<&str>,
     transport: Option<&str>,
     source: &'static str,
+    fingerprint: DeviceFingerprint,
     dpi: u16,
 ) -> bool {
-    build_connected_device_info(product_id, product_name, transport, Some(source), None, dpi).key
+    build_connected_device_info(
+        product_id,
+        product_name,
+        transport,
+        Some(source),
+        None,
+        dpi,
+        fingerprint,
+    )
+    .key
         == device_key
 }
 

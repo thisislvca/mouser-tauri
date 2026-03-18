@@ -14,6 +14,23 @@ import { useUiStore } from "./store/uiStore";
 
 let currentBootstrap: BootstrapPayload;
 
+function normalizedIdentityKey(identityKey: string | null | undefined) {
+  const trimmed = identityKey?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function samePhysicalDevice(left: DeviceInfo, right: DeviceInfo) {
+  const leftIdentity = normalizedIdentityKey(left.fingerprint?.identityKey);
+  const rightIdentity = normalizedIdentityKey(right.fingerprint?.identityKey);
+  if (leftIdentity != null && rightIdentity != null) {
+    return leftIdentity === rightIdentity;
+  }
+  if (leftIdentity != null || rightIdentity != null) {
+    return false;
+  }
+  return left.modelKey === right.modelKey;
+}
+
 const apiMocks = vi.hoisted(() => ({
   bootstrapLoad: vi.fn(),
   configSave: vi.fn(),
@@ -84,6 +101,7 @@ function makeBootstrap(): BootstrapPayload {
         modelKey: "mx_master_3s",
         displayName: "MX Master 3S",
         nickname: null,
+        identityKey: "mock:mx_master_3s:1",
         createdAtMs: 1,
         lastSeenAtMs: 1,
         lastSeenTransport: "Bluetooth Low Energy",
@@ -124,6 +142,15 @@ function makeBootstrap(): BootstrapPayload {
       connected: true,
       batteryLevel: 84,
       currentDpi: 1200,
+      fingerprint: {
+        identityKey: "mock:mx_master_3s:1",
+        serialNumber: null,
+        hidPath: null,
+        interfaceNumber: null,
+        usagePage: null,
+        usage: null,
+        locationId: null,
+      },
     },
   ];
 
@@ -394,6 +421,15 @@ describe("App", () => {
         connected: false,
         batteryLevel: null,
         currentDpi: currentBootstrap.config.settings.dpi,
+        fingerprint: {
+          identityKey: `mock:${modelKey}:${(currentBootstrap.config.managedDevices?.length ?? 0) + 1}`,
+          serialNumber: null,
+          hidPath: null,
+          interfaceNumber: null,
+          usagePage: null,
+          usage: null,
+          locationId: null,
+        },
       };
 
       currentBootstrap = {
@@ -407,6 +443,7 @@ describe("App", () => {
               modelKey,
               displayName: supportedDevice.displayName,
               nickname: null,
+              identityKey: nextDevice.fingerprint?.identityKey ?? null,
               createdAtMs: 1,
               lastSeenAtMs: null,
               lastSeenTransport: null,
@@ -452,7 +489,7 @@ describe("App", () => {
         connected:
           device.key === deviceKey &&
           currentBootstrap.engineSnapshot.detectedDevices.some(
-            (detected) => detected.modelKey === device.modelKey,
+            (detected) => samePhysicalDevice(detected, device),
           ),
       }));
       const activeDevice = devices.find((device) => device.key === deviceKey) ?? null;

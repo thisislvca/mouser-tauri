@@ -13,8 +13,9 @@ use std::{
 #[cfg(target_os = "macos")]
 use mouser_core::build_connected_device_info;
 use mouser_core::{
-    clamp_dpi, default_config, default_known_apps, default_layouts, known_device_specs, AppConfig,
-    DebugEventKind, DeviceInfo, DeviceLayout, KnownApp, LogicalControl, Profile, Settings,
+    clamp_dpi, default_config, default_known_apps, default_layouts, hydrate_identity_key,
+    known_device_specs, AppConfig, DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout,
+    KnownApp, LogicalControl, Profile, Settings,
 };
 use thiserror::Error;
 
@@ -151,6 +152,7 @@ impl StaticDeviceCatalog {
                     connected: false,
                     battery_level: None,
                     current_dpi: 1000,
+                    fingerprint: DeviceFingerprint::default(),
                 })
                 .collect(),
             apps: default_known_apps(),
@@ -455,6 +457,7 @@ pub mod macos {
                             info.product_string.as_deref(),
                             transport.as_deref(),
                             "iokit",
+                            fingerprint_from_iokit_info(&info),
                             dpi,
                         ) {
                             continue;
@@ -480,6 +483,7 @@ pub mod macos {
                             info.product_string(),
                             Some(transport_label(info.bus_type())),
                             "hidapi",
+                            fingerprint_from_hid_info(info),
                             dpi,
                         ) && set_hidpp_dpi(&device, dpi)?
                         {
@@ -587,6 +591,7 @@ pub mod macos {
             info.product_string(),
             Some(transport_label(info.bus_type())),
             "hidapi",
+            fingerprint_from_hid_info(info),
         )
     }
 
@@ -600,6 +605,7 @@ pub mod macos {
             info.product_string.as_deref(),
             transport.as_deref(),
             "iokit",
+            fingerprint_from_iokit_info(info),
         )
     }
 
@@ -610,6 +616,7 @@ pub mod macos {
         product_name: Option<&str>,
         transport: Option<&str>,
         source: &'static str,
+        fingerprint: DeviceFingerprint,
     ) -> Option<DeviceInfo> {
         let current_dpi = read_hidpp_current_dpi(device)
             .ok()
@@ -623,7 +630,38 @@ pub mod macos {
             Some(source),
             battery_level,
             current_dpi,
+            fingerprint,
         ))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn fingerprint_from_hid_info(info: &HidDeviceInfo) -> DeviceFingerprint {
+        let mut fingerprint = DeviceFingerprint {
+            identity_key: None,
+            serial_number: info.serial_number().map(str::to_string),
+            hid_path: Some(info.path().to_string_lossy().into_owned()),
+            interface_number: Some(info.interface_number()),
+            usage_page: Some(info.usage_page()),
+            usage: Some(info.usage()),
+            location_id: None,
+        };
+        hydrate_identity_key(Some(info.product_id()), &mut fingerprint);
+        fingerprint
+    }
+
+    #[cfg(target_os = "macos")]
+    fn fingerprint_from_iokit_info(info: &MacOsIoKitInfo) -> DeviceFingerprint {
+        let mut fingerprint = DeviceFingerprint {
+            identity_key: None,
+            serial_number: info.serial_number.clone(),
+            hid_path: None,
+            interface_number: None,
+            usage_page: Some(info.usage_page as u16),
+            usage: Some(info.usage as u16),
+            location_id: info.location_id,
+        };
+        hydrate_identity_key(Some(info.product_id), &mut fingerprint);
+        fingerprint
     }
 
     #[cfg(target_os = "macos")]
@@ -662,10 +700,19 @@ pub mod macos {
         product_name: Option<&str>,
         transport: Option<&str>,
         source: &'static str,
+        fingerprint: DeviceFingerprint,
         dpi: u16,
     ) -> bool {
-        build_connected_device_info(product_id, product_name, transport, Some(source), None, dpi)
-            .key
+        build_connected_device_info(
+            product_id,
+            product_name,
+            transport,
+            Some(source),
+            None,
+            dpi,
+            fingerprint,
+        )
+        .key
             == device_key
     }
 
@@ -679,6 +726,8 @@ pub mod macos {
                 usage: 0,
                 transport: Some("Bluetooth Low Energy".to_string()),
                 product_string: info.product_string.clone(),
+                serial_number: info.serial_number.clone(),
+                location_id: info.location_id,
             });
         }
         candidates

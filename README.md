@@ -82,6 +82,12 @@ cd /Users/luca/Documents/dev/mouser-tauri
 bun run tauri dev
 ```
 
+Bindings workflow:
+
+- `bun run tauri dev` regenerates [bindings.ts](/Users/luca/Documents/dev/mouser-tauri/src/lib/bindings.ts) automatically in debug builds.
+- Plain frontend commands such as `bun run dev`, `bun run build`, and `bun run test:run` use the checked-in bindings file.
+- If you change Rust commands, events, or Specta types without running `tauri dev`, refresh the file manually with `bun run generate:bindings`.
+
 ## Current scope
 
 This milestone deliberately does not ship:

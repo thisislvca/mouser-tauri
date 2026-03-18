@@ -475,6 +475,9 @@ pub fn export_bindings() -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(debug_assertions)]
+    export_bindings().expect("failed to export specta bindings");
+
     let specta_builder = specta_builder();
 
     tauri::Builder::default()

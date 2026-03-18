@@ -4,11 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "bun run generate:bindings && vite",
-    "build": "bun run generate:bindings && tsc && vite build",
+    "dev": "vite",
+    "build": "tsc && vite build",
     "generate:bindings": "cargo run --manifest-path src-tauri/Cargo.toml --bin export_bindings",
     "test": "vitest",
-    "test:run": "bun run generate:bindings && vitest run",
+    "test:run": "vitest run",
     "preview": "vite preview",
     "tauri": "tauri"
   },

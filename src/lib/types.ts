@@ -8,6 +8,7 @@ export type {
   BootstrapPayload,
   DebugEvent as DebugEventRecord,
   DebugEventKind,
+  DeviceFingerprint,
   DeviceHotspot,
   DeviceInfo,
   DeviceLayout,

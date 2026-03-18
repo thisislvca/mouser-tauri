@@ -6,9 +6,9 @@ use std::{
 use mouser_core::{
     build_managed_device_info, clamp_dpi, default_action_catalog, default_config,
     default_device_catalog, default_known_apps, default_layouts, effective_layout_key,
-    manual_layout_choices, AppConfig, BootstrapPayload, DebugEvent, DebugEventKind, DeviceInfo,
-    DeviceLayout, EngineSnapshot, EngineStatus, KnownApp, ManagedDevice, PlatformCapabilities,
-    Profile,
+    manual_layout_choices, AppConfig, BootstrapPayload, DebugEvent, DebugEventKind,
+    DeviceFingerprint, DeviceInfo, DeviceLayout, EngineSnapshot, EngineStatus, KnownApp,
+    ManagedDevice, PlatformCapabilities, Profile,
 };
 use mouser_platform::{ConfigStore, DeviceCatalog, PlatformError};
 
@@ -20,9 +20,22 @@ pub struct MockCatalog {
 
 impl MockCatalog {
     pub fn new() -> Self {
+        let devices = default_device_catalog()
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut device)| {
+                let identity_key = format!("mock:{}:{}", device.model_key, index + 1);
+                device.key = identity_key.clone();
+                device.fingerprint = DeviceFingerprint {
+                    identity_key: Some(identity_key),
+                    ..DeviceFingerprint::default()
+                };
+                device
+            })
+            .collect();
         Self {
             layouts: default_layouts(),
-            devices: default_device_catalog(),
+            devices,
         }
     }
 }
@@ -102,6 +115,7 @@ impl MockRuntime {
                 model_key: device.model_key,
                 display_name: device.display_name,
                 nickname: None,
+                identity_key: device.fingerprint.identity_key.clone(),
                 created_at_ms: now_ms(),
                 last_seen_at_ms: None,
                 last_seen_transport: device.transport,

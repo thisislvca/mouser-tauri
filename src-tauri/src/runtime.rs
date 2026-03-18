@@ -428,6 +428,25 @@ impl AppRuntime {
             if let Some(index) = assignments.get(&device.id) {
                 let live = &self.detected_devices[*index];
                 let was_connected = previously_connected.contains(&device.id);
+                if device.nickname.is_none() {
+                    if let Some(live_product_name) = live
+                        .product_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty() && *value != device.display_name)
+                    {
+                        device.display_name = live_product_name.to_string();
+                        changed_config = true;
+                    }
+                }
+                if device.identity_key.is_none() {
+                    if let Some(identity_key) =
+                        normalized_identity_key(live.fingerprint.identity_key.as_deref())
+                    {
+                        device.identity_key = Some(identity_key.to_string());
+                        changed_config = true;
+                    }
+                }
                 if !was_connected || device.last_seen_transport != live.transport {
                     device.last_seen_at_ms = Some(now);
                     device.last_seen_transport = live.transport.clone();
@@ -529,7 +548,7 @@ impl AppRuntime {
             active_hid_backend: self.hid_backend.backend_id().to_string(),
             active_hook_backend: self.hook_backend.backend_id().to_string(),
             active_focus_backend: self.app_focus_backend.backend_id().to_string(),
-            hidapi_available: cfg!(target_os = "macos"),
+            hidapi_available: cfg!(any(target_os = "macos", target_os = "windows")),
             iokit_available: cfg!(target_os = "macos"),
         }
     }
@@ -567,7 +586,7 @@ impl AppRuntime {
             DebugEventKind::Info,
             format!(
                 "Transport support: hidapi={} iokit={}",
-                if cfg!(target_os = "macos") {
+                if cfg!(any(target_os = "macos", target_os = "windows")) {
                     "ready"
                 } else {
                     "unavailable"
@@ -745,6 +764,7 @@ impl AppRuntime {
             model_key: spec.key,
             display_name: spec.display_name,
             nickname: None,
+            identity_key: None,
             created_at_ms: now_ms(),
             last_seen_at_ms: None,
             last_seen_transport: None,
@@ -835,8 +855,26 @@ impl AppRuntime {
         let mut remaining_indexes = (0..self.detected_devices.len()).collect::<Vec<_>>();
 
         for device in &self.config.managed_devices {
+            let Some(identity_key) = normalized_identity_key(device.identity_key.as_deref()) else {
+                continue;
+            };
             if let Some(position) = remaining_indexes.iter().position(|index| {
-                self.detected_devices[*index].model_key == device.model_key
+                let live = &self.detected_devices[*index];
+                live.model_key == device.model_key
+                    && normalized_identity_key(live.fingerprint.identity_key.as_deref())
+                        == Some(identity_key)
+            }) {
+                let index = remaining_indexes.remove(position);
+                assignments.insert(device.id.clone(), index);
+            }
+        }
+
+        for device in &self.config.managed_devices {
+            if assignments.contains_key(&device.id) {
+                continue;
+            }
+            if let Some(position) = remaining_indexes.iter().position(|index| {
+                live_matches_managed_device(device, &self.detected_devices[*index])
             }) {
                 let index = remaining_indexes.remove(position);
                 assignments.insert(device.id.clone(), index);
@@ -909,4 +947,26 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
+}
+
+fn normalized_identity_key(value: Option<&str>) -> Option<&str> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
+}
+
+fn live_matches_managed_device(managed: &ManagedDevice, live: &DeviceInfo) -> bool {
+    if live.model_key != managed.model_key {
+        return false;
+    }
+
+    match (
+        normalized_identity_key(managed.identity_key.as_deref()),
+        normalized_identity_key(live.fingerprint.identity_key.as_deref()),
+    ) {
+        (Some(managed_identity), Some(live_identity)) => managed_identity == live_identity,
+        (Some(_), None) => true,
+        (None, _) => true,
+    }
 }

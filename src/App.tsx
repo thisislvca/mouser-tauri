@@ -135,6 +135,23 @@ type AppSelectOption = {
 const EMPTY_SELECT_VALUE = "__empty__";
 const DPI_PRESETS = [400, 800, 1000, 1600, 2400, 4000, 6000, 8000];
 
+function normalizedIdentityKey(identityKey: string | null | undefined) {
+  const trimmed = identityKey?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function samePhysicalDevice(left: DeviceInfo, right: DeviceInfo) {
+  const leftIdentity = normalizedIdentityKey(left.fingerprint?.identityKey);
+  const rightIdentity = normalizedIdentityKey(right.fingerprint?.identityKey);
+  if (leftIdentity != null && rightIdentity != null) {
+    return leftIdentity === rightIdentity;
+  }
+  if (leftIdentity != null || rightIdentity != null) {
+    return false;
+  }
+  return left.modelKey === right.modelKey;
+}
+
 function App() {
   const queryClient = useQueryClient();
   useRuntimeEvents();
@@ -144,7 +161,9 @@ function App() {
   const activeSection = useUiStore((state) => state.activeSection);
   const setActiveSection = useUiStore((state) => state.setActiveSection);
   const selectedProfileId = useUiStore((state) => state.selectedProfileId);
-  const setSelectedProfileId = useUiStore((state) => state.setSelectedProfileId);
+  const setSelectedProfileId = useUiStore(
+    (state) => state.setSelectedProfileId,
+  );
   const importDraft = useUiStore((state) => state.importDraft);
   const setImportDraft = useUiStore((state) => state.setImportDraft);
   const eventLog = useUiStore((state) => state.eventLog);
@@ -239,12 +258,19 @@ function App() {
 
     hydrateDebugLog(bootstrapQuery.data.engineSnapshot.engineStatus.debugLog);
 
-    const profileIds = new Set(bootstrapQuery.data.config.profiles.map((profile) => profile.id));
+    const profileIds = new Set(
+      bootstrapQuery.data.config.profiles.map((profile) => profile.id),
+    );
     const activeProfileId = bootstrapQuery.data.config.activeProfileId;
     const activeProfileChanged =
-      lastActiveProfileIdRef.current != null && lastActiveProfileIdRef.current !== activeProfileId;
+      lastActiveProfileIdRef.current != null &&
+      lastActiveProfileIdRef.current !== activeProfileId;
 
-    if (!selectedProfileId || !profileIds.has(selectedProfileId) || activeProfileChanged) {
+    if (
+      !selectedProfileId ||
+      !profileIds.has(selectedProfileId) ||
+      activeProfileChanged
+    ) {
       setSelectedProfileId(activeProfileId);
     }
 
@@ -276,9 +302,9 @@ function App() {
     const liveDevice =
       activeDevice == null
         ? null
-        : engineSnapshot.detectedDevices.find(
-            (device) => device.modelKey === activeDevice.modelKey,
-          ) ?? null;
+        : (engineSnapshot.detectedDevices.find(
+            (device) => samePhysicalDevice(device, activeDevice),
+          ) ?? null);
 
     console.debug("[mouser:dpi]", {
       configuredDpi: config.settings.dpi,
@@ -313,9 +339,7 @@ function App() {
         dpiMax: device.dpiMax,
       })),
     });
-  }, [
-    bootstrapQuery.data,
-  ]);
+  }, [bootstrapQuery.data]);
 
   const bootstrap = bootstrapQuery.data;
   const isMutating =
@@ -332,9 +356,7 @@ function App() {
   if (bootstrapQuery.isLoading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-8 text-[var(--foreground)]">
-        <Card className="px-6 py-4">
-          Loading Mouser...
-        </Card>
+        <Card className="px-6 py-4">Loading Mouser...</Card>
       </main>
     );
   }
@@ -366,9 +388,12 @@ function App() {
     config.profiles[0];
   const activeDevice = engineSnapshot.activeDevice;
   const activeLayout = resolveActiveLayout(activeDevice, config, layouts);
-  const actionLookup = new Map(availableActions.map((action) => [action.id, action]));
+  const actionLookup = new Map(
+    availableActions.map((action) => [action.id, action]),
+  );
   const groupedActions = groupActions(availableActions);
-  const runtimeEvents = eventLog.length > 0 ? eventLog : engineSnapshot.engineStatus.debugLog;
+  const runtimeEvents =
+    eventLog.length > 0 ? eventLog : engineSnapshot.engineStatus.debugLog;
 
   const updateSelectedProfile = (mutateProfile: (profile: Profile) => void) => {
     const nextProfile = cloneProfile(selectedProfile);
@@ -382,7 +407,10 @@ function App() {
     configMutation.mutate(nextConfig);
   };
 
-  const openDeviceDetail = (deviceKey: string, section: SectionName = "buttons") => {
+  const openDeviceDetail = (
+    deviceKey: string,
+    section: SectionName = "buttons",
+  ) => {
     selectDeviceMutation.mutate(deviceKey, {
       onSuccess: () => {
         setShellMode("detail");
@@ -406,7 +434,9 @@ function App() {
     createProfileMutation.mutate({
       id,
       label: labelSource,
-      appMatchers: executable ? [{ kind: "executable", value: executable }] : [],
+      appMatchers: executable
+        ? [{ kind: "executable", value: executable }]
+        : [],
       bindings: selectedProfile.bindings.map((binding) => ({ ...binding })),
     });
     setNewProfileLabel("");
@@ -415,9 +445,12 @@ function App() {
     setActiveSection("profiles");
   };
 
-  const shellTitle = activeDevice?.displayName ?? SECTION_META[activeSection].label;
+  const shellTitle =
+    activeDevice?.displayName ?? SECTION_META[activeSection].label;
   const batteryLabel =
-    activeDevice?.batteryLevel != null ? `${activeDevice.batteryLevel}%` : "N/A";
+    activeDevice?.batteryLevel != null
+      ? `${activeDevice.batteryLevel}%`
+      : "N/A";
   const connectionStatus = activeDevice?.connected
     ? { tone: "success" as const, value: "Connected" }
     : activeDevice
@@ -437,13 +470,15 @@ function App() {
           onCloseAddDevice={() => setAddDeviceOpen(false)}
           onOpenAddDevice={() => setAddDeviceOpen(true)}
           onOpenAppSettings={() => setAppSettingsOpen(true)}
-          onOpenDevice={(deviceKey, section) => openDeviceDetail(deviceKey, section)}
+          onOpenDevice={(deviceKey, section) =>
+            openDeviceDetail(deviceKey, section)
+          }
           onRemoveDevice={removeDeviceMutation.mutate}
           supportedDevices={bootstrap.supportedDevices}
         />
       ) : (
         <div className="relative min-h-screen bg-white">
-          <header className="fixed inset-x-0 top-0 z-30 flex items-center justify-between px-8 py-4">
+          <header className="fixed inset-x-0 top-0 z-30 flex items-center justify-between bg-white/70 px-8 py-4 backdrop-blur-xl">
             <div className="flex items-center gap-3">
               <button
                 className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--foreground)] transition hover:bg-black/5"
@@ -461,7 +496,9 @@ function App() {
               {isMutating && <StatusPill tone="accent" value="Applying" />}
               {config.profiles.slice(0, 5).map((profile) => {
                 const app = profile.appMatchers[0]?.value
-                  ? knownApps.find((a) => a.executable === profile.appMatchers[0]?.value)
+                  ? knownApps.find(
+                      (a) => a.executable === profile.appMatchers[0]?.value,
+                    )
                   : null;
                 return (
                   <button
@@ -530,72 +567,77 @@ function App() {
           </nav>
 
           <div className="min-h-screen overflow-y-auto px-6 pb-8 pt-[72px] lg:pl-[220px]">
-                    {activeSection === "buttons" && (
-                      <ButtonsView
-                        actionLookup={actionLookup}
-                        activeDevice={activeDevice}
-                        activeLayout={activeLayout}
-                        config={config}
-                        groupedActions={groupedActions}
-                        mappingEngineReady={platformCapabilities.mappingEngineReady}
-                        platformCapabilities={platformCapabilities}
-                        profile={selectedProfile}
-                        updateSelectedProfile={updateSelectedProfile}
-                      />
-                    )}
+            {activeSection === "buttons" && (
+              <ButtonsView
+                actionLookup={actionLookup}
+                activeDevice={activeDevice}
+                activeLayout={activeLayout}
+                config={config}
+                groupedActions={groupedActions}
+                mappingEngineReady={platformCapabilities.mappingEngineReady}
+                platformCapabilities={platformCapabilities}
+                profile={selectedProfile}
+                updateSelectedProfile={updateSelectedProfile}
+              />
+            )}
 
-                    {activeSection === "devices" && (
-                      <DeviceDetailView
-                        activeDevice={activeDevice}
-                        activeLayout={activeLayout}
-                        config={config}
-                        layoutChoices={bootstrap.manualLayoutChoices}
-                        saveSettings={saveSettings}
-                      />
-                    )}
+            {activeSection === "devices" && (
+              <DeviceDetailView
+                activeDevice={activeDevice}
+                activeLayout={activeLayout}
+                config={config}
+                layoutChoices={bootstrap.manualLayoutChoices}
+                saveSettings={saveSettings}
+              />
+            )}
 
-                    {activeSection === "profiles" && (
-                      <ProfilesView
-                        createProfileFromDraft={createProfileFromDraft}
-                        deleteProfile={deleteProfileMutation.mutate}
-                        knownApps={knownApps}
-                        newProfileApp={newProfileApp}
-                        newProfileLabel={newProfileLabel}
-                        profile={selectedProfile}
-                        profiles={config.profiles}
-                        setNewProfileApp={setNewProfileApp}
-                        setNewProfileLabel={setNewProfileLabel}
-                        setSelectedProfileId={setSelectedProfileId}
-                        updateSelectedProfile={updateSelectedProfile}
-                      />
-                    )}
+            {activeSection === "profiles" && (
+              <ProfilesView
+                createProfileFromDraft={createProfileFromDraft}
+                deleteProfile={deleteProfileMutation.mutate}
+                knownApps={knownApps}
+                newProfileApp={newProfileApp}
+                newProfileLabel={newProfileLabel}
+                profile={selectedProfile}
+                profiles={config.profiles}
+                setNewProfileApp={setNewProfileApp}
+                setNewProfileLabel={setNewProfileLabel}
+                setSelectedProfileId={setSelectedProfileId}
+                updateSelectedProfile={updateSelectedProfile}
+              />
+            )}
 
-                    {activeSection === "debug" && (
-                      <DebugView
-                        clearDebugLog={clearDebugLogMutation.mutate}
-                        config={config}
-                        debugEvents={runtimeEvents}
-                        importDraft={importDraft}
-                        importSourcePath={importSourcePath}
-                        importWarnings={importWarnings}
-                        isClearing={clearDebugLogMutation.isPending}
-                        onImport={() =>
-                          importMutation.mutate(
-                            buildImportRequest(importSourcePath, importDraft),
-                          )
-                        }
-                        platformCapabilities={platformCapabilities}
-                        saveSettings={saveSettings}
-                        setImportDraft={setImportDraft}
-                        setImportSourcePath={setImportSourcePath}
-                      />
-                    )}
+            {activeSection === "debug" && (
+              <DebugView
+                clearDebugLog={clearDebugLogMutation.mutate}
+                config={config}
+                debugEvents={runtimeEvents}
+                importDraft={importDraft}
+                importSourcePath={importSourcePath}
+                importWarnings={importWarnings}
+                isClearing={clearDebugLogMutation.isPending}
+                onImport={() =>
+                  importMutation.mutate(
+                    buildImportRequest(importSourcePath, importDraft),
+                  )
+                }
+                platformCapabilities={platformCapabilities}
+                saveSettings={saveSettings}
+                setImportDraft={setImportDraft}
+                setImportSourcePath={setImportSourcePath}
+              />
+            )}
           </div>
 
           {activeDevice && (
             <div className="fixed bottom-6 left-8 z-20 flex items-center gap-3">
-              <span className="text-sm font-semibold text-[var(--foreground)]">{batteryLabel}</span>
-              <StatusPill tone={connectionStatus.tone} value={connectionStatus.value} />
+              <span className="text-sm font-semibold text-[var(--foreground)]">
+                {batteryLabel}
+              </span>
+              <StatusPill
+                tone={connectionStatus.tone}
+                value={connectionStatus.value}
+              />
             </div>
           )}
         </div>
@@ -622,9 +664,13 @@ function ButtonsView(props: {
   mappingEngineReady: boolean;
   updateSelectedProfile: (mutateProfile: (profile: Profile) => void) => void;
 }) {
-  const [selectedControl, setSelectedControl] = useState<LogicalControl | null>(null);
+  const [selectedControl, setSelectedControl] = useState<LogicalControl | null>(
+    null,
+  );
   const selectedHotspot =
-    props.activeLayout.hotspots.find((hotspot) => hotspot.control === selectedControl) ?? null;
+    props.activeLayout.hotspots.find(
+      (hotspot) => hotspot.control === selectedControl,
+    ) ?? null;
 
   useEffect(() => {
     if (!props.activeDevice) {
@@ -632,7 +678,9 @@ function ButtonsView(props: {
       return;
     }
 
-    const visibleControls = new Set(props.activeLayout.hotspots.map((hotspot) => hotspot.control));
+    const visibleControls = new Set(
+      props.activeLayout.hotspots.map((hotspot) => hotspot.control),
+    );
     setSelectedControl((current) =>
       current && visibleControls.has(current) ? current : null,
     );
@@ -707,11 +755,11 @@ function DashboardShell(props: {
   const detectedModelKeys = new Set(
     props.engineSnapshot.detectedDevices.map((device) => device.modelKey),
   );
-  const managedModelKeys = new Set(
-    props.engineSnapshot.devices.map((device) => device.modelKey),
-  );
   const unmanagedDetectedDevices = props.engineSnapshot.detectedDevices.filter(
-    (device) => !managedModelKeys.has(device.modelKey),
+    (device) =>
+      !props.engineSnapshot.devices.some((managed) =>
+        samePhysicalDevice(managed, device),
+      ),
   );
   const selectedDeviceKey =
     props.engineSnapshot.activeDeviceKey ?? props.activeDevice?.key ?? null;
@@ -824,9 +872,14 @@ function DashboardShell(props: {
                 No devices added
               </h3>
               <p className="mt-3 max-w-md text-sm text-[var(--muted-foreground)]">
-                Build your device library first, then select a device when you want to customize it.
+                Build your device library first, then select a device when you
+                want to customize it.
               </p>
-              <Button className="mt-6" onClick={props.onOpenAddDevice} variant="outline">
+              <Button
+                className="mt-6"
+                onClick={props.onOpenAddDevice}
+                variant="outline"
+              >
                 + Add device
               </Button>
             </div>
@@ -841,17 +894,21 @@ function DashboardShell(props: {
                   Detected Now
                 </p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-                  Devices the backend can see right now but that are not yet in your library.
+                  Devices the backend can see right now but that are not yet in
+                  your library.
                 </p>
               </div>
-              <StatusPill tone="neutral" value={String(unmanagedDetectedDevices.length)} />
+              <StatusPill
+                tone="neutral"
+                value={String(unmanagedDetectedDevices.length)}
+              />
             </div>
 
             <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {unmanagedDetectedDevices.map((device) => (
                 <div
                   className="flex items-center justify-between gap-3 rounded-[24px] bg-white px-4 py-4 ring-1 ring-[var(--border)]"
-                  key={`${device.modelKey}-${device.transport ?? "unknown"}`}
+                  key={device.key}
                 >
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-[var(--foreground)]">
@@ -861,7 +918,10 @@ function DashboardShell(props: {
                       {device.transport ?? "Unknown transport"}
                     </p>
                   </div>
-                  <Button onClick={() => props.onAddDevice(device.modelKey)} variant="outline">
+                  <Button
+                    onClick={() => props.onAddDevice(device.modelKey)}
+                    variant="outline"
+                  >
                     Add
                   </Button>
                 </div>
@@ -930,18 +990,25 @@ function AddDeviceModal(props: {
   open: boolean;
   supportedDevices: KnownDeviceSpec[];
 }) {
-  const managedCounts = props.managedDevices.reduce<Map<string, number>>((counts, device) => {
-    counts.set(device.modelKey, (counts.get(device.modelKey) ?? 0) + 1);
-    return counts;
-  }, new Map<string, number>());
+  const managedCounts = props.managedDevices.reduce<Map<string, number>>(
+    (counts, device) => {
+      counts.set(device.modelKey, (counts.get(device.modelKey) ?? 0) + 1);
+      return counts;
+    },
+    new Map<string, number>(),
+  );
 
   return (
-    <Dialog open={props.open} onOpenChange={(nextOpen) => !nextOpen && props.onClose()}>
+    <Dialog
+      open={props.open}
+      onOpenChange={(nextOpen) => !nextOpen && props.onClose()}
+    >
       <DialogContent className="max-w-4xl overflow-hidden p-0 sm:max-w-4xl">
         <DialogHeader className="border-b border-[var(--border)] px-6 py-5">
           <DialogTitle className="text-[24px]">Add Device</DialogTitle>
           <DialogDescription>
-            Add supported devices to your managed library, then connect them when ready.
+            Add supported devices to your managed library, then connect them
+            when ready.
           </DialogDescription>
         </DialogHeader>
 
@@ -967,7 +1034,10 @@ function AddDeviceModal(props: {
                     {isDetected ? (
                       <StatusPill tone="success" value="Detected" />
                     ) : addedCount > 0 ? (
-                      <StatusPill tone="neutral" value={`Added ${addedCount}`} />
+                      <StatusPill
+                        tone="neutral"
+                        value={`Added ${addedCount}`}
+                      />
                     ) : (
                       <StatusPill tone="neutral" value="Supported" />
                     )}
@@ -1019,7 +1089,9 @@ function ProfilesView(props: {
               <Input
                 placeholder="Design apps"
                 value={props.newProfileLabel}
-                onChange={(event) => props.setNewProfileLabel(event.currentTarget.value)}
+                onChange={(event) =>
+                  props.setNewProfileLabel(event.currentTarget.value)
+                }
               />
             </Field>
 
@@ -1028,7 +1100,9 @@ function ProfilesView(props: {
                 list="known-apps"
                 placeholder="Code.exe"
                 value={props.newProfileApp}
-                onChange={(event) => props.setNewProfileApp(event.currentTarget.value)}
+                onChange={(event) =>
+                  props.setNewProfileApp(event.currentTarget.value)
+                }
               />
             </Field>
             <datalist id="known-apps">
@@ -1041,7 +1115,9 @@ function ProfilesView(props: {
 
             <Button
               className="w-full"
-              disabled={!props.newProfileLabel.trim() && !props.newProfileApp.trim()}
+              disabled={
+                !props.newProfileLabel.trim() && !props.newProfileApp.trim()
+              }
               onClick={props.createProfileFromDraft}
             >
               Create profile
@@ -1053,7 +1129,9 @@ function ProfilesView(props: {
           <div className="space-y-3">
             {props.profiles.map((profile) => {
               const profileApp = profile.appMatchers[0]?.value
-                ? props.knownApps.find((app) => app.executable === profile.appMatchers[0]?.value) ?? null
+                ? (props.knownApps.find(
+                    (app) => app.executable === profile.appMatchers[0]?.value,
+                  ) ?? null)
                 : null;
               return (
                 <button
@@ -1072,7 +1150,9 @@ function ProfilesView(props: {
                       {profile.label}
                     </p>
                     <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
-                      {profile.appMatchers.map((matcher) => matcher.value).join(", ") || "All applications"}
+                      {profile.appMatchers
+                        .map((matcher) => matcher.value)
+                        .join(", ") || "All applications"}
                     </p>
                   </div>
                   {profileApp?.iconAsset ? (
@@ -1091,9 +1171,7 @@ function ProfilesView(props: {
         </Panel>
       </div>
 
-      <Panel
-        title="Profile"
-      >
+      <Panel title="Profile">
         <div className="space-y-4">
           <Field label="Label">
             <Input
@@ -1111,7 +1189,9 @@ function ProfilesView(props: {
             <Textarea
               className="min-h-[180px] resize-y"
               rows={6}
-              value={props.profile.appMatchers.map((matcher) => matcher.value).join("\n")}
+              value={props.profile.appMatchers
+                .map((matcher) => matcher.value)
+                .join("\n")}
               onChange={(event) =>
                 props.updateSelectedProfile((nextProfile) => {
                   nextProfile.appMatchers = event.currentTarget.value
@@ -1127,7 +1207,7 @@ function ProfilesView(props: {
           <Card className="bg-[var(--card-muted)] shadow-none ring-1 ring-[var(--border)]">
             <CardContent className="px-4 py-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
-              Current selection
+                Current selection
               </p>
               <p
                 className="mt-3 text-sm font-semibold text-[var(--foreground)]"
@@ -1186,7 +1266,8 @@ function DeviceDetailView(props: {
     }
 
     if (pendingDpi != null) {
-      const pendingSettled = configuredDpi === pendingDpi || liveDpi === pendingDpi;
+      const pendingSettled =
+        configuredDpi === pendingDpi || liveDpi === pendingDpi;
       if (!pendingSettled) {
         return;
       }
@@ -1237,7 +1318,8 @@ function DeviceDetailView(props: {
     const nextDpi = snapDpi(value, activeDevice.dpiMin, activeDevice.dpiMax);
     setDpiDraft(nextDpi);
     setPendingDpi(
-      nextDpi === configuredDpi && (!activeDevice.connected || nextDpi === liveDpi)
+      nextDpi === configuredDpi &&
+        (!activeDevice.connected || nextDpi === liveDpi)
         ? null
         : nextDpi,
     );
@@ -1269,7 +1351,10 @@ function DeviceDetailView(props: {
                 tone={activeDevice.connected ? "success" : "neutral"}
                 value={activeDevice.transport ?? "Unknown transport"}
               />
-              <StatusPill tone="neutral" value={`DPI ${activeDevice.dpiMin}-${activeDevice.dpiMax}`} />
+              <StatusPill
+                tone="neutral"
+                value={`DPI ${activeDevice.dpiMin}-${activeDevice.dpiMax}`}
+              />
             </div>
           </div>
         </div>
@@ -1277,7 +1362,9 @@ function DeviceDetailView(props: {
         <Panel title={`${activeDevice.displayName} Tuning`}>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2.5 md:col-span-2">
-              <Label className="text-sm font-medium text-[var(--foreground)]">DPI</Label>
+              <Label className="text-sm font-medium text-[var(--foreground)]">
+                DPI
+              </Label>
               <div className="rounded-[24px] bg-[var(--card-muted)] p-5 ring-1 ring-[var(--border)]">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="space-y-1">
@@ -1348,16 +1435,24 @@ function DeviceDetailView(props: {
                 options={layoutOptions}
                 placeholder="Auto-detect"
                 value={
-                  props.config.settings.deviceLayoutOverrides[activeDevice.key] ??
-                  props.config.settings.deviceLayoutOverrides[activeDevice.modelKey] ??
+                  props.config.settings.deviceLayoutOverrides[
+                    activeDevice.key
+                  ] ??
+                  props.config.settings.deviceLayoutOverrides[
+                    activeDevice.modelKey
+                  ] ??
                   ""
                 }
                 onValueChange={(value) =>
                   props.saveSettings((nextConfig) => {
                     if (value) {
-                      nextConfig.settings.deviceLayoutOverrides[activeDevice.key] = value;
+                      nextConfig.settings.deviceLayoutOverrides[
+                        activeDevice.key
+                      ] = value;
                     } else {
-                      delete nextConfig.settings.deviceLayoutOverrides[activeDevice.key];
+                      delete nextConfig.settings.deviceLayoutOverrides[
+                        activeDevice.key
+                      ];
                     }
                   })
                 }
@@ -1388,7 +1483,9 @@ function DeviceDetailView(props: {
                 value={props.config.settings.gestureThreshold}
                 onChange={(event) =>
                   props.saveSettings((nextConfig) => {
-                    nextConfig.settings.gestureThreshold = Number(event.currentTarget.value);
+                    nextConfig.settings.gestureThreshold = Number(
+                      event.currentTarget.value,
+                    );
                   })
                 }
               />
@@ -1399,7 +1496,9 @@ function DeviceDetailView(props: {
                 value={props.config.settings.gestureDeadzone}
                 onChange={(event) =>
                   props.saveSettings((nextConfig) => {
-                    nextConfig.settings.gestureDeadzone = Number(event.currentTarget.value);
+                    nextConfig.settings.gestureDeadzone = Number(
+                      event.currentTarget.value,
+                    );
                   })
                 }
               />
@@ -1415,11 +1514,30 @@ function DeviceDetailView(props: {
             value={activeDevice.connected ? `${liveDpi}` : "Not connected"}
           />
           <CapabilityRow label="Configured DPI" value={`${configuredDpi}`} />
-          <CapabilityRow label="Transport" value={activeDevice.transport ?? "Unknown"} />
-          <CapabilityRow label="Battery" value={activeDevice.batteryLevel != null ? `${activeDevice.batteryLevel}%` : "N/A"} />
-          <CapabilityRow label="Layout family" value={props.activeLayout.label} />
-          <CapabilityRow label="Product" value={activeDevice.productName ?? activeDevice.displayName} />
-          <CapabilityRow label="Status" value={activeDevice.connected ? "Connected" : "Added"} />
+          <CapabilityRow
+            label="Transport"
+            value={activeDevice.transport ?? "Unknown"}
+          />
+          <CapabilityRow
+            label="Battery"
+            value={
+              activeDevice.batteryLevel != null
+                ? `${activeDevice.batteryLevel}%`
+                : "N/A"
+            }
+          />
+          <CapabilityRow
+            label="Layout family"
+            value={props.activeLayout.label}
+          />
+          <CapabilityRow
+            label="Product"
+            value={activeDevice.productName ?? activeDevice.displayName}
+          />
+          <CapabilityRow
+            label="Status"
+            value={activeDevice.connected ? "Connected" : "Added"}
+          />
         </div>
       </Panel>
     </div>
@@ -1440,12 +1558,16 @@ function AppSettingsDialog(props: {
   ] satisfies AppSelectOption[];
 
   return (
-    <Dialog open={props.open} onOpenChange={(nextOpen) => !nextOpen && props.onClose()}>
+    <Dialog
+      open={props.open}
+      onOpenChange={(nextOpen) => !nextOpen && props.onClose()}
+    >
       <DialogContent className="max-w-4xl overflow-hidden p-0 sm:max-w-4xl">
         <DialogHeader className="border-b border-[var(--border)] px-6 py-5">
           <DialogTitle className="text-[24px]">App Settings</DialogTitle>
           <DialogDescription>
-            Settings here affect Mouser globally, not just the currently selected device.
+            Settings here affect Mouser globally, not just the currently
+            selected device.
           </DialogDescription>
         </DialogHeader>
 
@@ -1500,7 +1622,9 @@ function AppSettingsDialog(props: {
                       value={props.config.settings.gestureTimeoutMs}
                       onChange={(event) =>
                         props.saveSettings((nextConfig) => {
-                          nextConfig.settings.gestureTimeoutMs = Number(event.currentTarget.value);
+                          nextConfig.settings.gestureTimeoutMs = Number(
+                            event.currentTarget.value,
+                          );
                         })
                       }
                     />
@@ -1511,7 +1635,9 @@ function AppSettingsDialog(props: {
                       value={props.config.settings.gestureCooldownMs}
                       onChange={(event) =>
                         props.saveSettings((nextConfig) => {
-                          nextConfig.settings.gestureCooldownMs = Number(event.currentTarget.value);
+                          nextConfig.settings.gestureCooldownMs = Number(
+                            event.currentTarget.value,
+                          );
                         })
                       }
                     />
@@ -1522,12 +1648,40 @@ function AppSettingsDialog(props: {
 
             <Panel title="Platform">
               <div className="space-y-3">
-                <CapabilityRow label="Platform" value={props.platformCapabilities.platform} />
-                <CapabilityRow label="Live HID" value={props.platformCapabilities.liveHidAvailable ? "Ready" : "Fallback"} />
-                <CapabilityRow label="Live remapping" value={props.platformCapabilities.mappingEngineReady ? "Ready" : "Not yet"} />
-                <CapabilityRow label="Tray" value={props.platformCapabilities.trayReady ? "Ready" : "Pending"} />
-                <CapabilityRow label="HID backend" value={props.platformCapabilities.activeHidBackend} />
-                <CapabilityRow label="Focus backend" value={props.platformCapabilities.activeFocusBackend} />
+                <CapabilityRow
+                  label="Platform"
+                  value={props.platformCapabilities.platform}
+                />
+                <CapabilityRow
+                  label="Live HID"
+                  value={
+                    props.platformCapabilities.liveHidAvailable
+                      ? "Ready"
+                      : "Fallback"
+                  }
+                />
+                <CapabilityRow
+                  label="Live remapping"
+                  value={
+                    props.platformCapabilities.mappingEngineReady
+                      ? "Ready"
+                      : "Not yet"
+                  }
+                />
+                <CapabilityRow
+                  label="Tray"
+                  value={
+                    props.platformCapabilities.trayReady ? "Ready" : "Pending"
+                  }
+                />
+                <CapabilityRow
+                  label="HID backend"
+                  value={props.platformCapabilities.activeHidBackend}
+                />
+                <CapabilityRow
+                  label="Focus backend"
+                  value={props.platformCapabilities.activeFocusBackend}
+                />
               </div>
             </Panel>
           </div>
@@ -1553,9 +1707,7 @@ function DebugView(props: {
 }) {
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_360px]">
-      <Panel
-        title="Log"
-      >
+      <Panel title="Log">
         <div className="flex flex-wrap items-center gap-3">
           <StatusPill
             tone={props.config.settings.debugMode ? "accent" : "neutral"}
@@ -1571,34 +1723,49 @@ function DebugView(props: {
         </div>
 
         <div className="mt-5 grid gap-3 md:grid-cols-2">
-          <CapabilityRow label="Active HID backend" value={props.platformCapabilities.activeHidBackend} />
-          <CapabilityRow label="Active hook backend" value={props.platformCapabilities.activeHookBackend} />
-          <CapabilityRow label="Active focus backend" value={props.platformCapabilities.activeFocusBackend} />
-          <CapabilityRow label="iokit backend" value={props.platformCapabilities.iokitAvailable ? "Ready" : "Not ported"} />
+          <CapabilityRow
+            label="Active HID backend"
+            value={props.platformCapabilities.activeHidBackend}
+          />
+          <CapabilityRow
+            label="Active hook backend"
+            value={props.platformCapabilities.activeHookBackend}
+          />
+          <CapabilityRow
+            label="Active focus backend"
+            value={props.platformCapabilities.activeFocusBackend}
+          />
+          <CapabilityRow
+            label="iokit backend"
+            value={
+              props.platformCapabilities.iokitAvailable ? "Ready" : "Not ported"
+            }
+          />
         </div>
 
         <div className="mt-5 rounded-[28px] bg-[var(--card-muted)] p-3 ring-1 ring-[var(--border)]">
           <ScrollArea className="max-h-[560px] pr-1">
             <div className="space-y-3">
-            {props.debugEvents.length > 0 ? (
-              props.debugEvents.map((event) => (
-                <LogEntry event={event} key={`${event.timestampMs}-${event.message}`} />
-              ))
-            ) : (
-              <EmptyState
-                body="Enable debug mode, then interact with the app to collect backend events."
-                title="No debug events"
-              />
-            )}
+              {props.debugEvents.length > 0 ? (
+                props.debugEvents.map((event) => (
+                  <LogEntry
+                    event={event}
+                    key={`${event.timestampMs}-${event.message}`}
+                  />
+                ))
+              ) : (
+                <EmptyState
+                  body="Enable debug mode, then interact with the app to collect backend events."
+                  title="No debug events"
+                />
+              )}
             </div>
           </ScrollArea>
         </div>
       </Panel>
 
       <div className="space-y-6">
-        <Panel
-          title="Debug"
-        >
+        <Panel title="Debug">
           <SwitchRow
             checked={props.config.settings.debugMode}
             label="Enable debug mode"
@@ -1610,15 +1777,15 @@ function DebugView(props: {
           />
         </Panel>
 
-        <Panel
-          title="Import"
-        >
+        <Panel title="Import">
           <div className="space-y-4">
             <Field label="Optional source path">
               <Input
                 placeholder="~/Library/Application Support/Mouser/config.json"
                 value={props.importSourcePath}
-                onChange={(event) => props.setImportSourcePath(event.currentTarget.value)}
+                onChange={(event) =>
+                  props.setImportSourcePath(event.currentTarget.value)
+                }
               />
             </Field>
             <Field label="Legacy Mouser JSON">
@@ -1627,7 +1794,9 @@ function DebugView(props: {
                 data-testid="legacy-import-input"
                 rows={12}
                 value={props.importDraft}
-                onChange={(event) => props.setImportDraft(event.currentTarget.value)}
+                onChange={(event) =>
+                  props.setImportDraft(event.currentTarget.value)
+                }
               />
             </Field>
             <Button
@@ -1678,12 +1847,18 @@ function SectionNavButton(props: {
   );
 }
 
-function Panel(props: { title: string; subtitle?: string; children: ReactNode }) {
+function Panel(props: {
+  title: string;
+  subtitle?: string;
+  children: ReactNode;
+}) {
   return (
     <Card>
       <CardHeader>
         <CardTitle>{props.title}</CardTitle>
-        {props.subtitle ? <CardDescription>{props.subtitle}</CardDescription> : null}
+        {props.subtitle ? (
+          <CardDescription>{props.subtitle}</CardDescription>
+        ) : null}
       </CardHeader>
       <CardContent>{props.children}</CardContent>
     </Card>
@@ -1693,7 +1868,9 @@ function Panel(props: { title: string; subtitle?: string; children: ReactNode })
 function Field(props: { label: string; children: ReactNode }) {
   return (
     <div className="space-y-2.5">
-      <Label className="text-sm font-medium text-[var(--foreground)]">{props.label}</Label>
+      <Label className="text-sm font-medium text-[var(--foreground)]">
+        {props.label}
+      </Label>
       {props.children}
     </div>
   );
@@ -1707,13 +1884,16 @@ function AppSelect(props: {
   placeholder?: string;
   value: string;
 }) {
-  const groupedOptions = props.options.reduce<Map<string, AppSelectOption[]>>((groups, option) => {
-    const groupKey = option.group ?? "";
-    const next = groups.get(groupKey) ?? [];
-    next.push(option);
-    groups.set(groupKey, next);
-    return groups;
-  }, new Map<string, AppSelectOption[]>());
+  const groupedOptions = props.options.reduce<Map<string, AppSelectOption[]>>(
+    (groups, option) => {
+      const groupKey = option.group ?? "";
+      const next = groups.get(groupKey) ?? [];
+      next.push(option);
+      groups.set(groupKey, next);
+      return groups;
+    },
+    new Map<string, AppSelectOption[]>(),
+  );
   const selectValue = props.value === "" ? EMPTY_SELECT_VALUE : props.value;
 
   return (
@@ -1734,7 +1914,9 @@ function AppSelect(props: {
               {options.map((option) => (
                 <SelectItem
                   key={option.value || EMPTY_SELECT_VALUE}
-                  value={option.value === "" ? EMPTY_SELECT_VALUE : option.value}
+                  value={
+                    option.value === "" ? EMPTY_SELECT_VALUE : option.value
+                  }
                 >
                   {option.label}
                 </SelectItem>
@@ -1765,10 +1947,17 @@ function SwitchRow(props: {
 
   return (
     <div className="flex items-center justify-between rounded-[24px] bg-[var(--card-muted)] px-4 py-4 text-sm ring-1 ring-[var(--border)]">
-      <Label className="font-medium text-[var(--foreground)]" htmlFor={switchId}>
+      <Label
+        className="font-medium text-[var(--foreground)]"
+        htmlFor={switchId}
+      >
         {props.label}
       </Label>
-      <Switch checked={props.checked} id={switchId} onCheckedChange={props.onChange} />
+      <Switch
+        checked={props.checked}
+        id={switchId}
+        onCheckedChange={props.onChange}
+      />
     </div>
   );
 }
@@ -1797,94 +1986,109 @@ function ButtonsWorkbench(props: {
   return (
     <div className="relative" ref={workbenchRef}>
       <div className="relative mx-auto min-h-[720px] min-w-full px-4 py-6 sm:px-8">
-        <div className="relative mx-auto" style={{ width: canvasWidth, height: canvasHeight }}>
-            <img
-              alt={props.layout.label}
-              className="absolute object-contain drop-shadow-[0_28px_44px_rgba(15,23,42,0.16)]"
-              data-testid="device-layout-image"
-              src={props.layout.imageAsset}
-              style={{
-                height: props.layout.imageHeight,
-                left: imageLeft,
-                top: imageTop,
-                width: props.layout.imageWidth,
-              }}
-            />
+        <div
+          className="relative mx-auto"
+          style={{ width: canvasWidth, height: canvasHeight }}
+        >
+          <img
+            alt={props.layout.label}
+            className="absolute object-contain drop-shadow-[0_28px_44px_rgba(15,23,42,0.16)]"
+            data-testid="device-layout-image"
+            src={props.layout.imageAsset}
+            style={{
+              height: props.layout.imageHeight,
+              left: imageLeft,
+              top: imageTop,
+              width: props.layout.imageWidth,
+            }}
+          />
 
-            {props.layout.hotspots.map((hotspot) => {
-              const isSelected = props.selectedControl === hotspot.control;
-              const summary = stageHotspotSummary(props.profile, hotspot.control, props.actionLookup);
-              const pointX = imageLeft + hotspot.normX * props.layout.imageWidth;
-              const pointY = imageTop + hotspot.normY * props.layout.imageHeight;
-              const cardMetrics = stageCardMetrics(hotspot.control);
-              const rawLabelX = pointX + hotspot.labelOffX;
-              const rawLabelY = pointY + hotspot.labelOffY;
-              const labelX = clamp(rawLabelX, 20, canvasWidth - cardMetrics.width - 20);
-              const labelY = clamp(rawLabelY, 28, canvasHeight - cardMetrics.height - 28);
-              const labelSide = labelX >= pointX ? "right" : "left";
-              const connector = connectorStyle(
-                pointX,
-                pointY,
-                labelSide,
-                labelX,
-                labelY,
-                cardMetrics,
-              );
+          {props.layout.hotspots.map((hotspot) => {
+            const isSelected = props.selectedControl === hotspot.control;
+            const summary = stageHotspotSummary(
+              props.profile,
+              hotspot.control,
+              props.actionLookup,
+            );
+            const pointX = imageLeft + hotspot.normX * props.layout.imageWidth;
+            const pointY = imageTop + hotspot.normY * props.layout.imageHeight;
+            const cardMetrics = stageCardMetrics(hotspot.control);
+            const rawLabelX = pointX + hotspot.labelOffX;
+            const rawLabelY = pointY + hotspot.labelOffY;
+            const labelX = clamp(
+              rawLabelX,
+              20,
+              canvasWidth - cardMetrics.width - 20,
+            );
+            const labelY = clamp(
+              rawLabelY,
+              28,
+              canvasHeight - cardMetrics.height - 28,
+            );
+            const labelSide = labelX >= pointX ? "right" : "left";
+            const connector = connectorStyle(
+              pointX,
+              pointY,
+              labelSide,
+              labelX,
+              labelY,
+              cardMetrics,
+            );
 
-              return (
-                <div key={hotspot.control}>
-                  <span
-                    className={cn(
-                      "pointer-events-none absolute z-[15] h-[2px] origin-left rounded-full transition",
-                      isSelected ? "bg-[#89b7ff]" : "bg-[#d2dae8]",
-                    )}
-                    style={connector}
-                  />
-                  <span
-                    className={cn(
-                      "absolute z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] bg-[#10131a] transition",
-                      isSelected
-                        ? "border-[#d7e6ff] bg-[var(--accent)] shadow-[0_0_0_10px_rgba(37,99,235,0.14)]"
-                        : "border-white shadow-[0_10px_24px_rgba(15,23,42,0.14)]",
-                    )}
-                    style={{
-                      left: pointX,
-                      top: pointY,
-                    }}
-                    title={hotspot.label}
-                  />
-                    <button
-                    aria-label={hotspot.label}
-                    aria-pressed={isSelected}
-                    className={cn(
-                      "absolute z-20 rounded-2xl px-4 py-3 text-left transition",
-                      isSelected
-                        ? "bg-white shadow-[0_8px_24px_rgba(0,0,0,0.12)]"
-                        : "bg-white/95 shadow-[0_4px_16px_rgba(0,0,0,0.06)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.10)]",
-                    )}
-                    data-testid={`hotspot-card-${hotspot.control}`}
-                    onClick={() => props.onSelectControl(hotspot.control)}
-                    style={{
-                      left: labelX,
-                      minHeight: cardMetrics.height,
-                      top: labelY,
-                      width: cardMetrics.width,
-                    }}
-                    type="button"
-                  >
-                    <p className="text-[14px] font-semibold tracking-[-0.02em] text-[var(--foreground)]">
-                      {hotspot.label}
-                    </p>
-                    <p className="mt-2 text-[12px] leading-5 text-[var(--muted-foreground)]">
-                      {summary}
-                    </p>
-                  </button>
-                </div>
-              );
-            })}
-          </div>
+            return (
+              <div key={hotspot.control}>
+                <span
+                  className={cn(
+                    "pointer-events-none absolute z-[15] h-[2px] origin-left rounded-full transition",
+                    isSelected ? "bg-[#89b7ff]" : "bg-[#d2dae8]",
+                  )}
+                  style={connector}
+                />
+                <span
+                  className={cn(
+                    "absolute z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] bg-[#10131a] transition",
+                    isSelected
+                      ? "border-[#d7e6ff] bg-[var(--accent)] shadow-[0_0_0_10px_rgba(37,99,235,0.14)]"
+                      : "border-white shadow-[0_10px_24px_rgba(15,23,42,0.14)]",
+                  )}
+                  style={{
+                    left: pointX,
+                    top: pointY,
+                  }}
+                  title={hotspot.label}
+                />
+                <button
+                  aria-label={hotspot.label}
+                  aria-pressed={isSelected}
+                  className={cn(
+                    "absolute z-20 rounded-2xl px-4 py-3 text-left transition",
+                    isSelected
+                      ? "bg-white shadow-[0_8px_24px_rgba(0,0,0,0.12)]"
+                      : "bg-white/95 shadow-[0_4px_16px_rgba(0,0,0,0.06)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.10)]",
+                  )}
+                  data-testid={`hotspot-card-${hotspot.control}`}
+                  onClick={() => props.onSelectControl(hotspot.control)}
+                  style={{
+                    left: labelX,
+                    minHeight: cardMetrics.height,
+                    top: labelY,
+                    width: cardMetrics.width,
+                  }}
+                  type="button"
+                >
+                  <p className="text-[14px] font-semibold tracking-[-0.02em] text-[var(--foreground)]">
+                    {hotspot.label}
+                  </p>
+                  <p className="mt-2 text-[12px] leading-5 text-[var(--muted-foreground)]">
+                    {summary}
+                  </p>
+                </button>
+              </div>
+            );
+          })}
         </div>
       </div>
+    </div>
   );
 }
 
@@ -1922,9 +2126,13 @@ function ButtonsControlSheet(props: {
             {title}
           </h3>
           {note ? (
-            <p className="mt-3 max-w-sm text-sm leading-7 text-[var(--muted-foreground)]">{note}</p>
+            <p className="mt-3 max-w-sm text-sm leading-7 text-[var(--muted-foreground)]">
+              {note}
+            </p>
           ) : (
-            <p className="mt-3 text-sm leading-7 text-[var(--muted-foreground)]">{description}</p>
+            <p className="mt-3 text-sm leading-7 text-[var(--muted-foreground)]">
+              {description}
+            </p>
           )}
         </div>
 
@@ -1989,7 +2197,9 @@ function SheetActionField(props: {
     <Card className="bg-[var(--card)]">
       <CardContent className="p-4">
         <div className="flex items-start justify-between gap-3">
-          <p className="text-sm font-semibold text-[var(--foreground)]">{props.label}</p>
+          <p className="text-sm font-semibold text-[var(--foreground)]">
+            {props.label}
+          </p>
           <Badge variant="default">
             {actionFor(props.profile, props.control, props.actionLookup)}
           </Badge>
@@ -2044,7 +2254,9 @@ function StatusPill(props: {
 function CapabilityRow(props: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between rounded-[20px] bg-[var(--card-muted)] px-4 py-3 text-sm ring-1 ring-[var(--border)]">
-      <span className="font-medium text-[var(--foreground)]">{props.label}</span>
+      <span className="font-medium text-[var(--foreground)]">
+        {props.label}
+      </span>
       <span className="text-[var(--foreground)]">{props.value}</span>
     </div>
   );
@@ -2076,8 +2288,12 @@ function LogEntry(props: { event: DebugEventRecord }) {
 function EmptyState(props: { title: string; body: string }) {
   return (
     <div className="rounded-[28px] border border-dashed border-[var(--border-strong)] bg-[var(--card-muted)] p-8 text-center">
-      <p className="text-base font-semibold text-[var(--foreground)]">{props.title}</p>
-      <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[var(--muted-foreground)]">{props.body}</p>
+      <p className="text-base font-semibold text-[var(--foreground)]">
+        {props.title}
+      </p>
+      <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[var(--muted-foreground)]">
+        {props.body}
+      </p>
     </div>
   );
 }
@@ -2220,19 +2436,29 @@ function stageHotspotSummary(
   actionLookup: Map<string, ActionDefinition>,
 ) {
   if (control === "hscroll_left") {
-    const left = compactStageActionLabel(actionFor(profile, "hscroll_left", actionLookup));
-    const right = compactStageActionLabel(actionFor(profile, "hscroll_right", actionLookup));
+    const left = compactStageActionLabel(
+      actionFor(profile, "hscroll_left", actionLookup),
+    );
+    const right = compactStageActionLabel(
+      actionFor(profile, "hscroll_right", actionLookup),
+    );
     return `L ${left} / R ${right}`;
   }
 
   if (control === "gesture_press") {
-    const tap = compactStageActionLabel(actionFor(profile, "gesture_press", actionLookup));
-    const swipeConfigured =
-      ["gesture_left", "gesture_right", "gesture_up", "gesture_down"].some(
-        (gestureControl) =>
-          actionFor(profile, gestureControl as LogicalControl, actionLookup) !==
-          "Do Nothing (Pass-through)",
-      );
+    const tap = compactStageActionLabel(
+      actionFor(profile, "gesture_press", actionLookup),
+    );
+    const swipeConfigured = [
+      "gesture_left",
+      "gesture_right",
+      "gesture_up",
+      "gesture_down",
+    ].some(
+      (gestureControl) =>
+        actionFor(profile, gestureControl as LogicalControl, actionLookup) !==
+        "Do Nothing (Pass-through)",
+    );
     return swipeConfigured ? `Tap ${tap} + swipes` : `Tap ${tap}`;
   }
 
@@ -2282,12 +2508,16 @@ function summarizeHotspot(
 
   if (control === "gesture_press") {
     const tap = actionFor(profile, "gesture_press", actionLookup);
-    const swipeConfigured =
-      ["gesture_left", "gesture_right", "gesture_up", "gesture_down"].some(
-        (gestureControl) =>
-          actionFor(profile, gestureControl as LogicalControl, actionLookup) !==
-          "Do Nothing (Pass-through)",
-      );
+    const swipeConfigured = [
+      "gesture_left",
+      "gesture_right",
+      "gesture_up",
+      "gesture_down",
+    ].some(
+      (gestureControl) =>
+        actionFor(profile, gestureControl as LogicalControl, actionLookup) !==
+        "Do Nothing (Pass-through)",
+    );
     return swipeConfigured ? `Tap: ${tap} | Swipes configured` : `Tap: ${tap}`;
   }
 
@@ -2310,8 +2540,14 @@ function bindingFor(profile: Profile, control: LogicalControl): Binding {
   );
 }
 
-function upsertBinding(profile: Profile, control: LogicalControl, actionId: string) {
-  const target = profile.bindings.find((binding) => binding.control === control);
+function upsertBinding(
+  profile: Profile,
+  control: LogicalControl,
+  actionId: string,
+) {
+  const target = profile.bindings.find(
+    (binding) => binding.control === control,
+  );
   if (target) {
     target.actionId = actionId;
     return;
@@ -2328,7 +2564,9 @@ function cloneProfile(profile: Profile): Profile {
   };
 }
 
-function cloneManagedDevice(device: NonNullable<AppConfig["managedDevices"]>[number]) {
+function cloneManagedDevice(
+  device: NonNullable<AppConfig["managedDevices"]>[number],
+) {
   return { ...device };
 }
 
@@ -2367,7 +2605,9 @@ function resolveActiveLayout(
   layouts: DeviceLayout[],
 ) {
   if (!device) {
-    return layouts.find((layout) => layout.key === "generic_mouse") ?? layouts[0];
+    return (
+      layouts.find((layout) => layout.key === "generic_mouse") ?? layouts[0]
+    );
   }
 
   const overrideKey =
