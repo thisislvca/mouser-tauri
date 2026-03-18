@@ -52,6 +52,7 @@ impl AppRuntime {
         };
 
         runtime.refresh_live_state();
+        runtime.sync_hook_backend();
         runtime.push_debug(
             DebugEventKind::Info,
             format!(
@@ -112,6 +113,7 @@ impl AppRuntime {
 
         self.persist_config();
         self.sync_active_profile();
+        self.sync_hook_backend();
         self.push_debug(
             DebugEventKind::Info,
             format!(
@@ -128,6 +130,7 @@ impl AppRuntime {
     pub fn create_profile(&mut self, profile: Profile) {
         self.config.upsert_profile(profile);
         self.persist_config();
+        self.sync_hook_backend();
         self.push_debug(DebugEventKind::Info, "Created profile");
         self.log_active_profile_snapshot("Bindings snapshot");
     }
@@ -135,6 +138,7 @@ impl AppRuntime {
     pub fn update_profile(&mut self, profile: Profile) {
         self.config.upsert_profile(profile);
         self.persist_config();
+        self.sync_hook_backend();
         self.push_debug(DebugEventKind::Info, "Updated profile");
         self.log_active_profile_snapshot("Bindings snapshot");
     }
@@ -142,6 +146,7 @@ impl AppRuntime {
     pub fn delete_profile(&mut self, profile_id: &str) {
         if self.config.delete_profile(profile_id) {
             self.persist_config();
+            self.sync_hook_backend();
             self.push_debug(
                 DebugEventKind::Info,
                 format!("Deleted profile `{profile_id}`"),
@@ -167,6 +172,7 @@ impl AppRuntime {
         self.config = config;
         self.persist_config();
         self.sync_active_profile();
+        self.sync_hook_backend();
         self.push_debug(DebugEventKind::Info, "Imported legacy Mouser config");
         self.log_active_profile_snapshot("Imported bindings");
     }
@@ -187,6 +193,7 @@ impl AppRuntime {
         let before = self.engine_snapshot();
         let config_before = self.config.clone();
         self.refresh_live_state();
+        self.collect_hook_events();
         before != self.engine_snapshot() || config_before != self.config
     }
 
@@ -308,6 +315,28 @@ impl AppRuntime {
                 ),
             );
             self.log_active_profile_snapshot("Active bindings");
+            self.sync_hook_backend();
+        }
+    }
+
+    fn sync_hook_backend(&mut self) {
+        let Some(profile) = self.config.active_profile().cloned() else {
+            return;
+        };
+
+        if let Err(error) = self.hook_backend.configure(&self.config.settings, &profile) {
+            self.push_debug(
+                DebugEventKind::Warning,
+                format!("Failed to configure hook backend: {error}"),
+            );
+        }
+
+        self.collect_hook_events();
+    }
+
+    fn collect_hook_events(&mut self) {
+        for event in self.hook_backend.drain_events() {
+            self.push_debug(event.kind, event.message);
         }
     }
 
@@ -474,7 +503,7 @@ fn current_hid_backend() -> Box<dyn HidBackend> {
 
 fn current_hook_backend() -> Box<dyn HookBackend> {
     if cfg!(target_os = "macos") {
-        Box::new(MacOsHookBackend)
+        Box::new(MacOsHookBackend::new())
     } else {
         Box::new(WindowsHookBackend)
     }

@@ -1,4 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode, type SVGProps } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import {
+  BugBeetle,
+  CaretLeft,
+  MouseLeftClick,
+  MouseScroll,
+  SlidersHorizontal,
+  Stack,
+  X,
+} from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   bootstrapLoad,
@@ -25,19 +35,6 @@ import type {
 import { useRuntimeEvents } from "./hooks/useRuntimeEvents";
 import { type SectionName, useUiStore } from "./store/uiStore";
 
-const CONTROL_ORDER: LogicalControl[] = [
-  "middle",
-  "gesture_press",
-  "gesture_left",
-  "gesture_right",
-  "gesture_up",
-  "gesture_down",
-  "back",
-  "forward",
-  "hscroll_left",
-  "hscroll_right",
-];
-
 const SECTION_ORDER: SectionName[] = [
   "buttons",
   "devices",
@@ -50,40 +47,28 @@ const SECTION_META: Record<
   SectionName,
   {
     label: string;
-    eyebrow: string;
-    blurb: string;
     icon: (props: SVGProps<SVGSVGElement>) => ReactNode;
   }
 > = {
   buttons: {
     label: "Buttons",
-    eyebrow: "Assignments",
-    blurb: "Map click, gesture, and thumb-wheel controls.",
-    icon: ButtonsIcon,
+    icon: MouseLeftClick,
   },
   devices: {
     label: "Point + Scroll",
-    eyebrow: "Device",
-    blurb: "Tune DPI, scroll direction, and layout detection.",
-    icon: PointScrollIcon,
+    icon: MouseScroll,
   },
   profiles: {
     label: "Profiles",
-    eyebrow: "Routing",
-    blurb: "Switch bindings when the frontmost app changes.",
-    icon: ProfilesIcon,
+    icon: Stack,
   },
   settings: {
     label: "Settings",
-    eyebrow: "Preferences",
-    blurb: "Adjust startup, appearance, and runtime behavior.",
-    icon: SettingsIcon,
+    icon: SlidersHorizontal,
   },
   debug: {
     label: "Debug",
-    eyebrow: "Diagnostics",
-    blurb: "Inspect backend state, logs, and legacy imports.",
-    icon: DebugIcon,
+    icon: BugBeetle,
   },
 };
 
@@ -98,6 +83,13 @@ const CONTROL_LABELS: Record<LogicalControl, string> = {
   forward: "Forward button",
   hscroll_left: "Thumb wheel left",
   hscroll_right: "Thumb wheel right",
+};
+
+const BUTTONS_SHEET_TRANSITION = {
+  type: "spring" as const,
+  stiffness: 340,
+  damping: 32,
+  mass: 0.92,
 };
 
 function App() {
@@ -206,8 +198,8 @@ function App() {
 
   if (bootstrapQuery.isLoading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,_#ffffff,_#eef2f8_58%,_#e5ebf4)] px-8 text-[#13141b]">
-        <div className="rounded-[28px] border border-white/70 bg-white/85 px-6 py-4 text-sm font-medium shadow-[0_28px_80px_rgba(15,23,42,0.12)]">
+      <main className="flex min-h-screen items-center justify-center bg-white px-8 text-[#13141b]">
+        <div className="rounded-[28px] border border-[#e4e7ef] bg-white px-6 py-4 text-sm font-medium">
           Loading Mouser...
         </div>
       </main>
@@ -216,10 +208,10 @@ function App() {
 
   if (bootstrapQuery.isError || !bootstrap) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,_#ffffff,_#eef2f8_58%,_#e5ebf4)] px-8 text-[#13141b]">
-        <div className="max-w-xl rounded-[30px] border border-[#e4e7ef] bg-white/90 p-6 shadow-[0_28px_80px_rgba(15,23,42,0.12)]">
+      <main className="flex min-h-screen items-center justify-center bg-white px-8 text-[#13141b]">
+        <div className="max-w-xl rounded-[30px] border border-[#e4e7ef] bg-white p-6">
           <p className="text-sm font-semibold">Failed to load Mouser.</p>
-          <pre className="mt-4 overflow-auto rounded-3xl bg-[#f5f7fb] p-4 text-xs text-[#5d6472]">
+          <pre className="mt-4 overflow-auto rounded-3xl border border-[#e4e7ef] bg-white p-4 text-xs text-[#5d6472]">
             {String(bootstrapQuery.error)}
           </pre>
         </div>
@@ -244,7 +236,6 @@ function App() {
   const actionLookup = new Map(availableActions.map((action) => [action.id, action]));
   const groupedActions = groupActions(availableActions);
   const runtimeEvents = eventLog.length > 0 ? eventLog : engineSnapshot.engineStatus.debugLog;
-  const activeSectionMeta = SECTION_META[activeSection];
 
   const updateSelectedProfile = (mutateProfile: (profile: Profile) => void) => {
     const nextProfile = cloneProfile(selectedProfile);
@@ -282,15 +273,48 @@ function App() {
     setActiveSection("profiles");
   };
 
+  const shellTitle = activeDevice?.displayName ?? "Mouser";
+  const selectedAppSummary =
+    engineSnapshot.engineStatus.frontmostApp ?? "All applications";
+  const batteryLabel =
+    activeDevice?.batteryLevel != null ? `${activeDevice.batteryLevel}%` : "N/A";
+
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_#ffffff,_#eef2f8_58%,_#e5ebf4)] px-4 py-4 text-[#11121a] antialiased sm:px-6 lg:px-8">
-      <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-[1720px] overflow-hidden rounded-[36px] border border-white/70 bg-[#fcfcfe]/92 shadow-[0_32px_120px_rgba(15,23,42,0.14)] backdrop-blur-xl">
-        <aside className="flex w-[124px] shrink-0 flex-col justify-between border-r border-[#ececf4] bg-[#f6f7fb] px-4 py-5">
-          <div className="space-y-6">
-            <div className="flex h-16 w-16 items-center justify-center rounded-[26px] bg-[#111318] text-2xl font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
-              M
+    <main className="min-h-screen bg-white text-[#11121a] antialiased">
+      <div className="mx-auto grid min-h-screen max-w-[1700px] grid-rows-[92px_minmax(0,1fr)] overflow-hidden bg-white">
+        <header className="grid grid-cols-[220px_minmax(0,1fr)] border-b border-[#eceef4]">
+          <div className="border-r border-[#eceef4]" />
+
+          <div className="flex min-w-0 items-center justify-between gap-6 px-8">
+            <div className="flex min-w-0 items-center gap-4">
+              <button
+                aria-label="Back"
+                className="flex h-10 w-10 items-center justify-center rounded-full text-[#1c2028] transition hover:bg-[#f3f4f7]"
+                type="button"
+              >
+                <CaretLeft className="h-5 w-5" />
+              </button>
+              <h1 className="truncate text-[22px] font-semibold tracking-[-0.04em] text-[#111318]">
+                {shellTitle}
+              </h1>
             </div>
-            <nav className="space-y-2">
+
+            <div className="flex shrink-0 items-center gap-3">
+              {isMutating && <StatusPill tone="accent" value="Applying" />}
+              <button
+                className="rounded-full border border-[#d9dce6] bg-white px-5 py-3 text-sm font-semibold text-[#171b24] transition hover:bg-[#f7f8fb]"
+                onClick={() => setActiveSection("profiles")}
+                type="button"
+              >
+                + Add Application
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <div className="grid min-h-0 grid-cols-[220px_minmax(0,1fr)]">
+          <aside className="flex flex-col border-r border-[#eceef4] bg-white px-5 py-7">
+            <nav className="space-y-1">
               {SECTION_ORDER.map((section) => (
                 <SectionNavButton
                   active={activeSection === section}
@@ -301,213 +325,16 @@ function App() {
                 />
               ))}
             </nav>
-          </div>
 
-          <div className="rounded-[28px] border border-[#e6e8f1] bg-white/90 p-3 shadow-[0_16px_34px_rgba(15,23,42,0.08)]">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[#7c8190]">
-              Debug
-            </div>
-            <button
-              className={[
-                "mt-3 flex w-full items-center justify-center rounded-2xl px-3 py-2 text-sm font-semibold transition",
-                config.settings.debugMode
-                  ? "bg-[#5b4af4] text-white shadow-[0_14px_28px_rgba(91,74,244,0.28)]"
-                  : "border border-[#e3e6ef] bg-[#f7f8fc] text-[#434958] hover:border-[#cfd4e2]",
-              ].join(" ")}
-              onClick={() =>
-                saveSettings((nextConfig) => {
-                  nextConfig.settings.debugMode = !config.settings.debugMode;
-                })
-              }
-              type="button"
-            >
-              {config.settings.debugMode ? "On" : "Off"}
-            </button>
-          </div>
-        </aside>
-
-        <aside className="flex w-[340px] shrink-0 flex-col border-r border-[#ececf4] bg-white/72">
-          <div className="border-b border-[#ececf4] px-6 py-6">
-            <div className="flex items-center gap-3">
-              <img alt="Mouser logo" className="h-11 w-11 rounded-2xl" src="/assets/logo_icon.png" />
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
-                  Mouser
-                </p>
-                <h1 className="text-xl font-semibold tracking-[-0.03em] text-[#10131a]">
-                  {activeDevice?.displayName ?? "No device"}
-                </h1>
+            <div className="mt-auto">
+              <div className="inline-flex items-center gap-2 rounded-[14px] border border-[#dfe4ea] bg-white px-3 py-2 text-sm font-semibold text-[#35a95c]">
+                <span>{batteryLabel}</span>
+                <span className="text-[#7d8395]">battery</span>
               </div>
             </div>
+          </aside>
 
-            <div className="mt-5 rounded-[30px] border border-[#ebeef4] bg-[#f8f9fc] p-4 shadow-[0_20px_40px_rgba(15,23,42,0.05)]">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-sm font-semibold text-[#151923]">
-                    {selectedProfile.label}
-                  </p>
-                  <p className="mt-1 text-xs text-[#717787]">
-                    {engineSnapshot.engineStatus.frontmostApp ?? "All applications"}
-                  </p>
-                </div>
-                <StatusPill
-                  tone={engineSnapshot.engineStatus.connected ? "success" : "neutral"}
-                  value={engineSnapshot.engineStatus.connected ? "Connected" : "Waiting"}
-                />
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <CompactMetric
-                  label="Battery"
-                  value={activeDevice?.batteryLevel != null ? `${activeDevice.batteryLevel}%` : "N/A"}
-                />
-                <CompactMetric label="DPI" value={`${config.settings.dpi}`} />
-                <CompactMetric
-                  label="Transport"
-                  value={activeDevice?.transport ?? platformCapabilities.activeHidBackend}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
-            <div className="flex items-center justify-between">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
-                Application Profiles
-              </p>
-              <StatusPill
-                tone={selectedProfile.id === config.activeProfileId ? "accent" : "neutral"}
-                value={selectedProfile.id === config.activeProfileId ? "Active" : "Selected"}
-              />
-            </div>
-
-            <div className="mt-4 space-y-3">
-              {config.profiles.map((profile) => {
-                const profileApp = profile.appMatchers[0]?.value
-                  ? knownApps.find((app) => app.executable === profile.appMatchers[0]?.value) ?? null
-                  : null;
-                return (
-                  <button
-                    className={[
-                      "w-full rounded-[26px] border px-4 py-4 text-left transition",
-                      profile.id === selectedProfile.id
-                        ? "border-[#d8dded] bg-white shadow-[0_16px_34px_rgba(15,23,42,0.08)]"
-                        : "border-transparent bg-transparent hover:border-[#e8ebf4] hover:bg-white/80",
-                    ].join(" ")}
-                    key={profile.id}
-                    onClick={() => setSelectedProfileId(profile.id)}
-                    type="button"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-[#10131a]">
-                          {profile.label}
-                        </p>
-                        <p className="mt-1 truncate text-xs text-[#717787]">
-                          {profile.appMatchers.map((matcher) => matcher.value).join(", ") || "All applications"}
-                        </p>
-                      </div>
-                      {profileApp?.iconAsset ? (
-                        <img
-                          alt={profileApp.label}
-                          className="h-10 w-10 rounded-2xl border border-[#e7eaf2] bg-white object-cover"
-                          src={profileApp.iconAsset}
-                        />
-                      ) : (
-                        <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[#e7eaf2] bg-white text-xs font-semibold text-[#636a7a]">
-                          {profile.label.slice(0, 1).toUpperCase()}
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="border-t border-[#ececf4] p-5">
-            <div className="rounded-[28px] border border-[#ebeef4] bg-[#f8f9fc] p-4 shadow-[0_18px_34px_rgba(15,23,42,0.05)]">
-              <div className="flex items-center justify-between">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
-                  Add Application
-                </p>
-                <button
-                  className="rounded-full border border-[#d9def0] bg-white px-3 py-1 text-[11px] font-semibold text-[#4f5567] transition hover:border-[#c7cee2]"
-                  onClick={() => setActiveSection("profiles")}
-                  type="button"
-                >
-                  Open
-                </button>
-              </div>
-              <input
-                className="mt-4 w-full rounded-2xl border border-[#dfe3ef] bg-white px-4 py-3 text-sm text-[#121620] outline-none transition placeholder:text-[#9097a8] focus:border-[#5b4af4]"
-                list="known-apps"
-                placeholder="Known app executable"
-                value={newProfileApp}
-                onChange={(event) => setNewProfileApp(event.currentTarget.value)}
-              />
-              <datalist id="known-apps">
-                {knownApps.map((app) => (
-                  <option key={app.executable} value={app.executable}>
-                    {app.label}
-                  </option>
-                ))}
-              </datalist>
-              <input
-                className="mt-3 w-full rounded-2xl border border-[#dfe3ef] bg-white px-4 py-3 text-sm text-[#121620] outline-none transition placeholder:text-[#9097a8] focus:border-[#5b4af4]"
-                placeholder="Optional custom label"
-                value={newProfileLabel}
-                onChange={(event) => setNewProfileLabel(event.currentTarget.value)}
-              />
-              <button
-                className="mt-3 flex w-full items-center justify-center rounded-2xl bg-[#111318] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#07090d]"
-                onClick={createProfileFromDraft}
-                type="button"
-              >
-                Create profile
-              </button>
-            </div>
-          </div>
-        </aside>
-
-        <section className="min-w-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,#ffffff_0%,#f6f7fb_100%)]">
-          <header className="border-b border-[#ececf4] px-8 py-6">
-            <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.26em] text-[#8a8fa0]">
-                  {activeSectionMeta.eyebrow}
-                </p>
-                <h2 className="mt-3 text-[38px] font-semibold tracking-[-0.05em] text-[#10131a]">
-                  {activeDevice?.displayName ?? "Mouser"}
-                </h2>
-                <p className="mt-2 text-sm text-[#62697a]">{activeSectionMeta.blurb}</p>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <InfoPill label="Profile" value={selectedProfile.label} />
-                  <InfoPill
-                    label="Frontmost"
-                    value={engineSnapshot.engineStatus.frontmostApp ?? "None"}
-                  />
-                  <InfoPill label="HID" value={platformCapabilities.activeHidBackend} />
-                  <InfoPill
-                    label="Remapping"
-                    value={platformCapabilities.mappingEngineReady ? "Live" : "Stub"}
-                  />
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                {isMutating && <StatusPill tone="accent" value="Applying" />}
-                <button
-                  className="rounded-full border border-[#d8dded] bg-white px-5 py-3 text-sm font-semibold text-[#171b24] transition hover:border-[#c8cee0]"
-                  onClick={() => setActiveSection("profiles")}
-                  type="button"
-                >
-                  + Add Application
-                </button>
-              </div>
-            </div>
-          </header>
-
-          <div className="px-8 py-6">
+          <section className="min-w-0 overflow-y-auto bg-white px-8 py-8">
             {activeSection === "buttons" && (
               <ButtonsView
                 actionLookup={actionLookup}
@@ -550,12 +377,54 @@ function App() {
             )}
 
             {activeSection === "settings" && (
-              <SettingsView
-                activeDevice={activeDevice}
-                config={config}
-                platformCapabilities={platformCapabilities}
-                saveSettings={saveSettings}
-              />
+              <div className="space-y-6">
+                <div className="grid gap-4 rounded-[26px] border border-[#eceef4] bg-white p-5 md:grid-cols-[minmax(0,1fr)_360px]">
+                  <div className="space-y-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#9095a3]">
+                      Quick add
+                    </p>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <input
+                        className="field-input"
+                        list="known-apps"
+                        placeholder="Known app executable"
+                        value={newProfileApp}
+                        onChange={(event) => setNewProfileApp(event.currentTarget.value)}
+                      />
+                      <input
+                        className="field-input"
+                        placeholder="Optional custom label"
+                        value={newProfileLabel}
+                        onChange={(event) => setNewProfileLabel(event.currentTarget.value)}
+                      />
+                    </div>
+                    <datalist id="known-apps">
+                      {knownApps.map((app) => (
+                        <option key={app.executable} value={app.executable}>
+                          {app.label}
+                        </option>
+                      ))}
+                    </datalist>
+                  </div>
+
+                  <div className="flex items-end justify-end">
+                    <button
+                      className="rounded-full bg-[#2563eb] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#1d4ed8]"
+                      onClick={createProfileFromDraft}
+                      type="button"
+                    >
+                      Create profile
+                    </button>
+                  </div>
+                </div>
+
+                <SettingsView
+                  activeDevice={activeDevice}
+                  config={config}
+                  platformCapabilities={platformCapabilities}
+                  saveSettings={saveSettings}
+                />
+              </div>
             )}
 
             {activeSection === "debug" && (
@@ -579,8 +448,8 @@ function App() {
                 setImportSourcePath={setImportSourcePath}
               />
             )}
-          </div>
-        </section>
+          </section>
+        </div>
       </div>
     </main>
   );
@@ -598,89 +467,86 @@ function ButtonsView(props: {
   mappingEngineReady: boolean;
   updateSelectedProfile: (mutateProfile: (profile: Profile) => void) => void;
 }) {
-  return (
-    <div className="space-y-6">
-      {!props.mappingEngineReady && (
-        <InlineNotice tone="warning">
-          Live remapping is not wired into the Rust runtime yet. Mapping edits save correctly, but
-          button interception is still stubbed.
-        </InlineNotice>
-      )}
+  const [selectedControl, setSelectedControl] = useState<LogicalControl | null>(null);
+  const selectedHotspot =
+    props.activeLayout.hotspots.find((hotspot) => hotspot.control === selectedControl) ?? null;
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_360px]">
-        <StagePanel
-          eyebrow="Device"
-          title={props.activeLayout.label}
-          subtitle={props.activeLayout.note || "Live layout with Logitech-style callouts."}
-        >
-          {props.activeDevice ? (
-            <DeviceCanvas
+  useEffect(() => {
+    if (!props.activeDevice) {
+      setSelectedControl(null);
+      return;
+    }
+
+    const visibleControls = new Set(props.activeLayout.hotspots.map((hotspot) => hotspot.control));
+    setSelectedControl((current) =>
+      current && visibleControls.has(current) ? current : null,
+    );
+  }, [props.activeDevice, props.activeLayout]);
+
+  const setBinding = (control: LogicalControl, actionId: string) => {
+    props.updateSelectedProfile((nextProfile) => {
+      upsertBinding(nextProfile, control, actionId);
+    });
+  };
+
+  return (
+    <div className="min-h-full">
+      {props.activeDevice ? (
+        <div className="flex min-h-[760px] flex-col gap-8 xl:flex-row xl:items-stretch">
+          <motion.div
+            layout
+            className="min-w-0 flex-1"
+            transition={BUTTONS_SHEET_TRANSITION}
+          >
+            <ButtonsWorkbench
               actionLookup={props.actionLookup}
-              device={props.activeDevice}
+              activeDevice={props.activeDevice}
               layout={props.activeLayout}
               profile={props.profile}
+              selectedControl={selectedControl}
+              onSelectControl={setSelectedControl}
             />
-          ) : (
-            <EmptyStage
-              body="Connect a supported mouse to inspect mapped controls."
-              title="No device detected"
-            />
-          )}
-        </StagePanel>
+          </motion.div>
 
-        <div className="space-y-4">
-          <SummaryCard label="Selected profile" value={props.profile.label} />
-          <SummaryCard
-            label="Frontmost app"
-            value={props.frontmostApp ?? "All applications"}
-          />
-          <SummaryCard
-            label="HID backend"
-            value={props.platformCapabilities.activeHidBackend}
-          />
-          <SummaryCard
-            label="Mapping engine"
-            value={props.mappingEngineReady ? "Live" : props.platformCapabilities.activeHookBackend}
-          />
-          <SummaryCard
-            label="Battery"
-            value={props.activeDevice?.batteryLevel != null ? `${props.activeDevice.batteryLevel}%` : "Unavailable"}
-          />
+          <AnimatePresence initial={false}>
+            {selectedHotspot && (
+              <motion.aside
+                animate={{ maxWidth: 440, opacity: 1 }}
+                className="w-full overflow-hidden xl:flex-none"
+                exit={{ maxWidth: 0, opacity: 0 }}
+                initial={{ maxWidth: 0, opacity: 0 }}
+                key={selectedHotspot.control}
+                transition={BUTTONS_SHEET_TRANSITION}
+              >
+                <motion.div
+                  animate={{ x: 0, opacity: 1 }}
+                  className="h-full w-full border-t border-[#eceef4] pt-6 xl:w-[420px] xl:border-t-0 xl:border-l xl:pl-8 xl:pt-0"
+                  exit={{ x: 28, opacity: 0 }}
+                  initial={{ x: 28, opacity: 0 }}
+                  transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <ButtonsControlSheet
+                    actionLookup={props.actionLookup}
+                    control={selectedHotspot.control}
+                    frontmostApp={props.frontmostApp}
+                    groupedActions={props.groupedActions}
+                    mappingEngineReady={props.mappingEngineReady}
+                    platformCapabilities={props.platformCapabilities}
+                    profile={props.profile}
+                    setBinding={setBinding}
+                    onClose={() => setSelectedControl(null)}
+                  />
+                </motion.div>
+              </motion.aside>
+            )}
+          </AnimatePresence>
         </div>
-      </div>
-
-      <Panel
-        eyebrow="Assignments"
-        title="Control mappings"
-        subtitle="Each control stores a per-profile action. Gesture tap and swipe directions are independent."
-      >
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {CONTROL_ORDER.map((control) => {
-            const currentBinding =
-              props.profile.bindings.find((binding) => binding.control === control) ??
-              ({ control, actionId: "none" } satisfies Binding);
-
-            return (
-              <BindingCard
-                control={control}
-                currentBinding={currentBinding}
-                groupedActions={props.groupedActions}
-                key={control}
-                onChange={(actionId) =>
-                  props.updateSelectedProfile((nextProfile) => {
-                    const target = nextProfile.bindings.find(
-                      (binding) => binding.control === control,
-                    );
-                    if (target) {
-                      target.actionId = actionId;
-                    }
-                  })
-                }
-              />
-            );
-          })}
-        </div>
-      </Panel>
+      ) : (
+        <EmptyStage
+          body="Connect a supported mouse to inspect mapped controls."
+          title="No device detected"
+        />
+      )}
     </div>
   );
 }
@@ -828,7 +694,7 @@ function PointAndScrollView(props: {
                   className={[
                     "w-full rounded-[24px] border px-4 py-4 text-left transition",
                     device.key === props.engineSnapshot.activeDeviceKey
-                      ? "border-[#cfd5e6] bg-[#111318] text-white shadow-[0_18px_36px_rgba(15,23,42,0.16)]"
+                      ? "border-[#93c5fd] bg-white text-[#111318] shadow-[0_12px_28px_rgba(37,99,235,0.08)]"
                       : "border-[#e7eaf2] bg-white hover:border-[#d4d9ea]",
                   ].join(" ")}
                   key={device.key}
@@ -842,7 +708,7 @@ function PointAndScrollView(props: {
                         className={[
                           "mt-1 text-xs",
                           device.key === props.engineSnapshot.activeDeviceKey
-                            ? "text-white/70"
+                            ? "text-[#717787]"
                             : "text-[#717787]",
                         ].join(" ")}
                       >
@@ -908,8 +774,8 @@ function ProfilesView(props: {
                 className={[
                   "flex w-full items-center justify-between gap-4 rounded-[24px] border px-4 py-4 text-left transition",
                   profile.id === props.profile.id
-                    ? "border-[#d5dbeb] bg-white shadow-[0_16px_32px_rgba(15,23,42,0.08)]"
-                    : "border-[#e7eaf2] bg-[#fbfbfd] hover:border-[#d4d9ea]",
+                    ? "border-[#93c5fd] bg-white shadow-[0_12px_28px_rgba(37,99,235,0.08)]"
+                    : "border-[#e7eaf2] bg-white hover:border-[#d4d9ea]",
                 ].join(" ")}
                 key={profile.id}
                 onClick={() => props.setSelectedProfileId(profile.id)}
@@ -972,7 +838,7 @@ function ProfilesView(props: {
             />
           </Field>
 
-          <div className="rounded-[24px] border border-[#e7eaf2] bg-[#f8f9fc] px-4 py-4">
+          <div className="rounded-[24px] border border-[#e7eaf2] bg-white px-4 py-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
               Current selection
             </p>
@@ -1143,7 +1009,7 @@ function DebugView(props: {
           <CapabilityRow label="iokit backend" value={props.platformCapabilities.iokitAvailable ? "Ready" : "Not ported"} />
         </div>
 
-        <div className="mt-5 rounded-[28px] border border-[#e7eaf2] bg-[#f8f9fc] p-3">
+        <div className="mt-5 rounded-[28px] border border-[#e7eaf2] bg-white p-3">
           <div className="max-h-[560px] space-y-3 overflow-y-auto pr-1">
             {props.debugEvents.length > 0 ? (
               props.debugEvents.map((event) => (
@@ -1200,7 +1066,7 @@ function DebugView(props: {
               />
             </Field>
             <button
-              className="flex w-full items-center justify-center rounded-2xl bg-[#111318] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#07090d]"
+              className="flex w-full items-center justify-center rounded-2xl bg-[#2563eb] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#1d4ed8]"
               data-testid="legacy-import-button"
               onClick={props.onImport}
               type="button"
@@ -1208,7 +1074,7 @@ function DebugView(props: {
               Import legacy config
             </button>
             {props.importWarnings.length > 0 && (
-              <ul className="space-y-2 rounded-[24px] border border-[#efd8af] bg-[#fff7e7] p-4 text-sm text-[#8b5f1b]">
+              <ul className="space-y-2 rounded-[24px] border border-[#efd8af] bg-white p-4 text-sm text-[#8b5f1b]">
                 {props.importWarnings.map((warning) => (
                   <li key={warning}>{warning}</li>
                 ))}
@@ -1233,16 +1099,16 @@ function SectionNavButton(props: {
     <button
       aria-label={props.label}
       className={[
-        "flex w-full flex-col items-center justify-center gap-2 rounded-[24px] px-3 py-3 text-center transition",
+        "flex w-full items-center gap-3 rounded-[18px] px-4 py-3 text-left transition",
         props.active
-          ? "bg-white text-[#11131a] shadow-[0_16px_32px_rgba(15,23,42,0.12)]"
-          : "text-[#6a7181] hover:bg-white/80 hover:text-[#11131a]",
+          ? "bg-[#2563eb] text-white shadow-[0_16px_32px_rgba(37,99,235,0.22)]"
+          : "text-[#1f232c] hover:bg-[#f4f5f8]",
       ].join(" ")}
       onClick={props.onClick}
       type="button"
     >
       <Icon className="h-5 w-5" />
-      <span className="text-[11px] font-semibold leading-4">{props.label}</span>
+      <span className="text-sm font-semibold">{props.label}</span>
     </button>
   );
 }
@@ -1254,17 +1120,17 @@ function Panel(props: {
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-[32px] border border-[#e7eaf2] bg-white/88 p-6 shadow-[0_20px_48px_rgba(15,23,42,0.06)]">
+    <section className="rounded-[26px] border border-[#eceef4] bg-white p-6">
       <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
         {props.eyebrow}
       </p>
-      <div className="mt-3 border-b border-[#eef1f6] pb-5">
-        <h3 className="text-[28px] font-semibold tracking-[-0.04em] text-[#10131a]">
+      <div className="mt-3 border-b border-[#eef1f6] pb-4">
+        <h3 className="text-[24px] font-semibold tracking-[-0.04em] text-[#10131a]">
           {props.title}
         </h3>
         <p className="mt-2 text-sm text-[#656c7d]">{props.subtitle}</p>
       </div>
-      <div className="pt-6">{props.children}</div>
+      <div className="pt-5">{props.children}</div>
     </section>
   );
 }
@@ -1276,17 +1142,17 @@ function StagePanel(props: {
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-[34px] border border-[#e7eaf2] bg-white/92 p-6 shadow-[0_20px_48px_rgba(15,23,42,0.06)]">
+    <section className="rounded-[26px] border border-[#eceef4] bg-white p-6">
       <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
         {props.eyebrow}
       </p>
-      <div className="mt-3 border-b border-[#eef1f6] pb-5">
-        <h3 className="text-[30px] font-semibold tracking-[-0.05em] text-[#10131a]">
+      <div className="mt-3 border-b border-[#eef1f6] pb-4">
+        <h3 className="text-[26px] font-semibold tracking-[-0.05em] text-[#10131a]">
           {props.title}
         </h3>
         <p className="mt-2 text-sm text-[#656c7d]">{props.subtitle}</p>
       </div>
-      <div className="pt-6">{props.children}</div>
+      <div className="pt-5">{props.children}</div>
     </section>
   );
 }
@@ -1306,11 +1172,11 @@ function SwitchRow(props: {
   onChange: (value: boolean) => void;
 }) {
   return (
-    <label className="flex items-center justify-between rounded-[22px] border border-[#e7eaf2] bg-[#f8f9fc] px-4 py-4 text-sm font-medium text-[#171b24]">
+    <label className="flex items-center justify-between rounded-[22px] border border-[#e7eaf2] bg-white px-4 py-4 text-sm font-medium text-[#171b24]">
       <span>{props.label}</span>
       <input
         checked={props.checked}
-        className="h-4 w-4 accent-[#5b4af4]"
+        className="h-4 w-4 accent-[#2563eb]"
         onChange={(event) => props.onChange(event.currentTarget.checked)}
         type="checkbox"
       />
@@ -1318,23 +1184,188 @@ function SwitchRow(props: {
   );
 }
 
-function BindingCard(props: {
+function ButtonsWorkbench(props: {
+  activeDevice: DeviceInfo;
+  layout: DeviceLayout;
+  profile: Profile;
+  actionLookup: Map<string, ActionDefinition>;
+  selectedControl: LogicalControl | null;
+  onSelectControl: (control: LogicalControl) => void;
+}) {
+  return (
+    <section className="relative flex min-h-[760px] items-center justify-center bg-white">
+      <div className="relative flex min-h-[720px] w-full items-center justify-center px-6 py-10 xl:px-10">
+        <div
+          className="relative"
+          style={{ width: props.layout.imageWidth, height: props.layout.imageHeight }}
+        >
+          <img
+            alt={props.layout.label}
+            className="absolute inset-0 h-full w-full object-contain drop-shadow-[0_28px_44px_rgba(15,23,42,0.14)]"
+            data-testid="device-layout-image"
+            src={props.layout.imageAsset}
+          />
+
+          {props.layout.hotspots.map((hotspot) => {
+            const isSelected = props.selectedControl === hotspot.control;
+            const summary = summarizeHotspot(props.profile, hotspot.control, props.actionLookup);
+            const labelX = hotspot.normX * props.layout.imageWidth + hotspot.labelOffX;
+            const labelY = hotspot.normY * props.layout.imageHeight + hotspot.labelOffY;
+
+            return (
+              <div key={hotspot.control}>
+                <span
+                  className={[
+                    "absolute z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] bg-[#111318] transition",
+                    isSelected
+                      ? "border-[#bfdbfe] bg-[#2563eb] shadow-[0_0_0_10px_rgba(37,99,235,0.14)]"
+                      : "border-white shadow-[0_10px_24px_rgba(15,23,42,0.14)]",
+                  ].join(" ")}
+                  style={{
+                    left: hotspot.normX * props.layout.imageWidth,
+                    top: hotspot.normY * props.layout.imageHeight,
+                  }}
+                  title={hotspot.label}
+                />
+                <button
+                  aria-label={hotspot.label}
+                  aria-pressed={isSelected}
+                  className={[
+                    "absolute z-20 max-w-[260px] rounded-[26px] border px-8 py-6 text-left transition",
+                    isSelected
+                      ? "border-[#2563eb] bg-white shadow-[0_20px_36px_rgba(37,99,235,0.16)]"
+                      : "border-[#eceef4] bg-white shadow-[0_18px_32px_rgba(15,23,42,0.08)] hover:border-[#d6dbee]",
+                  ].join(" ")}
+                  data-testid={`hotspot-card-${hotspot.control}`}
+                  onClick={() => props.onSelectControl(hotspot.control)}
+                  style={{ left: labelX, top: labelY }}
+                  type="button"
+                >
+                  <p className="text-[17px] font-semibold tracking-[-0.03em] text-[#111318]">
+                    {hotspot.label}
+                  </p>
+                  <p className="mt-3 text-[15px] leading-8 text-[#677084]">{summary}</p>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ButtonsControlSheet(props: {
   control: LogicalControl;
-  currentBinding: Binding;
+  profile: Profile;
+  actionLookup: Map<string, ActionDefinition>;
+  groupedActions: Array<[string, ActionDefinition[]]>;
+  frontmostApp: string | null | undefined;
+  mappingEngineReady: boolean;
+  platformCapabilities: BootstrapPayload["platformCapabilities"];
+  setBinding: (control: LogicalControl, actionId: string) => void;
+  onClose: () => void;
+}) {
+  const controls = editorControlsFor(props.control);
+  const title = editorTitleFor(props.control);
+  const description = editorDescriptionFor(props.control);
+  const note =
+    !props.mappingEngineReady
+      ? "Live remapping is unavailable because the macOS event tap did not start."
+      : props.control === "gesture_press" && !props.platformCapabilities.iokitAvailable
+        ? "Gesture-button swipe diversion still depends on the native IOKit listener."
+        : null;
+
+  return (
+    <section
+      className="flex h-full min-h-[520px] flex-col rounded-[34px] border border-[#eceef4] bg-white p-6"
+      data-testid="buttons-editor-sheet"
+    >
+      <div className="flex items-start justify-between gap-4 border-b border-[#eceef4] pb-5">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
+            Assignment
+          </p>
+          <h3 className="mt-3 text-[34px] font-semibold tracking-[-0.05em] text-[#10131a]">
+            {title}
+          </h3>
+          <p className="mt-3 max-w-sm text-sm leading-7 text-[#677084]">{description}</p>
+        </div>
+
+        <button
+          aria-label="Close button editor"
+          className="flex h-11 w-11 items-center justify-center rounded-full border border-[#e1e5ef] text-[#353c49] transition hover:border-[#cfd5e4]"
+          onClick={props.onClose}
+          type="button"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="mt-5 flex flex-wrap gap-2">
+        <InfoPill label="Profile" value={props.profile.label} />
+        <InfoPill label="App" value={props.frontmostApp ?? "All applications"} />
+        <StatusPill
+          tone={props.mappingEngineReady ? "success" : "warning"}
+          value={props.mappingEngineReady ? "Live" : props.platformCapabilities.activeHookBackend}
+        />
+      </div>
+
+      <div className="mt-6 rounded-[28px] border border-[#eceef4] bg-white px-5 py-5">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8a8fa0]">
+          Current mapping
+        </p>
+        <p className="mt-3 text-base leading-8 text-[#171b24]">
+          {summarizeHotspot(props.profile, props.control, props.actionLookup)}
+        </p>
+      </div>
+
+      <div className="mt-6 flex-1 space-y-4 overflow-y-auto pr-1">
+        {controls.map((control) => (
+          <SheetActionField
+            actionLookup={props.actionLookup}
+            control={control}
+            groupedActions={props.groupedActions}
+            key={control}
+            label={sheetFieldLabelFor(control)}
+            onChange={(actionId) => props.setBinding(control, actionId)}
+            profile={props.profile}
+          />
+        ))}
+
+        {note && <InlineNotice tone={props.mappingEngineReady ? "accent" : "warning"}>{note}</InlineNotice>}
+      </div>
+    </section>
+  );
+}
+
+function SheetActionField(props: {
+  control: LogicalControl;
+  label: string;
+  profile: Profile;
+  actionLookup: Map<string, ActionDefinition>;
   groupedActions: Array<[string, ActionDefinition[]]>;
   onChange: (actionId: string) => void;
 }) {
+  const currentBinding = bindingFor(props.profile, props.control);
+
   return (
-    <div className="rounded-[24px] border border-[#e7eaf2] bg-[#f8f9fc] p-4">
-      <div className="mb-4">
-        <p className="text-sm font-semibold text-[#10131a]">{CONTROL_LABELS[props.control]}</p>
-        <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[#8a8fa0]">
-          {props.control.replace(/_/g, " ")}
-        </p>
+    <div className="rounded-[24px] border border-[#e7eaf2] bg-white p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-[#10131a]">{props.label}</p>
+          <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[#8a8fa0]">
+            {props.control.replace(/_/g, " ")}
+          </p>
+        </div>
+        <span className="rounded-full border border-[#e2e6f0] px-3 py-1 text-xs font-semibold text-[#596173]">
+          {actionFor(props.profile, props.control, props.actionLookup)}
+        </span>
       </div>
       <select
-        className="field-input"
-        value={props.currentBinding.actionId}
+        aria-label={props.label}
+        className="field-input mt-4"
+        value={currentBinding.actionId}
         onChange={(event) => props.onChange(event.currentTarget.value)}
       >
         {props.groupedActions.map(([category, actions]) => (
@@ -1359,17 +1390,17 @@ function DeviceCanvas(props: {
 }) {
   return (
     <div
-      className="rounded-[32px] border border-[#edf0f6] bg-[radial-gradient(circle_at_top,_#ffffff,_#f7f8fc_60%,_#eef2f8)] p-6"
+      className="rounded-[28px] border border-[#eef0f5] bg-white p-6"
       data-testid="device-layout-card"
     >
-      <div className="relative mx-auto min-h-[520px] w-full max-w-[900px]">
+      <div className="relative mx-auto min-h-[500px] w-full max-w-[920px]">
         <div
           className="relative mx-auto"
           style={{ width: props.layout.imageWidth, height: props.layout.imageHeight }}
         >
           <img
             alt={props.layout.label}
-            className="absolute inset-0 h-full w-full object-contain drop-shadow-[0_42px_60px_rgba(15,23,42,0.18)]"
+            className="absolute inset-0 h-full w-full object-contain drop-shadow-[0_24px_36px_rgba(15,23,42,0.12)]"
             data-testid="device-layout-image"
             src={props.layout.imageAsset}
           />
@@ -1388,7 +1419,7 @@ function DeviceCanvas(props: {
                   title={hotspot.label}
                 />
                 <div
-                  className="absolute z-20 max-w-[240px] rounded-[22px] border border-white/80 bg-white/92 px-4 py-3 shadow-[0_20px_36px_rgba(15,23,42,0.1)] backdrop-blur-md"
+                  className="absolute z-20 max-w-[240px] rounded-[22px] border border-[#e7eaf2] bg-white px-4 py-3 shadow-[0_12px_24px_rgba(15,23,42,0.08)]"
                   style={{ left: labelX, top: labelY }}
                 >
                   <p className="text-sm font-semibold text-[#10131a]">{hotspot.label}</p>
@@ -1400,25 +1431,6 @@ function DeviceCanvas(props: {
         </div>
       </div>
     </div>
-  );
-}
-
-function SummaryCard(props: { label: string; value: string }) {
-  return (
-    <div className="rounded-[24px] border border-[#e7eaf2] bg-white/88 px-4 py-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#8a8fa0]">
-        {props.label}
-      </p>
-      <p className="mt-2 text-sm font-semibold text-[#10131a]">{props.value}</p>
-    </div>
-  );
-}
-
-function CompactMetric(props: { label: string; value: string }) {
-  return (
-    <span className="rounded-full border border-[#e3e7f0] bg-white px-3 py-1.5 text-[11px] font-semibold text-[#4e5565]">
-      <span className="text-[#959bad]">{props.label}</span> {props.value}
-    </span>
   );
 }
 
@@ -1436,11 +1448,11 @@ function StatusPill(props: {
 }) {
   const toneClass =
     props.tone === "success"
-      ? "border-[#cfe9da] bg-[#effaf3] text-[#177a4d]"
+      ? "border-[#cfe9da] bg-white text-[#177a4d]"
       : props.tone === "accent"
-        ? "border-[#d9d4ff] bg-[#f1eeff] text-[#5b4af4]"
+        ? "border-[#bfdbfe] bg-white text-[#2563eb]"
         : props.tone === "warning"
-          ? "border-[#f3dfbe] bg-[#fff7e8] text-[#92611f]"
+          ? "border-[#f3dfbe] bg-white text-[#92611f]"
           : "border-[#e3e7f0] bg-white text-[#596071]";
 
   return (
@@ -1452,7 +1464,7 @@ function StatusPill(props: {
 
 function CapabilityRow(props: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between rounded-[20px] border border-[#e7eaf2] bg-[#f8f9fc] px-4 py-3 text-sm">
+    <div className="flex items-center justify-between rounded-[20px] border border-[#e7eaf2] bg-white px-4 py-3 text-sm">
       <span className="font-medium text-[#2f3441]">{props.label}</span>
       <span className="text-[#10131a]">{props.value}</span>
     </div>
@@ -1462,9 +1474,9 @@ function CapabilityRow(props: { label: string; value: string }) {
 function LogEntry(props: { event: DebugEventRecord }) {
   const accent =
     props.event.kind === "warning"
-      ? "border-[#f2dfc0] bg-[#fff8ea] text-[#8b5e1a]"
+      ? "border-[#f2dfc0] bg-white text-[#8b5e1a]"
       : props.event.kind === "gesture"
-        ? "border-[#ddd7ff] bg-[#f5f2ff] text-[#5849d2]"
+        ? "border-[#bfdbfe] bg-white text-[#1d4ed8]"
         : "border-[#e3e7f0] bg-white text-[#485062]";
 
   return (
@@ -1488,15 +1500,15 @@ function InlineNotice(props: {
 }) {
   const toneClass =
     props.tone === "warning"
-      ? "border-[#f2dfc0] bg-[#fff8ea] text-[#8b5e1a]"
-      : "border-[#ddd7ff] bg-[#f5f2ff] text-[#5849d2]";
+      ? "border-[#f2dfc0] bg-white text-[#8b5e1a]"
+      : "border-[#bfdbfe] bg-white text-[#1d4ed8]";
 
   return <div className={`rounded-[24px] border px-4 py-4 text-sm font-medium ${toneClass}`}>{props.children}</div>;
 }
 
 function EmptyState(props: { title: string; body: string }) {
   return (
-    <div className="rounded-[28px] border border-dashed border-[#d5dbea] bg-white/70 p-8 text-center">
+    <div className="rounded-[28px] border border-dashed border-[#d5dbea] bg-white p-8 text-center">
       <p className="text-base font-semibold text-[#10131a]">{props.title}</p>
       <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[#656c7d]">{props.body}</p>
     </div>
@@ -1505,10 +1517,73 @@ function EmptyState(props: { title: string; body: string }) {
 
 function EmptyStage(props: { title: string; body: string }) {
   return (
-    <div className="flex min-h-[520px] items-center justify-center rounded-[32px] border border-dashed border-[#d5dbea] bg-[radial-gradient(circle_at_top,_#ffffff,_#f5f7fb_68%,_#eef2f8)] p-8">
+    <div className="flex min-h-[520px] items-center justify-center rounded-[32px] border border-dashed border-[#d5dbea] bg-white p-8">
       <EmptyState body={props.body} title={props.title} />
     </div>
   );
+}
+
+function editorControlsFor(control: LogicalControl) {
+  if (control === "gesture_press") {
+    return [
+      "gesture_press",
+      "gesture_up",
+      "gesture_down",
+      "gesture_left",
+      "gesture_right",
+    ] satisfies LogicalControl[];
+  }
+
+  if (control === "hscroll_left") {
+    return ["hscroll_left", "hscroll_right"] satisfies LogicalControl[];
+  }
+
+  return [control];
+}
+
+function editorTitleFor(control: LogicalControl) {
+  if (control === "gesture_press") {
+    return "Gesture button";
+  }
+
+  if (control === "hscroll_left") {
+    return "Thumb wheel";
+  }
+
+  return CONTROL_LABELS[control];
+}
+
+function editorDescriptionFor(control: LogicalControl) {
+  if (control === "gesture_press") {
+    return "Press, hold, and directional swipe actions stay grouped here so the gesture button behaves like one coherent control.";
+  }
+
+  if (control === "hscroll_left") {
+    return "Horizontal scroll is split into left and right actions. Keep both directions together so the thumb wheel stays predictable.";
+  }
+
+  return "Adjust the action for this control on the active profile. Changes save immediately and apply to the currently selected app profile.";
+}
+
+function sheetFieldLabelFor(control: LogicalControl) {
+  switch (control) {
+    case "gesture_press":
+      return "Press action";
+    case "gesture_left":
+      return "Swipe left";
+    case "gesture_right":
+      return "Swipe right";
+    case "gesture_up":
+      return "Swipe up";
+    case "gesture_down":
+      return "Swipe down";
+    case "hscroll_left":
+      return "Scroll left";
+    case "hscroll_right":
+      return "Scroll right";
+    default:
+      return CONTROL_LABELS[control];
+  }
 }
 
 function summarizeHotspot(
@@ -1541,9 +1616,25 @@ function actionFor(
   control: LogicalControl,
   actionLookup: Map<string, ActionDefinition>,
 ) {
-  const actionId =
-    profile.bindings.find((binding) => binding.control === control)?.actionId ?? "none";
+  const actionId = bindingFor(profile, control).actionId;
   return actionLookup.get(actionId)?.label ?? "Do Nothing (Pass-through)";
+}
+
+function bindingFor(profile: Profile, control: LogicalControl): Binding {
+  return (
+    profile.bindings.find((binding) => binding.control === control) ??
+    ({ control, actionId: "none" } satisfies Binding)
+  );
+}
+
+function upsertBinding(profile: Profile, control: LogicalControl, actionId: string) {
+  const target = profile.bindings.find((binding) => binding.control === control);
+  if (target) {
+    target.actionId = actionId;
+    return;
+  }
+
+  profile.bindings.push({ control, actionId });
 }
 
 function cloneProfile(profile: Profile): Profile {
@@ -1604,62 +1695,6 @@ function groupActions(actions: ActionDefinition[]) {
     groups.set(action.category, next);
   }
   return [...groups.entries()];
-}
-
-function iconStrokeProps() {
-  return {
-    fill: "none",
-    stroke: "currentColor",
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-    strokeWidth: 1.8,
-  };
-}
-
-function ButtonsIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" {...props}>
-      <path d="M7 5.5c0-1.9 1.6-3.5 3.5-3.5h3C15.4 2 17 3.6 17 5.5V18c0 2.2-1.8 4-4 4h-2c-2.2 0-4-1.8-4-4V5.5Z" {...iconStrokeProps()} />
-      <path d="M12 2v7" {...iconStrokeProps()} />
-    </svg>
-  );
-}
-
-function PointScrollIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" {...props}>
-      <path d="M12 3v18" {...iconStrokeProps()} />
-      <path d="M8 7.5c0-2.5 1.7-4.5 4-4.5s4 2 4 4.5V16c0 2.8-1.8 5-4 5s-4-2.2-4-5V7.5Z" {...iconStrokeProps()} />
-      <path d="M4 9.5h2.5M17.5 14.5H20" {...iconStrokeProps()} />
-    </svg>
-  );
-}
-
-function ProfilesIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" {...props}>
-      <path d="M8 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm8 2a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" {...iconStrokeProps()} />
-      <path d="M3 19.5c1.2-2.2 3.2-3.5 5.5-3.5s4.3 1.3 5.5 3.5M11 19.5c.9-1.4 2.3-2.3 4-2.3 1.8 0 3.4.9 4.5 2.3" {...iconStrokeProps()} />
-    </svg>
-  );
-}
-
-function SettingsIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" {...props}>
-      <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" {...iconStrokeProps()} />
-      <path d="M19.4 15.1 21 16l-1.6 2.8-1.8-.6a7.9 7.9 0 0 1-1.7 1l-.3 1.9h-3.2l-.3-1.9a7.9 7.9 0 0 1-1.7-1l-1.8.6L3 16l1.6-.9a7.7 7.7 0 0 1 0-2.2L3 12l1.6-2.8 1.8.6c.5-.4 1.1-.7 1.7-1l.3-1.9h3.2l.3 1.9c.6.3 1.2.6 1.7 1l1.8-.6L21 12l-1.6.9c.2.7.2 1.5 0 2.2Z" {...iconStrokeProps()} />
-    </svg>
-  );
-}
-
-function DebugIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" {...props}>
-      <path d="M12 4.5a6.5 6.5 0 0 0-6.5 6.5v2.5A4 4 0 0 0 9.5 17.5h5a4 4 0 0 0 4-4V11A6.5 6.5 0 0 0 12 4.5Z" {...iconStrokeProps()} />
-      <path d="M9.5 4 8 2M14.5 4 16 2M4 11H2M22 11h-2M10 12.5h.01M14 12.5h.01M9.5 17.5 8 21h8l-1.5-3.5" {...iconStrokeProps()} />
-    </svg>
-  );
 }
 
 export default App;

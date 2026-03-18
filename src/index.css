@@ -2,8 +2,7 @@
 
 :root {
   color: #17171b;
-  background:
-    radial-gradient(circle at top left, #ffffff, #eef2f8 58%, #e5ebf4);
+  background: #ffffff;
   color-scheme: light;
   font-family:
     "SF Pro Display",
@@ -26,6 +25,7 @@ body,
 
 body {
   margin: 0;
+  background: #ffffff;
 }
 
 button,
@@ -50,6 +50,6 @@ textarea {
 }
 
 .field-input:focus {
-  border-color: #5b4af4;
-  box-shadow: 0 0 0 3px rgba(91, 74, 244, 0.12);
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }

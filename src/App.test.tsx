@@ -380,6 +380,32 @@ describe("App", () => {
     );
   });
 
+  it("opens the buttons sheet and updates a control mapping", async () => {
+    const { user } = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Buttons" }));
+    expect(screen.queryByTestId("buttons-editor-sheet")).not.toBeInTheDocument();
+
+    await user.click(await screen.findByTestId("hotspot-card-middle"));
+    expect(await screen.findByTestId("buttons-editor-sheet")).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Middle button" }),
+      "copy",
+    );
+
+    await waitFor(() => {
+      expect(apiMocks.profilesUpdate).toHaveBeenCalled();
+      const calls = apiMocks.profilesUpdate.mock.calls;
+      const lastCall = calls[calls.length - 1]?.[0];
+      expect(lastCall?.bindings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ control: "middle", actionId: "copy" }),
+        ]),
+      );
+    });
+  });
+
   it("saves settings changes through config_save", async () => {
     const { user } = renderApp();
     await user.click(await screen.findByRole("button", { name: "Point + Scroll" }));

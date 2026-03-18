@@ -225,6 +225,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let icon = app.default_window_icon().cloned();
     let builder = TrayIconBuilder::new()
         .menu(&menu)
+        .icon_as_template(cfg!(target_os = "macos"))
         .show_menu_on_left_click(true)
         .on_menu_event(
             |app: &AppHandle<Wry>, event: MenuEvent| match event.id.as_ref() {

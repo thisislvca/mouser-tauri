@@ -6,9 +6,12 @@ use std::{
 
 use mouser_core::{
     build_connected_device_info, clamp_dpi, default_config, default_known_apps, default_layouts,
-    known_device_specs, AppConfig, DeviceInfo, DeviceLayout, KnownApp, LogicalControl,
+    known_device_specs, AppConfig, DebugEventKind, DeviceInfo, DeviceLayout, KnownApp,
+    LogicalControl, Profile, Settings,
 };
 use thiserror::Error;
+
+mod macos_hook;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookCapabilities {
@@ -31,6 +34,12 @@ pub struct HookEvent {
     pub pressed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookBackendEvent {
+    pub kind: DebugEventKind,
+    pub message: String,
+}
+
 #[derive(Debug, Error)]
 pub enum PlatformError {
     #[error("{0}")]
@@ -44,6 +53,8 @@ pub enum PlatformError {
 pub trait HookBackend: Send + Sync {
     fn backend_id(&self) -> &'static str;
     fn capabilities(&self) -> HookCapabilities;
+    fn configure(&self, settings: &Settings, profile: &Profile) -> Result<(), PlatformError>;
+    fn drain_events(&self) -> Vec<HookBackendEvent>;
 }
 
 pub trait HidBackend: Send + Sync {
@@ -195,6 +206,7 @@ impl ConfigStore for JsonConfigStore {
 
 pub mod macos {
     use super::*;
+    pub use crate::macos_hook::MacOsHookBackend;
 
     #[cfg(target_os = "macos")]
     use hidapi::{BusType, DeviceInfo as HidDeviceInfo, HidApi, HidDevice};
@@ -210,23 +222,8 @@ pub mod macos {
     const FEAT_BATTERY_STATUS: u16 = 0x1000;
     const MY_SW: u8 = 0x0A;
 
-    pub struct MacOsHookBackend;
     pub struct MacOsHidBackend;
     pub struct MacOsAppFocusBackend;
-
-    impl HookBackend for MacOsHookBackend {
-        fn backend_id(&self) -> &'static str {
-            "macos-eventtap-stub"
-        }
-
-        fn capabilities(&self) -> HookCapabilities {
-            HookCapabilities {
-                can_intercept_buttons: false,
-                can_intercept_scroll: false,
-                supports_gesture_diversion: false,
-            }
-        }
-    }
 
     impl HidBackend for MacOsHidBackend {
         fn backend_id(&self) -> &'static str {
@@ -556,6 +553,14 @@ pub mod windows {
                 can_intercept_scroll: false,
                 supports_gesture_diversion: false,
             }
+        }
+
+        fn configure(&self, _settings: &Settings, _profile: &Profile) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn drain_events(&self) -> Vec<HookBackendEvent> {
+            Vec::new()
         }
     }
 
