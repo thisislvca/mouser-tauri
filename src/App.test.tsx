@@ -434,4 +434,47 @@ describe("App", () => {
       expect(screen.getByTestId("profile-label-display")).toHaveTextContent("VS Code"),
     );
   });
+
+  it("prefers source-path imports over raw JSON when a path is provided", async () => {
+    const { user } = renderApp();
+    await user.click(await screen.findByRole("button", { name: "Debug" }));
+
+    await user.type(
+      await screen.findByPlaceholderText(
+        "~/Library/Application Support/Mouser/config.json",
+      ),
+      "/tmp/legacy-config.json",
+    );
+    await user.click(await screen.findByTestId("legacy-import-button"));
+
+    await waitFor(() => {
+      expect(apiMocks.importLegacyConfig).toHaveBeenCalled();
+      const calls = apiMocks.importLegacyConfig.mock.calls;
+      const lastCall = calls[calls.length - 1];
+      expect(lastCall?.[0]).toEqual({
+        sourcePath: "/tmp/legacy-config.json",
+        rawJson: null,
+      });
+    });
+  });
+
+  it("shows a neutral device status when there is no active device", async () => {
+    currentBootstrap = {
+      ...makeBootstrap(),
+      engineSnapshot: {
+        ...makeBootstrap().engineSnapshot,
+        activeDeviceKey: null,
+        activeDevice: null,
+        engineStatus: {
+          ...makeBootstrap().engineSnapshot.engineStatus,
+          connected: false,
+          selectedDeviceKey: null,
+        },
+      },
+    };
+
+    renderApp();
+
+    expect(await screen.findByText("No device")).toBeInTheDocument();
+  });
 });

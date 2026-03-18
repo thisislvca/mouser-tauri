@@ -10,7 +10,6 @@ import {
 import { AnimatePresence, motion } from "framer-motion";
 import {
   BugBeetle,
-  CaretLeft,
   MouseLeftClick,
   MouseScroll,
   SlidersHorizontal,
@@ -51,6 +50,7 @@ import type {
   DebugEventRecord,
   DeviceInfo,
   DeviceLayout,
+  ImportLegacyRequest,
   LogicalControl,
   Profile,
 } from "./lib/types";
@@ -140,28 +140,45 @@ function App() {
     queryFn: bootstrapLoad,
   });
 
+  const setBootstrapQueryData = (payload: BootstrapPayload) => {
+    queryClient.setQueryData(["bootstrap"], payload);
+  };
+
+  const patchBootstrapQueryData = (
+    apply: (current: BootstrapPayload) => BootstrapPayload,
+  ) => {
+    queryClient.setQueryData<BootstrapPayload>(["bootstrap"], (current) =>
+      current ? apply(current) : current,
+    );
+  };
+
   const invalidateBootstrap = () =>
     queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
 
   const configMutation = useMutation({
     mutationFn: configSave,
-    onSuccess: invalidateBootstrap,
+    onSuccess: setBootstrapQueryData,
   });
   const createProfileMutation = useMutation({
     mutationFn: profilesCreate,
-    onSuccess: invalidateBootstrap,
+    onSuccess: setBootstrapQueryData,
   });
   const updateProfileMutation = useMutation({
     mutationFn: profilesUpdate,
-    onSuccess: invalidateBootstrap,
+    onSuccess: setBootstrapQueryData,
   });
   const deleteProfileMutation = useMutation({
     mutationFn: profilesDelete,
-    onSuccess: invalidateBootstrap,
+    onSuccess: setBootstrapQueryData,
   });
   const selectDeviceMutation = useMutation({
     mutationFn: devicesSelectMock,
-    onSuccess: invalidateBootstrap,
+    onSuccess: (engineSnapshot) => {
+      patchBootstrapQueryData((current) => ({
+        ...current,
+        engineSnapshot,
+      }));
+    },
   });
   const importMutation = useMutation({
     mutationFn: importLegacyConfig,
@@ -173,9 +190,12 @@ function App() {
   });
   const clearDebugLogMutation = useMutation({
     mutationFn: debugClearLog,
-    onSuccess: () => {
+    onSuccess: (engineSnapshot) => {
       clearDebugEvents();
-      void invalidateBootstrap();
+      patchBootstrapQueryData((current) => ({
+        ...current,
+        engineSnapshot,
+      }));
     },
   });
 
@@ -299,6 +319,9 @@ function App() {
   const shellTitle = activeDevice?.displayName ?? "Mouser";
   const batteryLabel =
     activeDevice?.batteryLevel != null ? `${activeDevice.batteryLevel}%` : "N/A";
+  const connectionStatus = activeDevice?.connected
+    ? { tone: "success" as const, value: "Connected" }
+    : { tone: "neutral" as const, value: "No device" };
 
   return (
     <main className="min-h-screen bg-[var(--app-bg)] text-[var(--foreground)] antialiased">
@@ -331,7 +354,7 @@ function App() {
                   </p>
                   <p className="mt-1 text-sm font-semibold text-[var(--foreground)]">{batteryLabel}</p>
                 </div>
-                <StatusPill tone="success" value="Connected" />
+                <StatusPill tone={connectionStatus.tone} value={connectionStatus.value} />
               </CardContent>
             </Card>
           </div>
@@ -341,10 +364,7 @@ function App() {
           <div className="flex min-h-[calc(100vh-1.5rem)] flex-col overflow-hidden rounded-[32px] bg-[var(--surface)] shadow-[0_36px_120px_rgba(15,23,42,0.10)] ring-1 ring-[var(--border-soft)] sm:min-h-[calc(100vh-2rem)]">
             <header className="border-b border-[var(--border)] px-5 py-5 sm:px-8">
               <div className="flex flex-wrap items-center justify-between gap-4">
-              <div className="flex min-w-0 items-center gap-3 sm:gap-4">
-                <Button aria-label="Back" size="icon" variant="ghost">
-                  <CaretLeft className="h-5 w-5" />
-                </Button>
+              <div className="min-w-0">
                 <h2 className="truncate text-[24px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
                   {shellTitle}
                 </h2>
@@ -475,10 +495,9 @@ function App() {
                       importWarnings={importWarnings}
                       isClearing={clearDebugLogMutation.isPending}
                       onImport={() =>
-                        importMutation.mutate({
-                          sourcePath: importSourcePath.trim() || null,
-                          rawJson: importDraft,
-                        })
+                        importMutation.mutate(
+                          buildImportRequest(importSourcePath, importDraft),
+                        )
                       }
                       platformCapabilities={platformCapabilities}
                       saveSettings={saveSettings}
@@ -1826,6 +1845,17 @@ function groupActions(actions: ActionDefinition[]) {
     groups.set(action.category, next);
   }
   return [...groups.entries()];
+}
+
+function buildImportRequest(
+  sourcePath: string,
+  rawJson: string,
+): ImportLegacyRequest {
+  const trimmedSourcePath = sourcePath.trim();
+  return {
+    sourcePath: trimmedSourcePath || null,
+    rawJson: trimmedSourcePath ? null : rawJson,
+  };
 }
 
 export default App;

@@ -9,17 +9,25 @@ export function useRuntimeEvents() {
 
   useEffect(() => {
     let cancelled = false;
+    let invalidateTimer: number | null = null;
     const unlisten: Array<() => void> = [];
 
     async function bind() {
-      const invalidate = () => {
-        void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+      const scheduleInvalidate = () => {
+        if (invalidateTimer != null) {
+          return;
+        }
+
+        invalidateTimer = window.setTimeout(() => {
+          invalidateTimer = null;
+          void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+        }, 0);
       };
 
       const listeners = await Promise.all([
-        events.deviceChangedEvent.listen(invalidate),
-        events.profileChangedEvent.listen(invalidate),
-        events.engineStatusChangedEvent.listen(invalidate),
+        events.deviceChangedEvent.listen(scheduleInvalidate),
+        events.profileChangedEvent.listen(scheduleInvalidate),
+        events.engineStatusChangedEvent.listen(scheduleInvalidate),
         events.debugEventEnvelope.listen((event: { payload: DebugEvent }) => {
           appendDebugEvent(event.payload);
         }),
@@ -37,6 +45,9 @@ export function useRuntimeEvents() {
 
     return () => {
       cancelled = true;
+      if (invalidateTimer != null) {
+        window.clearTimeout(invalidateTimer);
+      }
       unlisten.forEach((stop) => stop());
     };
   }, [appendDebugEvent, queryClient]);
