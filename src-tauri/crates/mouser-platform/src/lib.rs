@@ -13,10 +13,11 @@ use std::{
 #[cfg(target_os = "macos")]
 use mouser_core::build_connected_device_info;
 use mouser_core::{
-    clamp_dpi, default_config, default_known_apps, default_layouts, hydrate_identity_key,
-    known_device_specs, AppConfig, DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout,
-    KnownApp, LogicalControl, Profile, Settings,
+    clamp_dpi, default_config, default_device_settings, default_known_apps, default_layouts,
+    hydrate_identity_key, known_device_specs, AppConfig, DebugEventKind, DeviceFingerprint,
+    DeviceInfo, DeviceLayout, DeviceSettings, KnownApp, LogicalControl, Profile, Settings,
 };
+use serde_json::{json, Value};
 use thiserror::Error;
 
 mod macos_hook;
@@ -50,6 +51,31 @@ pub struct HookBackendEvent {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookBackendSettings {
+    pub invert_horizontal_scroll: bool,
+    pub invert_vertical_scroll: bool,
+    pub gesture_threshold: u16,
+    pub gesture_deadzone: u16,
+    pub gesture_timeout_ms: u32,
+    pub gesture_cooldown_ms: u32,
+    pub debug_mode: bool,
+}
+
+impl HookBackendSettings {
+    pub fn from_app_and_device(settings: &Settings, device_settings: &DeviceSettings) -> Self {
+        Self {
+            invert_horizontal_scroll: device_settings.invert_horizontal_scroll,
+            invert_vertical_scroll: device_settings.invert_vertical_scroll,
+            gesture_threshold: device_settings.gesture_threshold,
+            gesture_deadzone: device_settings.gesture_deadzone,
+            gesture_timeout_ms: device_settings.gesture_timeout_ms,
+            gesture_cooldown_ms: device_settings.gesture_cooldown_ms,
+            debug_mode: settings.debug_mode,
+        }
+    }
+}
+
 pub(crate) const HOOK_EVENT_BUFFER_LIMIT: usize = 128;
 
 #[derive(Debug, Error)]
@@ -67,7 +93,7 @@ pub trait HookBackend: Send + Sync {
     fn capabilities(&self) -> HookCapabilities;
     fn configure(
         &self,
-        settings: &Settings,
+        settings: &HookBackendSettings,
         profile: &Profile,
         enabled: bool,
     ) -> Result<(), PlatformError>;
@@ -226,7 +252,7 @@ impl JsonConfigStore {
         }
 
         match fs::read_to_string(&self.path) {
-            Ok(raw) => match serde_json::from_str::<AppConfig>(&raw) {
+            Ok(raw) => match decode_app_config(&raw) {
                 Ok(config) => (config, None),
                 Err(error) => {
                     let warning = self
@@ -296,7 +322,7 @@ impl ConfigStore for JsonConfigStore {
             path: self.path.display().to_string(),
             message: error.to_string(),
         })?;
-        serde_json::from_str::<AppConfig>(&raw).map_err(|error| {
+        decode_app_config(&raw).map_err(|error| {
             PlatformError::Message(format!("failed to decode {}: {error}", self.path.display()))
         })
     }
@@ -333,6 +359,92 @@ impl ConfigStore for JsonConfigStore {
             path: self.path.display().to_string(),
             message: error.to_string(),
         })
+    }
+}
+
+fn decode_app_config(raw: &str) -> Result<AppConfig, serde_json::Error> {
+    let mut value: Value = serde_json::from_str(raw)?;
+    migrate_app_config_value(&mut value);
+    serde_json::from_value(value)
+}
+
+fn migrate_app_config_value(value: &mut Value) {
+    let Some(root) = value.as_object_mut() else {
+        return;
+    };
+
+    let legacy_settings = root.get("settings").and_then(Value::as_object);
+    let legacy_layout_overrides = legacy_settings
+        .and_then(|settings| settings.get("deviceLayoutOverrides"))
+        .and_then(Value::as_object)
+        .cloned();
+
+    let mut device_defaults = root
+        .get("deviceDefaults")
+        .cloned()
+        .unwrap_or_else(|| serde_json::to_value(default_device_settings()).unwrap_or(json!({})));
+
+    if let Some(defaults) = device_defaults.as_object_mut() {
+        for field in [
+            "dpi",
+            "invertHorizontalScroll",
+            "invertVerticalScroll",
+            "gestureThreshold",
+            "gestureDeadzone",
+            "gestureTimeoutMs",
+            "gestureCooldownMs",
+        ] {
+            if defaults.get(field).is_none() {
+                if let Some(legacy_value) = legacy_settings.and_then(|settings| settings.get(field)) {
+                    defaults.insert(field.to_string(), legacy_value.clone());
+                }
+            }
+        }
+    }
+    root.insert("deviceDefaults".to_string(), device_defaults.clone());
+
+    if let Some(managed_devices) = root.get_mut("managedDevices").and_then(Value::as_array_mut) {
+        for device in managed_devices {
+            let Some(device_obj) = device.as_object_mut() else {
+                continue;
+            };
+
+            if device_obj.get("settings").is_none() {
+                device_obj.insert("settings".to_string(), device_defaults.clone());
+            }
+
+            if let Some(layout_override) = legacy_layout_overrides
+                .as_ref()
+                .and_then(|overrides| {
+                    let device_id = device_obj.get("id").and_then(Value::as_str);
+                    let model_key = device_obj.get("modelKey").and_then(Value::as_str);
+                    device_id
+                        .and_then(|id| overrides.get(id))
+                        .or_else(|| model_key.and_then(|key| overrides.get(key)))
+                })
+                .cloned()
+            {
+                let settings = device_obj
+                    .entry("settings".to_string())
+                    .or_insert_with(|| device_defaults.clone());
+                if let Some(settings_obj) = settings.as_object_mut() {
+                    let entry = settings_obj
+                        .entry("manualLayoutOverride".to_string())
+                        .or_insert(Value::Null);
+                    if entry.is_null() {
+                        *entry = layout_override;
+                    }
+                }
+            }
+        }
+    }
+
+    if root
+        .get("version")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version < 3)
+    {
+        root.insert("version".to_string(), Value::from(3));
     }
 }
 
@@ -981,5 +1093,66 @@ mod tests {
 
         assert!(recovered.path().exists());
         let _ = fs::remove_file(recovered.path());
+    }
+
+    #[test]
+    fn load_or_recover_migrates_legacy_device_settings() {
+        let path = unique_test_path("legacy-device-settings");
+        let legacy = json!({
+            "version": 2,
+            "activeProfileId": "default",
+            "profiles": [{
+                "id": "default",
+                "label": "Default",
+                "appMatchers": [],
+                "bindings": [],
+            }],
+            "managedDevices": [{
+                "id": "mx_master_3s",
+                "modelKey": "mx_master_3s",
+                "displayName": "MX Master 3S",
+                "nickname": null,
+                "createdAtMs": 1,
+                "lastSeenAtMs": 1,
+                "lastSeenTransport": "Bluetooth Low Energy",
+            }],
+            "settings": {
+                "startMinimized": true,
+                "startAtLogin": false,
+                "appearanceMode": "system",
+                "debugMode": true,
+                "dpi": 1600,
+                "invertHorizontalScroll": true,
+                "invertVerticalScroll": true,
+                "gestureThreshold": 75,
+                "gestureDeadzone": 55,
+                "gestureTimeoutMs": 2500,
+                "gestureCooldownMs": 250,
+                "deviceLayoutOverrides": {
+                    "mx_master_3s": "mx_master"
+                }
+            }
+        });
+        fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        let store = JsonConfigStore::new(path.clone());
+
+        let (config, warning) = store.load_or_recover();
+
+        assert!(warning.is_none());
+        assert_eq!(config.version, 3);
+        assert_eq!(config.device_defaults.dpi, 1600);
+        assert!(config.device_defaults.invert_horizontal_scroll);
+        assert!(config.device_defaults.invert_vertical_scroll);
+        assert_eq!(config.device_defaults.gesture_threshold, 75);
+        assert_eq!(config.managed_devices.len(), 1);
+        let managed = &config.managed_devices[0];
+        assert_eq!(managed.settings.dpi, 1600);
+        assert!(managed.settings.invert_horizontal_scroll);
+        assert_eq!(
+            managed.settings.manual_layout_override.as_deref(),
+            Some("mx_master")
+        );
+
+        let _ = fs::remove_file(path);
     }
 }

@@ -85,16 +85,21 @@ pub enum AppearanceMode {
 pub struct Settings {
     pub start_minimized: bool,
     pub start_at_login: bool,
+    pub appearance_mode: AppearanceMode,
+    pub debug_mode: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSettings {
+    pub dpi: u16,
     pub invert_horizontal_scroll: bool,
     pub invert_vertical_scroll: bool,
-    pub dpi: u16,
     pub gesture_threshold: u16,
     pub gesture_deadzone: u16,
     pub gesture_timeout_ms: u32,
     pub gesture_cooldown_ms: u32,
-    pub appearance_mode: AppearanceMode,
-    pub debug_mode: bool,
-    pub device_layout_overrides: BTreeMap<String, String>,
+    pub manual_layout_override: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -145,6 +150,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub managed_devices: Vec<ManagedDevice>,
     pub settings: Settings,
+    #[serde(default = "default_device_settings")]
+    pub device_defaults: DeviceSettings,
 }
 
 impl AppConfig {
@@ -182,6 +189,11 @@ impl AppConfig {
 
         let before = self.profiles.len();
         self.profiles.retain(|profile| profile.id != profile_id);
+        for device in &mut self.managed_devices {
+            if device.profile_id.as_deref() == Some(profile_id) {
+                device.profile_id = None;
+            }
+        }
         if self.active_profile_id == profile_id {
             self.active_profile_id = "default".to_string();
         }
@@ -189,8 +201,8 @@ impl AppConfig {
         before != self.profiles.len()
     }
 
-    pub fn sync_active_profile_for_app(&mut self, executable: Option<&str>) -> bool {
-        let target = executable
+    pub fn matched_profile_id_for_app(&self, executable: Option<&str>) -> String {
+        executable
             .and_then(|exe| {
                 self.profiles.iter().find(|profile| {
                     profile.app_matchers.iter().any(|matcher| {
@@ -200,7 +212,17 @@ impl AppConfig {
                 })
             })
             .map(|profile| profile.id.clone())
-            .unwrap_or_else(|| "default".to_string());
+            .unwrap_or_else(|| "default".to_string())
+    }
+
+    pub fn sync_active_profile(
+        &mut self,
+        preferred_profile_id: Option<&str>,
+        executable: Option<&str>,
+    ) -> bool {
+        let target = preferred_profile_id
+            .and_then(|profile_id| self.profile_by_id(profile_id).map(|_| profile_id.to_string()))
+            .unwrap_or_else(|| self.matched_profile_id_for_app(executable));
 
         if self.active_profile_id == target {
             return false;
@@ -208,6 +230,10 @@ impl AppConfig {
 
         self.active_profile_id = target;
         true
+    }
+
+    pub fn sync_active_profile_for_app(&mut self, executable: Option<&str>) -> bool {
+        self.sync_active_profile(None, executable)
     }
 
     pub fn ensure_invariants(&mut self) {
@@ -234,6 +260,13 @@ impl AppConfig {
             self.active_profile_id = "default".to_string();
         }
 
+        normalize_device_settings(None, &mut self.device_defaults);
+        let valid_profile_ids = self
+            .profiles
+            .iter()
+            .map(|profile| profile.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+
         let mut seen_managed_ids = std::collections::BTreeSet::new();
         self.managed_devices.retain(|device| {
             !device.id.trim().is_empty() && seen_managed_ids.insert(device.id.clone())
@@ -250,12 +283,30 @@ impl AppConfig {
             }
 
             if device
+                .profile_id
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                device.profile_id = None;
+            }
+
+            if device
+                .profile_id
+                .as_deref()
+                .is_some_and(|profile_id| !valid_profile_ids.contains(profile_id))
+            {
+                device.profile_id = None;
+            }
+
+            if device
                 .identity_key
                 .as_deref()
                 .is_some_and(|value| value.trim().is_empty())
             {
                 device.identity_key = None;
             }
+
+            normalize_device_settings(Some(&device.model_key), &mut device.settings);
         }
     }
 }
@@ -284,7 +335,11 @@ pub struct ManagedDevice {
     pub display_name: String,
     pub nickname: Option<String>,
     #[serde(default)]
+    pub profile_id: Option<String>,
+    #[serde(default)]
     pub identity_key: Option<String>,
+    #[serde(default = "default_device_settings")]
+    pub settings: DeviceSettings,
     pub created_at_ms: u64,
     pub last_seen_at_ms: Option<u64>,
     pub last_seen_transport: Option<String>,
@@ -487,16 +542,21 @@ pub fn default_settings() -> Settings {
     Settings {
         start_minimized: true,
         start_at_login: false,
+        appearance_mode: AppearanceMode::System,
+        debug_mode: false,
+    }
+}
+
+pub fn default_device_settings() -> DeviceSettings {
+    DeviceSettings {
+        dpi: 1000,
         invert_horizontal_scroll: false,
         invert_vertical_scroll: false,
-        dpi: 1000,
         gesture_threshold: 50,
         gesture_deadzone: 40,
         gesture_timeout_ms: 3000,
         gesture_cooldown_ms: 500,
-        appearance_mode: AppearanceMode::System,
-        debug_mode: false,
-        device_layout_overrides: BTreeMap::new(),
+        manual_layout_override: None,
     }
 }
 
@@ -532,11 +592,32 @@ pub fn default_profile() -> Profile {
 
 pub fn default_config() -> AppConfig {
     AppConfig {
-        version: 2,
+        version: 3,
         active_profile_id: "default".to_string(),
         profiles: vec![default_profile()],
         managed_devices: Vec::new(),
         settings: default_settings(),
+        device_defaults: default_device_settings(),
+    }
+}
+
+pub fn normalize_device_settings(model_key: Option<&str>, settings: &mut DeviceSettings) {
+    let (dpi_min, dpi_max) = model_key
+        .and_then(known_device_spec_by_key)
+        .map(|spec| (spec.dpi_min, spec.dpi_max))
+        .unwrap_or((200, 8000));
+
+    settings.dpi = settings.dpi.max(dpi_min).min(dpi_max);
+    settings.gesture_threshold = settings.gesture_threshold.clamp(1, 500);
+    settings.gesture_deadzone = settings.gesture_deadzone.clamp(0, 500);
+    settings.gesture_timeout_ms = settings.gesture_timeout_ms.clamp(100, 10_000);
+    settings.gesture_cooldown_ms = settings.gesture_cooldown_ms.clamp(0, 10_000);
+    if settings
+        .manual_layout_override
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        settings.manual_layout_override = None;
     }
 }
 
@@ -992,9 +1073,10 @@ pub fn build_connected_device_info(
 pub fn build_managed_device_info(
     managed: &ManagedDevice,
     live: Option<&DeviceInfo>,
-    current_dpi: u16,
 ) -> DeviceInfo {
-    let effective_current_dpi = live.map(|device| device.current_dpi).unwrap_or(current_dpi);
+    let effective_current_dpi = live
+        .map(|device| device.current_dpi)
+        .unwrap_or(managed.settings.dpi);
     let live_product_name = live
         .and_then(|device| device.product_name.as_deref())
         .and_then(|value| {
@@ -1093,15 +1175,12 @@ pub fn layout_by_key(layouts: &[DeviceLayout], layout_key: &str) -> Option<Devic
 }
 
 pub fn effective_layout_key(
-    settings: &Settings,
-    device_key: Option<&str>,
+    manual_override: Option<&str>,
     default_layout_key: &str,
 ) -> String {
-    if let Some(device_key) = device_key {
-        if let Some(override_key) = settings.device_layout_overrides.get(device_key) {
-            if !override_key.is_empty() {
-                return override_key.clone();
-            }
+    if let Some(override_key) = manual_override {
+        if !override_key.is_empty() {
+            return override_key.to_string();
         }
     }
     default_layout_key.to_string()
@@ -1323,7 +1402,9 @@ mod tests {
             model_key: "mx_master_3".to_string(),
             display_name: "MX Master 3".to_string(),
             nickname: None,
+            profile_id: None,
             identity_key: None,
+            settings: default_device_settings(),
             created_at_ms: 1,
             last_seen_at_ms: None,
             last_seen_transport: Some("Bluetooth Low Energy".to_string()),
@@ -1338,9 +1419,67 @@ mod tests {
             DeviceFingerprint::default(),
         );
 
-        let merged = build_managed_device_info(&managed, Some(&live), 1000);
+        let merged = build_managed_device_info(&managed, Some(&live));
 
         assert_eq!(merged.display_name, "MX Master 3 Mac");
         assert_eq!(merged.product_name.as_deref(), Some("MX Master 3 Mac"));
+    }
+
+    #[test]
+    fn profile_resolution_prefers_device_assignment() {
+        let mut config = default_config();
+        config.upsert_profile(Profile {
+            id: "vscode".to_string(),
+            label: "VS Code".to_string(),
+            app_matchers: vec![AppMatcher {
+                kind: AppMatcherKind::Executable,
+                value: "Code.exe".to_string(),
+            }],
+            bindings: default_profile_bindings(),
+        });
+        config.managed_devices.push(ManagedDevice {
+            id: "mx_master_3-1".to_string(),
+            model_key: "mx_master_3".to_string(),
+            display_name: "MX Master 3 Mac".to_string(),
+            nickname: None,
+            profile_id: Some("default".to_string()),
+            identity_key: None,
+            settings: default_device_settings(),
+            created_at_ms: 1,
+            last_seen_at_ms: None,
+            last_seen_transport: None,
+        });
+
+        assert!(config.sync_active_profile(Some("default"), Some("Code.exe")));
+        assert_eq!(config.active_profile_id, "default");
+    }
+
+    #[test]
+    fn deleting_profile_clears_managed_device_assignment() {
+        let mut config = default_config();
+        config.upsert_profile(Profile {
+            id: "vscode".to_string(),
+            label: "VS Code".to_string(),
+            app_matchers: vec![AppMatcher {
+                kind: AppMatcherKind::Executable,
+                value: "Code.exe".to_string(),
+            }],
+            bindings: default_profile_bindings(),
+        });
+        config.managed_devices.push(ManagedDevice {
+            id: "mx_master_3-1".to_string(),
+            model_key: "mx_master_3".to_string(),
+            display_name: "MX Master 3 Mac".to_string(),
+            nickname: None,
+            profile_id: Some("vscode".to_string()),
+            identity_key: None,
+            settings: default_device_settings(),
+            created_at_ms: 1,
+            last_seen_at_ms: None,
+            last_seen_transport: None,
+        });
+
+        assert!(config.delete_profile("vscode"));
+        assert_eq!(config.managed_devices[0].profile_id, None);
     }
 }

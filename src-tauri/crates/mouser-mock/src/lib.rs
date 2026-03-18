@@ -7,8 +7,8 @@ use mouser_core::{
     build_managed_device_info, clamp_dpi, default_action_catalog, default_config,
     default_device_catalog, default_known_apps, default_layouts, effective_layout_key,
     manual_layout_choices, AppConfig, BootstrapPayload, DebugEvent, DebugEventKind,
-    DeviceFingerprint, DeviceInfo, DeviceLayout, EngineSnapshot, EngineStatus, KnownApp,
-    ManagedDevice, PlatformCapabilities, Profile,
+    DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, EngineSnapshot, EngineStatus,
+    KnownApp, ManagedDevice, PlatformCapabilities, Profile,
 };
 use mouser_platform::{ConfigStore, DeviceCatalog, PlatformError};
 
@@ -115,7 +115,9 @@ impl MockRuntime {
                 model_key: device.model_key,
                 display_name: device.display_name,
                 nickname: None,
+                profile_id: None,
                 identity_key: device.fingerprint.identity_key.clone(),
+                settings: config.device_defaults.clone(),
                 created_at_ms: now_ms(),
                 last_seen_at_ms: None,
                 last_seen_transport: device.transport,
@@ -161,7 +163,7 @@ impl MockRuntime {
             format!(
                 "Saved config for profile `{}` at {} DPI",
                 self.config().active_profile_id,
-                self.config().settings.dpi
+                self.selected_device_settings().dpi
             ),
         );
         if profile_changed {
@@ -179,24 +181,46 @@ impl MockRuntime {
     pub fn create_profile(&mut self, profile: Profile) {
         let mut config = self.config();
         config.upsert_profile(profile);
+        let selected_profile_id = self
+            .selected_managed_device()
+            .and_then(|device| device.profile_id);
+        config.sync_active_profile(
+            selected_profile_id.as_deref(),
+            self.frontmost_app.as_deref(),
+        );
         self.save_config(config);
     }
 
     pub fn update_profile(&mut self, profile: Profile) {
         let mut config = self.config();
         config.upsert_profile(profile);
+        let selected_profile_id = self
+            .selected_managed_device()
+            .and_then(|device| device.profile_id);
+        config.sync_active_profile(
+            selected_profile_id.as_deref(),
+            self.frontmost_app.as_deref(),
+        );
         self.save_config(config);
     }
 
     pub fn delete_profile(&mut self, profile_id: &str) {
         let mut config = self.config();
         config.delete_profile(profile_id);
+        let selected_profile_id = self
+            .selected_managed_device()
+            .and_then(|device| device.profile_id);
+        config.sync_active_profile(
+            selected_profile_id.as_deref(),
+            self.frontmost_app.as_deref(),
+        );
         self.save_config(config);
     }
 
     pub fn select_device(&mut self, device_key: &str) {
         self.selected_device_key = Some(device_key.to_string());
         self.apply_device_selection();
+        self.sync_active_profile();
         self.push_debug(
             DebugEventKind::Info,
             format!("Switched mock device to `{device_key}`"),
@@ -235,8 +259,9 @@ impl MockRuntime {
             .cloned()
             .map(|mut device| {
                 let layout_key = effective_layout_key(
-                    &self.config().settings,
-                    Some(&device.key),
+                    self.selected_managed_device()
+                        .and_then(|managed| managed.settings.manual_layout_override)
+                        .as_deref(),
                     &device.ui_layout,
                 );
                 device.ui_layout = layout_key.clone();
@@ -278,7 +303,6 @@ impl MockRuntime {
             return;
         };
 
-        let config = self.config();
         self.detected_devices = self
             .catalog
             .all_devices()
@@ -286,7 +310,8 @@ impl MockRuntime {
             .filter(|device| device.model_key == selected_key || device.key == selected_key)
             .map(|mut device| {
                 device.connected = true;
-                device.current_dpi = clamp_dpi(Some(&device), config.settings.dpi);
+                device.current_dpi =
+                    clamp_dpi(Some(&device), self.selected_device_settings().dpi);
                 device
             })
             .collect();
@@ -306,14 +331,18 @@ impl MockRuntime {
                 } else {
                     None
                 };
-                build_managed_device_info(&device, live, self.config().settings.dpi)
+                build_managed_device_info(&device, live)
             })
             .collect()
     }
 
     fn sync_active_profile(&mut self) -> bool {
         let mut config = self.config();
-        let changed = config.sync_active_profile_for_app(self.frontmost_app.as_deref());
+        let selected_profile_id = self
+            .selected_managed_device()
+            .and_then(|device| device.profile_id);
+        let changed =
+            config.sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_deref());
         if changed {
             self.config_store.save(&config).unwrap();
         }
@@ -322,16 +351,23 @@ impl MockRuntime {
 
     fn apply_config(&mut self, mut config: AppConfig) -> bool {
         config.ensure_invariants();
-        let current_config = self.config();
-        let model_key = current_config
-            .managed_devices
-            .iter()
-            .find(|device| Some(device.id.as_str()) == self.selected_device_key.as_deref())
-            .map(|device| device.model_key.as_str());
-        config.settings.dpi = self.catalog.clamp_dpi(model_key, config.settings.dpi);
         self.config_store.save(&config).unwrap();
         self.apply_device_selection();
         self.sync_active_profile()
+    }
+
+    fn selected_managed_device(&self) -> Option<ManagedDevice> {
+        let selected_key = self.selected_device_key.as_deref()?;
+        self.config()
+            .managed_devices
+            .into_iter()
+            .find(|device| device.id == selected_key)
+    }
+
+    fn selected_device_settings(&self) -> DeviceSettings {
+        self.selected_managed_device()
+            .map(|device| device.settings)
+            .unwrap_or_else(|| self.config().device_defaults)
     }
 
     fn push_debug(&mut self, kind: DebugEventKind, message: impl Into<String>) {
@@ -426,11 +462,27 @@ mod tests {
     fn imported_config_clamps_selected_device_dpi() {
         let mut runtime = MockRuntime::new();
         let mut config = runtime.config();
-        config.settings.dpi = 20_000;
+        config
+            .managed_devices
+            .iter_mut()
+            .find(|device| device.id == "mx_master_3s")
+            .unwrap()
+            .settings
+            .dpi = 20_000;
 
         runtime.apply_imported_config(config);
 
-        assert_eq!(runtime.config().settings.dpi, 8000);
+        assert_eq!(
+            runtime
+                .config()
+                .managed_devices
+                .into_iter()
+                .find(|device| device.id == "mx_master_3s")
+                .unwrap()
+                .settings
+                .dpi,
+            8000
+        );
         assert_eq!(
             runtime.engine_snapshot().active_device.unwrap().current_dpi,
             8000

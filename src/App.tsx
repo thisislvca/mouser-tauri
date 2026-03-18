@@ -52,12 +52,16 @@ import { Slider } from "./components/ui/slider";
 import { Switch } from "./components/ui/switch";
 import { Textarea } from "./components/ui/textarea";
 import {
+  appSettingsUpdate,
   bootstrapLoad,
-  configSave,
   debugClearLog,
+  deviceDefaultsUpdate,
   devicesAdd,
   devicesRemove,
   devicesSelect,
+  devicesUpdateNickname,
+  devicesUpdateProfile,
+  devicesUpdateSettings,
   importLegacyConfig,
   profilesCreate,
   profilesDelete,
@@ -134,6 +138,16 @@ type AppSelectOption = {
 
 const EMPTY_SELECT_VALUE = "__empty__";
 const DPI_PRESETS = [400, 800, 1000, 1600, 2400, 4000, 6000, 8000];
+const DEFAULT_DEVICE_SETTINGS: NonNullable<AppConfig["deviceDefaults"]> = {
+  dpi: 1000,
+  invertHorizontalScroll: false,
+  invertVerticalScroll: false,
+  gestureThreshold: 50,
+  gestureDeadzone: 40,
+  gestureTimeoutMs: 3000,
+  gestureCooldownMs: 500,
+  manualLayoutOverride: null,
+};
 
 function normalizedIdentityKey(identityKey: string | null | undefined) {
   const trimmed = identityKey?.trim();
@@ -150,6 +164,60 @@ function samePhysicalDevice(left: DeviceInfo, right: DeviceInfo) {
     return false;
   }
   return left.modelKey === right.modelKey;
+}
+
+function normalizeDeviceSettings(
+  settings:
+    | AppConfig["deviceDefaults"]
+    | NonNullable<AppConfig["managedDevices"]>[number]["settings"]
+    | null
+    | undefined,
+): NonNullable<AppConfig["deviceDefaults"]> {
+  return {
+    dpi: settings?.dpi ?? DEFAULT_DEVICE_SETTINGS.dpi,
+    invertHorizontalScroll:
+      settings?.invertHorizontalScroll ??
+      DEFAULT_DEVICE_SETTINGS.invertHorizontalScroll,
+    invertVerticalScroll:
+      settings?.invertVerticalScroll ??
+      DEFAULT_DEVICE_SETTINGS.invertVerticalScroll,
+    gestureThreshold:
+      settings?.gestureThreshold ?? DEFAULT_DEVICE_SETTINGS.gestureThreshold,
+    gestureDeadzone:
+      settings?.gestureDeadzone ?? DEFAULT_DEVICE_SETTINGS.gestureDeadzone,
+    gestureTimeoutMs:
+      settings?.gestureTimeoutMs ?? DEFAULT_DEVICE_SETTINGS.gestureTimeoutMs,
+    gestureCooldownMs:
+      settings?.gestureCooldownMs ?? DEFAULT_DEVICE_SETTINGS.gestureCooldownMs,
+    manualLayoutOverride:
+      settings?.manualLayoutOverride ??
+      DEFAULT_DEVICE_SETTINGS.manualLayoutOverride,
+  };
+}
+
+function normalizeOptionalText(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function findManagedDevice(
+  config: AppConfig,
+  deviceKey: string | null | undefined,
+) {
+  if (!deviceKey) {
+    return null;
+  }
+
+  return config.managedDevices?.find((device) => device.id === deviceKey) ?? null;
+}
+
+function selectedDeviceSettings(
+  config: AppConfig,
+  deviceKey: string | null | undefined,
+) {
+  return normalizeDeviceSettings(
+    findManagedDevice(config, deviceKey)?.settings ?? config.deviceDefaults,
+  );
 }
 
 function App() {
@@ -198,8 +266,42 @@ function App() {
   const invalidateBootstrap = () =>
     queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
 
-  const configMutation = useMutation({
-    mutationFn: configSave,
+  const appSettingsMutation = useMutation({
+    mutationFn: appSettingsUpdate,
+    onSuccess: setBootstrapQueryData,
+  });
+  const deviceDefaultsMutation = useMutation({
+    mutationFn: deviceDefaultsUpdate,
+    onSuccess: setBootstrapQueryData,
+  });
+  const updateDeviceSettingsMutation = useMutation({
+    mutationFn: ({
+      deviceKey,
+      settings,
+    }: {
+      deviceKey: string;
+      settings: NonNullable<AppConfig["deviceDefaults"]>;
+    }) => devicesUpdateSettings(deviceKey, settings),
+    onSuccess: setBootstrapQueryData,
+  });
+  const updateDeviceProfileMutation = useMutation({
+    mutationFn: ({
+      deviceKey,
+      profileId,
+    }: {
+      deviceKey: string;
+      profileId: string | null;
+    }) => devicesUpdateProfile(deviceKey, profileId),
+    onSuccess: setBootstrapQueryData,
+  });
+  const updateDeviceNicknameMutation = useMutation({
+    mutationFn: ({
+      deviceKey,
+      nickname,
+    }: {
+      deviceKey: string;
+      nickname: string | null;
+    }) => devicesUpdateNickname(deviceKey, nickname),
     onSuccess: setBootstrapQueryData,
   });
   const createProfileMutation = useMutation({
@@ -299,6 +401,7 @@ function App() {
 
     const { config, engineSnapshot } = bootstrapQuery.data;
     const activeDevice = engineSnapshot.activeDevice;
+    const deviceSettings = selectedDeviceSettings(config, activeDevice?.key);
     const liveDevice =
       activeDevice == null
         ? null
@@ -307,9 +410,9 @@ function App() {
           ) ?? null);
 
     console.debug("[mouser:dpi]", {
-      configuredDpi: config.settings.dpi,
+      configuredDpi: deviceSettings.dpi,
       configuredMatchesLive: liveDevice
-        ? config.settings.dpi === liveDevice.currentDpi
+        ? deviceSettings.dpi === liveDevice.currentDpi
         : null,
       activeDevice: activeDevice
         ? {
@@ -343,7 +446,11 @@ function App() {
 
   const bootstrap = bootstrapQuery.data;
   const isMutating =
-    configMutation.isPending ||
+    appSettingsMutation.isPending ||
+    deviceDefaultsMutation.isPending ||
+    updateDeviceSettingsMutation.isPending ||
+    updateDeviceProfileMutation.isPending ||
+    updateDeviceNicknameMutation.isPending ||
     createProfileMutation.isPending ||
     updateProfileMutation.isPending ||
     deleteProfileMutation.isPending ||
@@ -401,10 +508,20 @@ function App() {
     updateProfileMutation.mutate(nextProfile);
   };
 
-  const saveSettings = (mutateConfig: (nextConfig: AppConfig) => void) => {
-    const nextConfig = cloneConfig(config);
-    mutateConfig(nextConfig);
-    configMutation.mutate(nextConfig);
+  const saveAppSettings = (mutateSettings: (nextSettings: AppConfig["settings"]) => void) => {
+    const nextSettings = {
+      ...config.settings,
+    };
+    mutateSettings(nextSettings);
+    appSettingsMutation.mutate(nextSettings);
+  };
+
+  const saveDeviceDefaults = (
+    mutateSettings: (nextSettings: NonNullable<AppConfig["deviceDefaults"]>) => void,
+  ) => {
+    const nextSettings = normalizeDeviceSettings(config.deviceDefaults);
+    mutateSettings(nextSettings);
+    deviceDefaultsMutation.mutate(nextSettings);
   };
 
   const openDeviceDetail = (
@@ -447,6 +564,7 @@ function App() {
 
   const shellTitle =
     activeDevice?.displayName ?? SECTION_META[activeSection].label;
+  const activeManagedDevice = findManagedDevice(config, activeDevice?.key);
   const batteryLabel =
     activeDevice?.batteryLevel != null
       ? `${activeDevice.batteryLevel}%`
@@ -584,10 +702,21 @@ function App() {
             {activeSection === "devices" && (
               <DeviceDetailView
                 activeDevice={activeDevice}
+                activeManagedDevice={activeManagedDevice}
                 activeLayout={activeLayout}
                 config={config}
                 layoutChoices={bootstrap.manualLayoutChoices}
-                saveSettings={saveSettings}
+                profiles={config.profiles}
+                setSelectedProfileId={setSelectedProfileId}
+                updateDeviceNickname={(deviceKey, nickname) =>
+                  updateDeviceNicknameMutation.mutate({ deviceKey, nickname })
+                }
+                updateDeviceProfile={(deviceKey, profileId) =>
+                  updateDeviceProfileMutation.mutate({ deviceKey, profileId })
+                }
+                updateDeviceSettings={(deviceKey, settings) =>
+                  updateDeviceSettingsMutation.mutate({ deviceKey, settings })
+                }
               />
             )}
 
@@ -622,7 +751,7 @@ function App() {
                   )
                 }
                 platformCapabilities={platformCapabilities}
-                saveSettings={saveSettings}
+                saveAppSettings={saveAppSettings}
                 setImportDraft={setImportDraft}
                 setImportSourcePath={setImportSourcePath}
               />
@@ -644,10 +773,12 @@ function App() {
       )}
       <AppSettingsDialog
         config={config}
+        layoutChoices={bootstrap.manualLayoutChoices}
         onClose={() => setAppSettingsOpen(false)}
         open={isAppSettingsOpen}
         platformCapabilities={platformCapabilities}
-        saveSettings={saveSettings}
+        saveAppSettings={saveAppSettings}
+        saveDeviceDefaults={saveDeviceDefaults}
       />
     </main>
   );
@@ -1235,28 +1366,75 @@ function ProfilesView(props: {
 function DeviceDetailView(props: {
   config: AppConfig;
   activeDevice: DeviceInfo | null;
+  activeManagedDevice: NonNullable<AppConfig["managedDevices"]>[number] | null;
   activeLayout: DeviceLayout;
   layoutChoices: BootstrapPayload["manualLayoutChoices"];
-  saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
+  profiles: Profile[];
+  setSelectedProfileId: (profileId: string | null) => void;
+  updateDeviceSettings: (
+    deviceKey: string,
+    settings: NonNullable<AppConfig["deviceDefaults"]>,
+  ) => void;
+  updateDeviceProfile: (deviceKey: string, profileId: string | null) => void;
+  updateDeviceNickname: (deviceKey: string, nickname: string | null) => void;
 }) {
   const activeDevice = props.activeDevice;
+  const activeManagedDevice = props.activeManagedDevice;
+  const managedDeviceId = activeManagedDevice?.id ?? null;
+  const deviceSettings = normalizeDeviceSettings(
+    activeManagedDevice?.settings ?? props.config.deviceDefaults,
+  );
   const dpiMin = activeDevice?.dpiMin ?? 200;
   const dpiMax = activeDevice?.dpiMax ?? 8000;
-  const configuredDpi = snapDpi(props.config.settings.dpi, dpiMin, dpiMax);
+  const configuredDpi = snapDpi(deviceSettings.dpi, dpiMin, dpiMax);
   const liveDpi = activeDevice
     ? snapDpi(activeDevice.currentDpi, dpiMin, dpiMax)
     : configuredDpi;
   const externalDpi = activeDevice?.connected ? liveDpi : configuredDpi;
   const [dpiDraft, setDpiDraft] = useState(externalDpi);
   const [pendingDpi, setPendingDpi] = useState<number | null>(null);
-  const saveSettingsRef = useRef(props.saveSettings);
+  const [nicknameDraft, setNicknameDraft] = useState(
+    activeManagedDevice?.nickname ?? "",
+  );
+  const updateDeviceSettingsRef = useRef(props.updateDeviceSettings);
   const availableDpiPresets = DPI_PRESETS.filter(
     (preset) => preset >= dpiMin && preset <= dpiMax,
   );
+  const assignedProfile = activeManagedDevice?.profileId
+    ? (props.profiles.find(
+        (profile) => profile.id === activeManagedDevice.profileId,
+      ) ?? null)
+    : null;
+  const profileOptions = [
+    { label: "Auto by app", value: "" },
+    ...props.profiles.map(
+      (profile) =>
+        ({
+          label: profile.label,
+          value: profile.id,
+        }) satisfies AppSelectOption,
+    ),
+  ];
+
+  const updateManagedDeviceSettings = (
+    mutateSettings: (settings: NonNullable<AppConfig["deviceDefaults"]>) => void,
+  ) => {
+    if (!activeManagedDevice) {
+      return;
+    }
+
+    const nextSettings = normalizeDeviceSettings(activeManagedDevice.settings);
+    mutateSettings(nextSettings);
+    props.updateDeviceSettings(activeManagedDevice.id, nextSettings);
+  };
 
   useEffect(() => {
-    saveSettingsRef.current = props.saveSettings;
-  }, [props.saveSettings]);
+    updateDeviceSettingsRef.current = props.updateDeviceSettings;
+  }, [props.updateDeviceSettings]);
+
+  useEffect(() => {
+    setNicknameDraft(activeManagedDevice?.nickname ?? "");
+  }, [activeManagedDevice?.id, activeManagedDevice?.nickname]);
 
   useEffect(() => {
     if (!activeDevice) {
@@ -1285,18 +1463,19 @@ function DeviceDetailView(props: {
   ]);
 
   useEffect(() => {
-    if (!activeDevice || pendingDpi == null) {
+    if (!activeManagedDevice || pendingDpi == null) {
       return;
     }
 
+    const managedDevice = activeManagedDevice;
     const timeout = window.setTimeout(() => {
-      saveSettingsRef.current((nextConfig) => {
-        nextConfig.settings.dpi = pendingDpi;
-      });
+      const nextSettings = normalizeDeviceSettings(managedDevice.settings);
+      nextSettings.dpi = pendingDpi;
+      updateDeviceSettingsRef.current(managedDevice.id, nextSettings);
     }, 400);
 
     return () => window.clearTimeout(timeout);
-  }, [activeDevice, pendingDpi]);
+  }, [activeManagedDevice, pendingDpi]);
 
   if (!activeDevice) {
     return (
@@ -1306,6 +1485,20 @@ function DeviceDetailView(props: {
       />
     );
   }
+
+  const commitNickname = () => {
+    if (!activeManagedDevice) {
+      return;
+    }
+
+    const nextNickname = normalizeOptionalText(nicknameDraft);
+    const currentNickname = normalizeOptionalText(activeManagedDevice.nickname);
+    if (nextNickname === currentNickname) {
+      return;
+    }
+
+    props.updateDeviceNickname(activeManagedDevice.id, nextNickname);
+  };
 
   const layoutOptions = props.layoutChoices.map(
     (choice) =>
@@ -1361,6 +1554,40 @@ function DeviceDetailView(props: {
 
         <Panel title={`${activeDevice.displayName} Tuning`}>
           <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Nickname (optional)">
+              <Input
+                placeholder={activeDevice.displayName}
+                value={nicknameDraft}
+                onBlur={commitNickname}
+                onChange={(event) => setNicknameDraft(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitNickname();
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+            </Field>
+
+            <Field label="Assigned profile">
+              <AppSelect
+                ariaLabel="Assigned profile"
+                options={profileOptions}
+                value={activeManagedDevice?.profileId ?? ""}
+                onValueChange={(value) => {
+                  if (!managedDeviceId) {
+                    return;
+                  }
+                  props.updateDeviceProfile(
+                    managedDeviceId,
+                    normalizeOptionalText(value),
+                  );
+                  props.setSelectedProfileId(normalizeOptionalText(value));
+                }}
+              />
+            </Field>
+
             <div className="space-y-2.5 md:col-span-2">
               <Label className="text-sm font-medium text-[var(--foreground)]">
                 DPI
@@ -1434,56 +1661,40 @@ function DeviceDetailView(props: {
                 ariaLabel="Manual layout override"
                 options={layoutOptions}
                 placeholder="Auto-detect"
-                value={
-                  props.config.settings.deviceLayoutOverrides[
-                    activeDevice.key
-                  ] ??
-                  props.config.settings.deviceLayoutOverrides[
-                    activeDevice.modelKey
-                  ] ??
-                  ""
-                }
+                value={deviceSettings.manualLayoutOverride ?? ""}
                 onValueChange={(value) =>
-                  props.saveSettings((nextConfig) => {
-                    if (value) {
-                      nextConfig.settings.deviceLayoutOverrides[
-                        activeDevice.key
-                      ] = value;
-                    } else {
-                      delete nextConfig.settings.deviceLayoutOverrides[
-                        activeDevice.key
-                      ];
-                    }
+                  updateManagedDeviceSettings((settings) => {
+                    settings.manualLayoutOverride = value || null;
                   })
                 }
               />
             </Field>
 
             <SwitchRow
-              checked={props.config.settings.invertHorizontalScroll}
+              checked={deviceSettings.invertHorizontalScroll}
               label="Invert thumb wheel"
               onChange={(value) =>
-                props.saveSettings((nextConfig) => {
-                  nextConfig.settings.invertHorizontalScroll = value;
+                updateManagedDeviceSettings((settings) => {
+                  settings.invertHorizontalScroll = value;
                 })
               }
             />
             <SwitchRow
-              checked={props.config.settings.invertVerticalScroll}
+              checked={deviceSettings.invertVerticalScroll}
               label="Invert vertical scroll"
               onChange={(value) =>
-                props.saveSettings((nextConfig) => {
-                  nextConfig.settings.invertVerticalScroll = value;
+                updateManagedDeviceSettings((settings) => {
+                  settings.invertVerticalScroll = value;
                 })
               }
             />
             <Field label="Gesture threshold">
               <Input
                 type="number"
-                value={props.config.settings.gestureThreshold}
+                value={deviceSettings.gestureThreshold}
                 onChange={(event) =>
-                  props.saveSettings((nextConfig) => {
-                    nextConfig.settings.gestureThreshold = Number(
+                  updateManagedDeviceSettings((settings) => {
+                    settings.gestureThreshold = Number(
                       event.currentTarget.value,
                     );
                   })
@@ -1493,10 +1704,36 @@ function DeviceDetailView(props: {
             <Field label="Gesture deadzone">
               <Input
                 type="number"
-                value={props.config.settings.gestureDeadzone}
+                value={deviceSettings.gestureDeadzone}
                 onChange={(event) =>
-                  props.saveSettings((nextConfig) => {
-                    nextConfig.settings.gestureDeadzone = Number(
+                  updateManagedDeviceSettings((settings) => {
+                    settings.gestureDeadzone = Number(
+                      event.currentTarget.value,
+                    );
+                  })
+                }
+              />
+            </Field>
+            <Field label="Gesture timeout (ms)">
+              <Input
+                type="number"
+                value={deviceSettings.gestureTimeoutMs}
+                onChange={(event) =>
+                  updateManagedDeviceSettings((settings) => {
+                    settings.gestureTimeoutMs = Number(
+                      event.currentTarget.value,
+                    );
+                  })
+                }
+              />
+            </Field>
+            <Field label="Gesture cooldown (ms)">
+              <Input
+                type="number"
+                value={deviceSettings.gestureCooldownMs}
+                onChange={(event) =>
+                  updateManagedDeviceSettings((settings) => {
+                    settings.gestureCooldownMs = Number(
                       event.currentTarget.value,
                     );
                   })
@@ -1531,6 +1768,10 @@ function DeviceDetailView(props: {
             value={props.activeLayout.label}
           />
           <CapabilityRow
+            label="Assigned profile"
+            value={assignedProfile?.label ?? "Auto by app"}
+          />
+          <CapabilityRow
             label="Product"
             value={activeDevice.productName ?? activeDevice.displayName}
           />
@@ -1546,16 +1787,60 @@ function DeviceDetailView(props: {
 
 function AppSettingsDialog(props: {
   config: AppConfig;
+  layoutChoices: BootstrapPayload["manualLayoutChoices"];
   open: boolean;
   onClose: () => void;
   platformCapabilities: BootstrapPayload["platformCapabilities"];
-  saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
+  saveAppSettings: (mutateSettings: (nextSettings: AppConfig["settings"]) => void) => void;
+  saveDeviceDefaults: (
+    mutateSettings: (nextSettings: NonNullable<AppConfig["deviceDefaults"]>) => void,
+  ) => void;
 }) {
   const appearanceOptions = [
     { label: "System", value: "system" },
     { label: "Light", value: "light" },
     { label: "Dark", value: "dark" },
   ] satisfies AppSelectOption[];
+  const defaultSettings = normalizeDeviceSettings(props.config.deviceDefaults);
+  const [defaultDpiDraft, setDefaultDpiDraft] = useState(defaultSettings.dpi);
+  const [pendingDefaultDpi, setPendingDefaultDpi] = useState<number | null>(null);
+  const saveDeviceDefaultsRef = useRef(props.saveDeviceDefaults);
+  const defaultLayoutOptions = props.layoutChoices.map(
+    (choice) =>
+      ({
+        label: choice.label,
+        value: choice.key,
+      }) satisfies AppSelectOption,
+  );
+
+  useEffect(() => {
+    saveDeviceDefaultsRef.current = props.saveDeviceDefaults;
+  }, [props.saveDeviceDefaults]);
+
+  useEffect(() => {
+    if (pendingDefaultDpi != null && defaultSettings.dpi !== pendingDefaultDpi) {
+      return;
+    }
+
+    setPendingDefaultDpi(null);
+    setDefaultDpiDraft(defaultSettings.dpi);
+  }, [defaultSettings.dpi, pendingDefaultDpi]);
+
+  useEffect(() => {
+    if (pendingDefaultDpi == null) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      const nextSettings = normalizeDeviceSettings(props.config.deviceDefaults);
+      nextSettings.dpi = pendingDefaultDpi;
+      saveDeviceDefaultsRef.current((settings) => {
+        Object.assign(settings, nextSettings);
+      });
+    }, 400);
+
+    return () => window.clearTimeout(timeout);
+  }, [pendingDefaultDpi, props.config.deviceDefaults]);
 
   return (
     <Dialog
@@ -1580,8 +1865,8 @@ function AppSettingsDialog(props: {
                     checked={props.config.settings.startMinimized}
                     label="Start minimized"
                     onChange={(value) =>
-                      props.saveSettings((nextConfig) => {
-                        nextConfig.settings.startMinimized = value;
+                      props.saveAppSettings((nextSettings) => {
+                        nextSettings.startMinimized = value;
                       })
                     }
                   />
@@ -1589,8 +1874,8 @@ function AppSettingsDialog(props: {
                     checked={props.config.settings.startAtLogin}
                     label="Start at login"
                     onChange={(value) =>
-                      props.saveSettings((nextConfig) => {
-                        nextConfig.settings.startAtLogin = value;
+                      props.saveAppSettings((nextSettings) => {
+                        nextSettings.startAtLogin = value;
                       })
                     }
                   />
@@ -1598,8 +1883,8 @@ function AppSettingsDialog(props: {
                     checked={props.config.settings.debugMode}
                     label="Enable debug mode"
                     onChange={(value) =>
-                      props.saveSettings((nextConfig) => {
-                        nextConfig.settings.debugMode = value;
+                      props.saveAppSettings((nextSettings) => {
+                        nextSettings.debugMode = value;
                       })
                     }
                   />
@@ -1609,33 +1894,174 @@ function AppSettingsDialog(props: {
                       options={appearanceOptions}
                       value={props.config.settings.appearanceMode}
                       onValueChange={(value) =>
-                        props.saveSettings((nextConfig) => {
-                          nextConfig.settings.appearanceMode =
+                        props.saveAppSettings((nextSettings) => {
+                          nextSettings.appearanceMode =
                             value as AppConfig["settings"]["appearanceMode"];
                         })
                       }
                     />
                   </Field>
-                  <Field label="Gesture timeout (ms)">
+                </div>
+              </Panel>
+
+              <Panel
+                subtitle="These values seed newly added devices before they get their own settings."
+                title="Defaults For New Devices"
+              >
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2.5 md:col-span-2">
+                    <Label className="text-sm font-medium text-[var(--foreground)]">
+                      Default DPI
+                    </Label>
+                    <div className="rounded-[24px] bg-[var(--card-muted)] p-5 ring-1 ring-[var(--border)]">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-[var(--foreground)]">
+                            Pointer speed for new devices
+                          </p>
+                          <p className="text-xs text-[var(--muted-foreground)]">
+                            Drag to choose a default, then pause briefly to save it.
+                          </p>
+                        </div>
+                        <div className="rounded-full bg-white px-3 py-1.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border)]">
+                          {defaultDpiDraft} DPI
+                        </div>
+                      </div>
+
+                      <div className="mt-5 flex items-center gap-3">
+                        <span className="w-12 text-xs text-[var(--muted-foreground)]">
+                          200
+                        </span>
+                        <Slider
+                          aria-label="Default pointer speed"
+                          className="flex-1"
+                          max={8000}
+                          min={200}
+                          step={50}
+                          value={[defaultDpiDraft]}
+                          onValueChange={(values) => {
+                            const nextValue = values[0];
+                            if (nextValue == null) {
+                              return;
+                            }
+                            const nextDpi = snapDpi(nextValue, 200, 8000);
+                            setDefaultDpiDraft(nextDpi);
+                            setPendingDefaultDpi(
+                              nextDpi === defaultSettings.dpi ? null : nextDpi,
+                            );
+                          }}
+                        />
+                        <span className="w-12 text-right text-xs text-[var(--muted-foreground)]">
+                          8000
+                        </span>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap items-center gap-2">
+                        {DPI_PRESETS.map((preset) => (
+                          <Button
+                            key={preset}
+                            size="sm"
+                            type="button"
+                            variant={
+                              defaultDpiDraft === preset ? "default" : "outline"
+                            }
+                            onClick={() => {
+                              setDefaultDpiDraft(preset);
+                              setPendingDefaultDpi(
+                                preset === defaultSettings.dpi ? null : preset,
+                              );
+                            }}
+                          >
+                            {preset}
+                          </Button>
+                        ))}
+                        {pendingDefaultDpi != null ? (
+                          <span className="text-xs text-[var(--muted-foreground)]">
+                            Saving {pendingDefaultDpi} DPI...
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+
+                  <Field label="Default manual layout override">
+                    <AppSelect
+                      ariaLabel="Default manual layout override"
+                      options={defaultLayoutOptions}
+                      placeholder="Auto-detect"
+                      value={defaultSettings.manualLayoutOverride ?? ""}
+                      onValueChange={(value) =>
+                        props.saveDeviceDefaults((nextSettings) => {
+                          nextSettings.manualLayoutOverride = value || null;
+                        })
+                      }
+                    />
+                  </Field>
+
+                  <SwitchRow
+                    checked={defaultSettings.invertHorizontalScroll}
+                    label="Invert thumb wheel by default"
+                    onChange={(value) =>
+                      props.saveDeviceDefaults((nextSettings) => {
+                        nextSettings.invertHorizontalScroll = value;
+                      })
+                    }
+                  />
+                  <SwitchRow
+                    checked={defaultSettings.invertVerticalScroll}
+                    label="Invert vertical scroll by default"
+                    onChange={(value) =>
+                      props.saveDeviceDefaults((nextSettings) => {
+                        nextSettings.invertVerticalScroll = value;
+                      })
+                    }
+                  />
+                  <Field label="Default gesture threshold">
                     <Input
                       type="number"
-                      value={props.config.settings.gestureTimeoutMs}
+                      value={defaultSettings.gestureThreshold}
                       onChange={(event) =>
-                        props.saveSettings((nextConfig) => {
-                          nextConfig.settings.gestureTimeoutMs = Number(
+                        props.saveDeviceDefaults((nextSettings) => {
+                          nextSettings.gestureThreshold = Number(
                             event.currentTarget.value,
                           );
                         })
                       }
                     />
                   </Field>
-                  <Field label="Gesture cooldown (ms)">
+                  <Field label="Default gesture deadzone">
                     <Input
                       type="number"
-                      value={props.config.settings.gestureCooldownMs}
+                      value={defaultSettings.gestureDeadzone}
                       onChange={(event) =>
-                        props.saveSettings((nextConfig) => {
-                          nextConfig.settings.gestureCooldownMs = Number(
+                        props.saveDeviceDefaults((nextSettings) => {
+                          nextSettings.gestureDeadzone = Number(
+                            event.currentTarget.value,
+                          );
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Default gesture timeout (ms)">
+                    <Input
+                      type="number"
+                      value={defaultSettings.gestureTimeoutMs}
+                      onChange={(event) =>
+                        props.saveDeviceDefaults((nextSettings) => {
+                          nextSettings.gestureTimeoutMs = Number(
+                            event.currentTarget.value,
+                          );
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Default gesture cooldown (ms)">
+                    <Input
+                      type="number"
+                      value={defaultSettings.gestureCooldownMs}
+                      onChange={(event) =>
+                        props.saveDeviceDefaults((nextSettings) => {
+                          nextSettings.gestureCooldownMs = Number(
                             event.currentTarget.value,
                           );
                         })
@@ -1699,7 +2125,7 @@ function DebugView(props: {
   importSourcePath: string;
   importWarnings: string[];
   isClearing: boolean;
-  saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
+  saveAppSettings: (mutateSettings: (nextSettings: AppConfig["settings"]) => void) => void;
   clearDebugLog: () => void;
   onImport: () => void;
   setImportDraft: (value: string) => void;
@@ -1770,8 +2196,8 @@ function DebugView(props: {
             checked={props.config.settings.debugMode}
             label="Enable debug mode"
             onChange={(value) =>
-              props.saveSettings((nextConfig) => {
-                nextConfig.settings.debugMode = value;
+              props.saveAppSettings((nextSettings) => {
+                nextSettings.debugMode = value;
               })
             }
           />
@@ -2564,24 +2990,6 @@ function cloneProfile(profile: Profile): Profile {
   };
 }
 
-function cloneManagedDevice(
-  device: NonNullable<AppConfig["managedDevices"]>[number],
-) {
-  return { ...device };
-}
-
-function cloneConfig(config: AppConfig): AppConfig {
-  return {
-    ...config,
-    profiles: config.profiles.map(cloneProfile),
-    managedDevices: (config.managedDevices ?? []).map(cloneManagedDevice),
-    settings: {
-      ...config.settings,
-      deviceLayoutOverrides: { ...config.settings.deviceLayoutOverrides },
-    },
-  };
-}
-
 function makeProfileId(label: string, config: AppConfig) {
   const base =
     label
@@ -2610,9 +3018,9 @@ function resolveActiveLayout(
     );
   }
 
-  const overrideKey =
-    config.settings.deviceLayoutOverrides[device.key] ??
-    config.settings.deviceLayoutOverrides[device.modelKey];
+  const overrideKey = normalizeDeviceSettings(
+    findManagedDevice(config, device.key)?.settings,
+  ).manualLayoutOverride;
   const targetKey = overrideKey || device.uiLayout;
   return layouts.find((layout) => layout.key === targetKey) ?? layouts[0];
 }

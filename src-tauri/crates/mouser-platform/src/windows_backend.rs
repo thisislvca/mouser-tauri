@@ -13,12 +13,13 @@ use std::{
 
 use mouser_core::{
     build_connected_device_info, default_config, hydrate_identity_key, DebugEventKind,
-    DeviceFingerprint, DeviceInfo, LogicalControl, Profile, Settings,
+    DeviceFingerprint, DeviceInfo, LogicalControl, Profile,
 };
 
 use crate::{
     horizontal_scroll_control, push_bounded_hook_event, AppFocusBackend, HidBackend,
-    HidCapabilities, HookBackend, HookBackendEvent, HookCapabilities, PlatformError,
+    HidCapabilities, HookBackend, HookBackendEvent, HookBackendSettings, HookCapabilities,
+    PlatformError,
 };
 
 #[cfg(target_os = "windows")]
@@ -78,7 +79,7 @@ struct WindowsHookConfig {
 }
 
 impl WindowsHookConfig {
-    fn from_runtime(settings: &Settings, profile: &Profile, enabled: bool) -> Self {
+    fn from_runtime(settings: &HookBackendSettings, profile: &Profile, enabled: bool) -> Self {
         Self {
             enabled,
             invert_horizontal_scroll: settings.invert_horizontal_scroll,
@@ -180,7 +181,10 @@ impl WindowsHookShared {
 
         Self {
             config: RwLock::new(Arc::new(WindowsHookConfig::from_runtime(
-                &config.settings,
+                &HookBackendSettings::from_app_and_device(
+                    &config.settings,
+                    &config.device_defaults,
+                ),
                 &profile,
                 true,
             ))),
@@ -195,7 +199,7 @@ impl WindowsHookShared {
         Arc::clone(&self.config.read().unwrap())
     }
 
-    fn reconfigure(&self, settings: &Settings, profile: &Profile, enabled: bool) {
+    fn reconfigure(&self, settings: &HookBackendSettings, profile: &Profile, enabled: bool) {
         let next = Arc::new(WindowsHookConfig::from_runtime(settings, profile, enabled));
         let changed = {
             let mut config = self.config.write().unwrap();
@@ -507,7 +511,7 @@ impl HookBackend for WindowsHookBackend {
 
     fn configure(
         &self,
-        settings: &Settings,
+        settings: &HookBackendSettings,
         profile: &Profile,
         enabled: bool,
     ) -> Result<(), PlatformError> {

@@ -7,14 +7,14 @@ use std::{
 use mouser_core::{
     build_managed_device_info, clamp_dpi, default_action_catalog, effective_layout_key,
     known_device_spec_by_key, known_device_specs, layout_by_key, manual_layout_choices, AppConfig,
-    BootstrapPayload, DebugEvent, DebugEventKind, DeviceInfo, EngineSnapshot, EngineStatus,
-    ManagedDevice, PlatformCapabilities, Profile,
+    BootstrapPayload, DebugEvent, DebugEventKind, DeviceInfo, DeviceSettings, EngineSnapshot,
+    EngineStatus, ManagedDevice, PlatformCapabilities, Profile,
 };
 use mouser_platform::{
     macos::{MacOsAppFocusBackend, MacOsHidBackend, MacOsHookBackend},
     windows::{WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend},
-    AppFocusBackend, ConfigStore, DeviceCatalog, HidBackend, HookBackend, JsonConfigStore,
-    StaticDeviceCatalog,
+    AppFocusBackend, ConfigStore, DeviceCatalog, HidBackend, HookBackend, HookBackendSettings,
+    JsonConfigStore, StaticDeviceCatalog,
 };
 
 pub struct AppRuntime {
@@ -96,7 +96,8 @@ impl AppRuntime {
             DebugEventKind::Info,
             format!(
                 "Saved config for `{}` at {} DPI",
-                self.config.active_profile_id, self.config.settings.dpi
+                self.config.active_profile_id,
+                self.selected_device_settings().dpi
             ),
         );
         self.log_dpi_state("DPI snapshot");
@@ -149,6 +150,7 @@ impl AppRuntime {
 
     pub fn create_profile(&mut self, profile: Profile) {
         self.config.upsert_profile(profile);
+        self.sync_active_profile();
         self.persist_config();
         self.sync_hook_backend();
         self.push_debug(DebugEventKind::Info, "Created profile");
@@ -157,6 +159,7 @@ impl AppRuntime {
 
     pub fn update_profile(&mut self, profile: Profile) {
         self.config.upsert_profile(profile);
+        self.sync_active_profile();
         self.persist_config();
         self.sync_hook_backend();
         self.push_debug(DebugEventKind::Info, "Updated profile");
@@ -165,6 +168,7 @@ impl AppRuntime {
 
     pub fn delete_profile(&mut self, profile_id: &str) {
         if self.config.delete_profile(profile_id) {
+            self.sync_active_profile();
             self.persist_config();
             self.sync_hook_backend();
             self.push_debug(
@@ -184,10 +188,9 @@ impl AppRuntime {
         };
 
         self.selected_device_key = Some(device_id.clone());
-        self.config.settings.dpi = self
-            .catalog
-            .clamp_dpi(Some(model_key), self.config.settings.dpi);
+        self.sync_active_profile();
         self.persist_config();
+        self.sync_hook_backend();
         self.push_debug(
             DebugEventKind::Info,
             format!("Added managed device `{model_key}`"),
@@ -206,12 +209,13 @@ impl AppRuntime {
             return;
         }
 
-        self.config.settings.device_layout_overrides.remove(device_key);
         if self.selected_device_key.as_deref() == Some(device_key) {
             self.selected_device_key = None;
         }
         self.ensure_selected_device();
+        self.sync_active_profile();
         self.persist_config();
+        self.sync_hook_backend();
         self.push_debug(
             DebugEventKind::Info,
             format!("Removed managed device `{device_key}`"),
@@ -227,17 +231,95 @@ impl AppRuntime {
             .any(|device| device.id == device_key)
         {
             self.selected_device_key = Some(device_key.to_string());
-            if let Some(device) = self.active_device_info() {
-                self.config.settings.dpi = clamp_dpi(Some(&device), self.config.settings.dpi);
-                self.persist_config();
-            }
+            self.sync_active_profile();
+            self.sync_hook_backend();
             self.push_debug(
                 DebugEventKind::Info,
                 format!("Selected device `{device_key}`"),
             );
             self.log_device_inventory("Device library");
+            self.log_active_profile_snapshot("Active bindings");
             self.log_dpi_state("DPI snapshot");
         }
+    }
+
+    pub fn update_app_settings(&mut self, settings: mouser_core::Settings) {
+        let mut config = self.config.clone();
+        config.settings = settings;
+        let debug_mode_was_enabled = self.apply_config(config);
+        self.push_debug(DebugEventKind::Info, "Updated app settings");
+        if !debug_mode_was_enabled && self.config.settings.debug_mode {
+            self.log_debug_session_state();
+        }
+    }
+
+    pub fn update_device_defaults(&mut self, settings: DeviceSettings) {
+        let mut config = self.config.clone();
+        config.device_defaults = settings;
+        self.apply_config(config);
+        self.push_debug(DebugEventKind::Info, "Updated default settings for new devices");
+    }
+
+    pub fn update_managed_device_settings(&mut self, device_key: &str, settings: DeviceSettings) {
+        let mut config = self.config.clone();
+        let Some(device) = config
+            .managed_devices
+            .iter_mut()
+            .find(|device| device.id == device_key)
+        else {
+            return;
+        };
+        device.settings = settings;
+        self.apply_config(config);
+        self.push_debug(
+            DebugEventKind::Info,
+            format!("Updated settings for device `{device_key}`"),
+        );
+        self.log_dpi_state("DPI snapshot");
+    }
+
+    pub fn update_managed_device_profile(
+        &mut self,
+        device_key: &str,
+        profile_id: Option<String>,
+    ) {
+        let mut config = self.config.clone();
+        let Some(device) = config
+            .managed_devices
+            .iter_mut()
+            .find(|device| device.id == device_key)
+        else {
+            return;
+        };
+        device.profile_id = profile_id;
+        self.apply_config(config);
+        self.push_debug(
+            DebugEventKind::Info,
+            format!("Updated profile assignment for device `{device_key}`"),
+        );
+        self.log_active_profile_snapshot("Active bindings");
+    }
+
+    pub fn update_managed_device_nickname(
+        &mut self,
+        device_key: &str,
+        nickname: Option<String>,
+    ) {
+        let mut config = self.config.clone();
+        let Some(device) = config
+            .managed_devices
+            .iter_mut()
+            .find(|device| device.id == device_key)
+        else {
+            return;
+        };
+        device.nickname = nickname;
+        self.apply_config(config);
+        self.push_debug(
+            DebugEventKind::Info,
+            format!("Updated nickname for device `{device_key}`"),
+        );
+        self.log_device_inventory("Device library");
     }
 
     pub fn apply_imported_config(&mut self, config: AppConfig) {
@@ -277,8 +359,11 @@ impl AppRuntime {
             .and_then(|device_key| devices.iter().find(|device| &device.key == device_key))
             .cloned()
             .map(|mut device| {
-                let layout_key =
-                    effective_layout_key(&self.config.settings, Some(&device.key), &device.ui_layout);
+                let layout_key = effective_layout_key(
+                    self.selected_managed_device()
+                        .and_then(|managed| managed.settings.manual_layout_override.as_deref()),
+                    &device.ui_layout,
+                );
                 device.ui_layout = layout_key.clone();
                 if let Some(layout) = layout_by_key(&self.catalog.all_layouts(), &layout_key) {
                     device.image_asset = layout.image_asset;
@@ -314,32 +399,20 @@ impl AppRuntime {
 
     fn apply_config(&mut self, mut config: AppConfig) -> bool {
         let debug_mode_was_enabled = self.config.settings.debug_mode;
-        let previous_dpi = self.config.settings.dpi;
+        let previous_dpi = self.selected_device_settings().dpi;
         config.ensure_invariants();
-        let selected_model_key = self.selected_managed_device().map(|device| device.model_key.as_str());
-        let requested_dpi = config.settings.dpi;
-        let clamped_dpi = self.catalog.clamp_dpi(selected_model_key, requested_dpi);
-        if requested_dpi != clamped_dpi {
-            self.push_debug_if_enabled(
-                DebugEventKind::Warning,
-                format!(
-                    "Clamped requested DPI from {requested_dpi} to {clamped_dpi} for {}",
-                    selected_model_key.unwrap_or("generic pointer")
-                ),
-            );
-        }
-        config.settings.dpi = clamped_dpi;
         self.config = config;
         self.ensure_selected_device();
 
         let active_device = self.active_device_info();
-        if previous_dpi != self.config.settings.dpi {
+        let configured_dpi = self.selected_device_settings().dpi;
+        if previous_dpi != configured_dpi {
             self.push_debug_if_enabled(
                 DebugEventKind::Info,
                 format!(
                     "Applying DPI request {} -> {} for {}",
                     previous_dpi,
-                    self.config.settings.dpi,
+                    configured_dpi,
                     active_device
                         .as_ref()
                         .map(|device| device.display_name.as_str())
@@ -352,7 +425,7 @@ impl AppRuntime {
             if let Some(backend_key) = self.selected_backend_device_key() {
                 if let Err(error) = self
                     .hid_backend
-                    .set_device_dpi(backend_key, self.config.settings.dpi)
+                    .set_device_dpi(backend_key, configured_dpi)
                 {
                     self.push_debug(
                         DebugEventKind::Warning,
@@ -365,7 +438,7 @@ impl AppRuntime {
         self.persist_config();
         self.sync_active_profile();
         self.sync_hook_backend();
-        if previous_dpi != self.config.settings.dpi {
+        if previous_dpi != configured_dpi {
             self.log_dpi_state("DPI apply request");
         }
         debug_mode_was_enabled
@@ -457,21 +530,23 @@ impl AppRuntime {
 
         self.ensure_selected_device();
         if let Some(device) = self.active_device_info() {
-            let device_dpi = clamp_dpi(Some(&device), self.config.settings.dpi);
-            if self.config.settings.dpi != device_dpi {
+            let device_dpi = clamp_dpi(Some(&device), self.selected_device_settings().dpi);
+            if self.selected_device_settings().dpi != device_dpi {
                 self.push_debug_if_enabled(
                     DebugEventKind::Warning,
                     format!(
                         "Clamped configured DPI from {} to {} for {} (range {}-{})",
-                        self.config.settings.dpi,
+                        self.selected_device_settings().dpi,
                         device_dpi,
                         device.display_name,
                         device.dpi_min,
                         device.dpi_max,
                     ),
                 );
-                self.config.settings.dpi = device_dpi;
-                changed_config = true;
+                if let Some(selected_device) = self.selected_managed_device_mut() {
+                    selected_device.settings.dpi = device_dpi;
+                    changed_config = true;
+                }
             }
         }
 
@@ -486,9 +561,12 @@ impl AppRuntime {
     }
 
     fn sync_active_profile(&mut self) {
+        let selected_profile_id = self
+            .selected_managed_device()
+            .and_then(|device| device.profile_id.clone());
         if self
             .config
-            .sync_active_profile_for_app(self.frontmost_app.as_deref())
+            .sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_deref())
         {
             self.persist_config();
             self.push_debug(
@@ -507,10 +585,14 @@ impl AppRuntime {
         let Some(profile) = self.config.active_profile().cloned() else {
             return;
         };
+        let hook_settings = HookBackendSettings::from_app_and_device(
+            &self.config.settings,
+            self.selected_device_settings(),
+        );
 
-        if let Err(error) =
-            self.hook_backend
-                .configure(&self.config.settings, &profile, self.enabled)
+        if let Err(error) = self
+            .hook_backend
+            .configure(&hook_settings, &profile, self.enabled)
         {
             self.push_debug(
                 DebugEventKind::Warning,
@@ -624,7 +706,7 @@ impl AppRuntime {
     }
 
     fn log_dpi_state(&mut self, prefix: &str) {
-        let configured_dpi = self.config.settings.dpi;
+        let configured_dpi = self.selected_device_settings().dpi;
         let selected_device_key = self
             .selected_device_key
             .clone()
@@ -764,26 +846,14 @@ impl AppRuntime {
             model_key: spec.key,
             display_name: spec.display_name,
             nickname: None,
+            profile_id: None,
             identity_key: None,
+            settings: self.config.device_defaults.clone(),
             created_at_ms: now_ms(),
             last_seen_at_ms: None,
             last_seen_transport: None,
         };
         self.config.managed_devices.push(device);
-
-        if let Some(existing_override) = self
-            .config
-            .settings
-            .device_layout_overrides
-            .get(model_key)
-            .cloned()
-        {
-            self.config
-                .settings
-                .device_layout_overrides
-                .entry(id.clone())
-                .or_insert(existing_override);
-        }
 
         Some(id)
     }
@@ -845,7 +915,7 @@ impl AppRuntime {
                 let live = assignments
                     .get(&device.id)
                     .and_then(|index| self.detected_devices.get(*index));
-                build_managed_device_info(device, live, self.config.settings.dpi)
+                build_managed_device_info(device, live)
             })
             .collect()
     }
@@ -897,6 +967,20 @@ impl AppRuntime {
                 .iter()
                 .find(|device| &device.id == device_key)
         })
+    }
+
+    fn selected_managed_device_mut(&mut self) -> Option<&mut ManagedDevice> {
+        let selected_device_key = self.selected_device_key.clone()?;
+        self.config
+            .managed_devices
+            .iter_mut()
+            .find(|device| device.id == selected_device_key)
+    }
+
+    fn selected_device_settings(&self) -> &DeviceSettings {
+        self.selected_managed_device()
+            .map(|device| &device.settings)
+            .unwrap_or(&self.config.device_defaults)
     }
 
     fn selected_live_device_raw(&self) -> Option<&DeviceInfo> {

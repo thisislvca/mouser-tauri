@@ -7,7 +7,7 @@ use std::{
 
 use mouser_core::{
     AppConfig, BootstrapPayload, DebugEvent, DeviceInfo, EngineSnapshot, LegacyImportReport,
-    Profile,
+    DeviceSettings, Profile, Settings,
 };
 use mouser_import::{import_legacy_config as import_legacy_payload, ImportSource};
 use runtime::AppRuntime;
@@ -93,6 +93,36 @@ fn config_save(
 
 #[tauri::command]
 #[specta::specta]
+fn app_settings_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.update_app_settings(settings);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn device_defaults_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: DeviceSettings,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.update_device_defaults(settings);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn profiles_create(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -130,6 +160,54 @@ fn profiles_delete(
 ) -> Result<BootstrapPayload, String> {
     let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
         runtime.delete_profile(&profile_id);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn devices_update_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_key: String,
+    settings: DeviceSettings,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.update_managed_device_settings(&device_key, settings);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn devices_update_profile(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_key: String,
+    profile_id: Option<String>,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.update_managed_device_profile(&device_key, profile_id);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn devices_update_nickname(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_key: String,
+    nickname: Option<String>,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.update_managed_device_nickname(&device_key, nickname);
         (runtime.bootstrap_payload(), runtime.last_debug_event())
     })?;
     emit_runtime_events(&app, &payload, debug_event)?;
@@ -429,11 +507,16 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             bootstrap_load,
             config_get,
             config_save,
+            app_settings_update,
+            device_defaults_update,
             profiles_create,
             profiles_update,
             profiles_delete,
             devices_list,
             devices_add,
+            devices_update_settings,
+            devices_update_profile,
+            devices_update_nickname,
             devices_remove,
             devices_select,
             devices_select_mock,
