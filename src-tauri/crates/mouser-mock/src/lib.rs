@@ -4,10 +4,11 @@ use std::{
 };
 
 use mouser_core::{
-    clamp_dpi, default_action_catalog, default_config, default_device_catalog, default_known_apps,
-    default_layouts, effective_layout_key, manual_layout_choices, AppConfig, BootstrapPayload,
-    DebugEvent, DebugEventKind, DeviceInfo, DeviceLayout, EngineSnapshot, EngineStatus, KnownApp,
-    PlatformCapabilities, Profile,
+    build_managed_device_info, clamp_dpi, default_action_catalog, default_config,
+    default_device_catalog, default_known_apps, default_layouts, effective_layout_key,
+    manual_layout_choices, AppConfig, BootstrapPayload, DebugEvent, DebugEventKind, DeviceInfo,
+    DeviceLayout, EngineSnapshot, EngineStatus, KnownApp, ManagedDevice, PlatformCapabilities,
+    Profile,
 };
 use mouser_platform::{ConfigStore, DeviceCatalog, PlatformError};
 
@@ -43,7 +44,7 @@ impl DeviceCatalog for MockCatalog {
         let device = device_key.and_then(|device_key| {
             self.devices
                 .iter()
-                .find(|candidate| candidate.key == device_key)
+                .find(|candidate| candidate.model_key == device_key || candidate.key == device_key)
         });
         clamp_dpi(device, value)
     }
@@ -76,7 +77,7 @@ impl ConfigStore for MemoryConfigStore {
 pub struct MockRuntime {
     catalog: MockCatalog,
     config_store: MemoryConfigStore,
-    devices: Vec<DeviceInfo>,
+    detected_devices: Vec<DeviceInfo>,
     selected_device_key: Option<String>,
     frontmost_app: Option<String>,
     enabled: bool,
@@ -92,13 +93,26 @@ impl Default for MockRuntime {
 impl MockRuntime {
     pub fn new() -> Self {
         let catalog = MockCatalog::new();
-        let devices = catalog.all_devices();
-        let selected_device_key = devices.first().map(|device| device.key.clone());
-        let config_store = MemoryConfigStore::new(default_config());
+        let mut config = default_config();
+        config.managed_devices = catalog
+            .all_devices()
+            .into_iter()
+            .map(|device| ManagedDevice {
+                id: device.model_key.clone(),
+                model_key: device.model_key,
+                display_name: device.display_name,
+                nickname: None,
+                created_at_ms: now_ms(),
+                last_seen_at_ms: None,
+                last_seen_transport: device.transport,
+            })
+            .collect();
+        let selected_device_key = config.managed_devices.first().map(|device| device.id.clone());
+        let config_store = MemoryConfigStore::new(config);
         let mut runtime = Self {
             catalog,
             config_store,
-            devices,
+            detected_devices: Vec::new(),
             selected_device_key,
             frontmost_app: Some("Finder".to_string()),
             enabled: true,
@@ -114,6 +128,7 @@ impl MockRuntime {
             config: self.config(),
             available_actions: default_action_catalog(),
             known_apps: default_known_apps(),
+            supported_devices: mouser_core::known_device_specs(),
             layouts: self.catalog.all_layouts(),
             engine_snapshot: self.engine_snapshot(),
             platform_capabilities: current_platform_capabilities(),
@@ -194,14 +209,15 @@ impl MockRuntime {
     }
 
     pub fn devices(&self) -> Vec<DeviceInfo> {
-        self.devices.clone()
+        self.managed_device_infos()
     }
 
     pub fn engine_snapshot(&self) -> EngineSnapshot {
+        let devices = self.managed_device_infos();
         let active_device = self
             .selected_device_key
             .as_ref()
-            .and_then(|device_key| self.devices.iter().find(|device| &device.key == device_key))
+            .and_then(|device_key| devices.iter().find(|device| &device.key == device_key))
             .cloned()
             .map(|mut device| {
                 let layout_key = effective_layout_key(
@@ -222,21 +238,13 @@ impl MockRuntime {
             });
 
         EngineSnapshot {
-            devices: self.devices.clone(),
+            devices,
+            detected_devices: self.detected_devices.clone(),
             active_device_key: self.selected_device_key.clone(),
-            active_device,
+            active_device: active_device.clone(),
             engine_status: EngineStatus {
                 enabled: self.enabled,
-                connected: self
-                    .selected_device_key
-                    .as_ref()
-                    .and_then(|device_key| {
-                        self.devices
-                            .iter()
-                            .find(|device| &device.key == device_key)
-                            .map(|device| device.connected)
-                    })
-                    .unwrap_or(false),
+                connected: active_device.as_ref().is_some_and(|device| device.connected),
                 active_profile_id: self.config().active_profile_id,
                 frontmost_app: self.frontmost_app.clone(),
                 selected_device_key: self.selected_device_key.clone(),
@@ -251,16 +259,42 @@ impl MockRuntime {
     }
 
     fn apply_device_selection(&mut self) {
+        let Some(selected_key) = self.selected_device_key.clone() else {
+            self.detected_devices.clear();
+            return;
+        };
+
         let config = self.config();
-        for device in &mut self.devices {
-            let selected = self
-                .selected_device_key
-                .as_ref()
-                .map(|selected_key| selected_key == &device.key)
-                .unwrap_or(false);
-            device.connected = selected;
-            device.current_dpi = clamp_dpi(Some(device), config.settings.dpi);
-        }
+        self.detected_devices = self
+            .catalog
+            .all_devices()
+            .into_iter()
+            .filter(|device| device.model_key == selected_key || device.key == selected_key)
+            .map(|mut device| {
+                device.connected = true;
+                device.current_dpi = clamp_dpi(Some(&device), config.settings.dpi);
+                device
+            })
+            .collect();
+    }
+
+    fn managed_device_infos(&self) -> Vec<DeviceInfo> {
+        let selected_live = self.detected_devices.first();
+        self.config()
+            .managed_devices
+            .into_iter()
+            .map(|device| {
+                let live = if selected_live
+                    .as_ref()
+                    .is_some_and(|live| live.model_key == device.model_key)
+                {
+                    selected_live
+                } else {
+                    None
+                };
+                build_managed_device_info(&device, live, self.config().settings.dpi)
+            })
+            .collect()
     }
 
     fn sync_active_profile(&mut self) -> bool {
@@ -274,8 +308,13 @@ impl MockRuntime {
 
     fn apply_config(&mut self, mut config: AppConfig) -> bool {
         config.ensure_invariants();
-        let device_key = self.selected_device_key.as_deref();
-        config.settings.dpi = self.catalog.clamp_dpi(device_key, config.settings.dpi);
+        let current_config = self.config();
+        let model_key = current_config
+            .managed_devices
+            .iter()
+            .find(|device| Some(device.id.as_str()) == self.selected_device_key.as_deref())
+            .map(|device| device.model_key.as_str());
+        config.settings.dpi = self.catalog.clamp_dpi(model_key, config.settings.dpi);
         self.config_store.save(&config).unwrap();
         self.apply_device_selection();
         self.sync_active_profile()

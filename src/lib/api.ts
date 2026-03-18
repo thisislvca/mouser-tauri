@@ -45,6 +45,18 @@ export async function devicesList() {
   return unwrap(await commands.devicesList());
 }
 
+export async function devicesAdd(modelKey: string) {
+  return unwrap(await commands.devicesAdd(modelKey));
+}
+
+export async function devicesRemove(deviceKey: string) {
+  return unwrap(await commands.devicesRemove(deviceKey));
+}
+
+export async function devicesSelect(deviceKey: string) {
+  return unwrap(await commands.devicesSelect(deviceKey));
+}
+
 export async function devicesSelectMock(deviceKey: string) {
   return unwrap(await commands.devicesSelectMock(deviceKey));
 }

@@ -62,6 +62,30 @@ async devicesList() : Promise<Result<DeviceInfo[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async devicesAdd(modelKey: string) : Promise<Result<BootstrapPayload, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("devices_add", { modelKey }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async devicesRemove(deviceKey: string) : Promise<Result<BootstrapPayload, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("devices_remove", { deviceKey }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async devicesSelect(deviceKey: string) : Promise<Result<EngineSnapshot, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("devices_select", { deviceKey }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async devicesSelectMock(deviceKey: string) : Promise<Result<EngineSnapshot, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_select_mock", { deviceKey }) };
@@ -110,29 +134,31 @@ profileChangedEvent: "profile-changed-event"
 /** user-defined types **/
 
 export type ActionDefinition = { id: string; label: string; category: string }
-export type AppConfig = { version: number; activeProfileId: string; profiles: Profile[]; settings: Settings }
+export type AppConfig = { version: number; activeProfileId: string; profiles: Profile[]; managedDevices?: ManagedDevice[]; settings: Settings }
 export type AppMatcher = { kind: AppMatcherKind; value: string }
 export type AppMatcherKind = "executable"
 export type AppearanceMode = "system" | "light" | "dark"
 export type Binding = { control: LogicalControl; actionId: string }
-export type BootstrapPayload = { config: AppConfig; availableActions: ActionDefinition[]; knownApps: KnownApp[]; layouts: DeviceLayout[]; engineSnapshot: EngineSnapshot; platformCapabilities: PlatformCapabilities; manualLayoutChoices: LayoutChoice[] }
+export type BootstrapPayload = { config: AppConfig; availableActions: ActionDefinition[]; knownApps: KnownApp[]; supportedDevices: KnownDeviceSpec[]; layouts: DeviceLayout[]; engineSnapshot: EngineSnapshot; platformCapabilities: PlatformCapabilities; manualLayoutChoices: LayoutChoice[] }
 export type DebugEvent = { kind: DebugEventKind; message: string; timestampMs: number }
 export type DebugEventEnvelope = DebugEvent
 export type DebugEventKind = "info" | "warning" | "gesture"
 export type DeviceChangedEvent = DeviceInfo | null
 export type DeviceHotspot = { control: LogicalControl; label: string; summaryType: HotspotSummaryType; normX: number; normY: number; labelSide: LabelSide; labelOffX: number; labelOffY: number; isHscroll: boolean }
-export type DeviceInfo = { key: string; displayName: string; productId: number | null; productName: string | null; transport: string | null; source: string | null; uiLayout: string; imageAsset: string; supportedControls: LogicalControl[]; gestureCids: number[]; dpiMin: number; dpiMax: number; connected: boolean; batteryLevel: number | null; currentDpi: number }
+export type DeviceInfo = { key: string; modelKey: string; displayName: string; nickname: string | null; productId: number | null; productName: string | null; transport: string | null; source: string | null; uiLayout: string; imageAsset: string; supportedControls: LogicalControl[]; gestureCids: number[]; dpiMin: number; dpiMax: number; connected: boolean; batteryLevel: number | null; currentDpi: number }
 export type DeviceLayout = { key: string; label: string; imageAsset: string; imageWidth: number; imageHeight: number; interactive: boolean; manualSelectable: boolean; note: string; hotspots: DeviceHotspot[] }
-export type EngineSnapshot = { devices: DeviceInfo[]; activeDeviceKey: string | null; activeDevice: DeviceInfo | null; engineStatus: EngineStatus }
+export type EngineSnapshot = { devices: DeviceInfo[]; detectedDevices: DeviceInfo[]; activeDeviceKey: string | null; activeDevice: DeviceInfo | null; engineStatus: EngineStatus }
 export type EngineStatus = { enabled: boolean; connected: boolean; activeProfileId: string; frontmostApp: string | null; selectedDeviceKey: string | null; debugMode: boolean; debugLog: DebugEvent[] }
 export type EngineStatusChangedEvent = EngineStatus
 export type HotspotSummaryType = "mapping" | "gesture" | "hscroll"
 export type ImportLegacyConfigRequest = { sourcePath: string | null; rawJson: string | null }
 export type KnownApp = { executable: string; label: string; iconAsset: string | null }
+export type KnownDeviceSpec = { key: string; displayName: string; productIds: number[]; aliases: string[]; gestureCids: number[]; uiLayout: string; imageAsset: string; supportedControls: LogicalControl[]; dpiMin: number; dpiMax: number }
 export type LabelSide = "left" | "right"
 export type LayoutChoice = { key: string; label: string }
 export type LegacyImportReport = { config: AppConfig; warnings: string[]; sourcePath: string | null; importedProfiles: number }
 export type LogicalControl = "middle" | "gesture_press" | "gesture_left" | "gesture_right" | "gesture_up" | "gesture_down" | "back" | "forward" | "hscroll_left" | "hscroll_right"
+export type ManagedDevice = { id: string; modelKey: string; displayName: string; nickname: string | null; createdAtMs: number; lastSeenAtMs: number | null; lastSeenTransport: string | null }
 export type PlatformCapabilities = { platform: string; windowsSupported: boolean; macosSupported: boolean; liveHooksAvailable: boolean; liveHidAvailable: boolean; trayReady: boolean; mappingEngineReady: boolean; gestureDiversionAvailable: boolean; activeHidBackend: string; activeHookBackend: string; activeFocusBackend: string; hidapiAvailable: boolean; iokitAvailable: boolean }
 export type Profile = { id: string; label: string; appMatchers: AppMatcher[]; bindings: Binding[] }
 export type ProfileChangedEvent = { activeProfileId: string; frontmostApp: string | null }

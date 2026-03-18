@@ -142,6 +142,8 @@ pub struct AppConfig {
     pub version: u32,
     pub active_profile_id: String,
     pub profiles: Vec<Profile>,
+    #[serde(default)]
+    pub managed_devices: Vec<ManagedDevice>,
     pub settings: Settings,
 }
 
@@ -231,6 +233,22 @@ impl AppConfig {
         {
             self.active_profile_id = "default".to_string();
         }
+
+        let mut seen_managed_ids = std::collections::BTreeSet::new();
+        self.managed_devices.retain(|device| {
+            !device.id.trim().is_empty() && seen_managed_ids.insert(device.id.clone())
+        });
+        for device in &mut self.managed_devices {
+            if device.display_name.trim().is_empty() {
+                device.display_name = known_device_spec_by_key(&device.model_key)
+                    .map(|spec| spec.display_name)
+                    .unwrap_or_else(|| device.model_key.clone());
+            }
+
+            if device.nickname.as_deref().is_some_and(|value| value.trim().is_empty()) {
+                device.nickname = None;
+            }
+        }
     }
 }
 
@@ -248,6 +266,18 @@ pub struct KnownApp {
     pub executable: String,
     pub label: String,
     pub icon_asset: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedDevice {
+    pub id: String,
+    pub model_key: String,
+    pub display_name: String,
+    pub nickname: Option<String>,
+    pub created_at_ms: u64,
+    pub last_seen_at_ms: Option<u64>,
+    pub last_seen_transport: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -312,7 +342,9 @@ pub struct DeviceLayout {
 #[serde(rename_all = "camelCase")]
 pub struct DeviceInfo {
     pub key: String,
+    pub model_key: String,
     pub display_name: String,
+    pub nickname: Option<String>,
     pub product_id: Option<u16>,
     pub product_name: Option<String>,
     pub transport: Option<String>,
@@ -360,6 +392,7 @@ pub struct EngineStatus {
 #[serde(rename_all = "camelCase")]
 pub struct EngineSnapshot {
     pub devices: Vec<DeviceInfo>,
+    pub detected_devices: Vec<DeviceInfo>,
     pub active_device_key: Option<String>,
     pub active_device: Option<DeviceInfo>,
     pub engine_status: EngineStatus,
@@ -396,6 +429,7 @@ pub struct BootstrapPayload {
     pub config: AppConfig,
     pub available_actions: Vec<ActionDefinition>,
     pub known_apps: Vec<KnownApp>,
+    pub supported_devices: Vec<KnownDeviceSpec>,
     pub layouts: Vec<DeviceLayout>,
     pub engine_snapshot: EngineSnapshot,
     pub platform_capabilities: PlatformCapabilities,
@@ -460,9 +494,10 @@ pub fn default_profile() -> Profile {
 
 pub fn default_config() -> AppConfig {
     AppConfig {
-        version: 1,
+        version: 2,
         active_profile_id: "default".to_string(),
         profiles: vec![default_profile()],
+        managed_devices: Vec::new(),
         settings: default_settings(),
     }
 }
@@ -644,6 +679,12 @@ pub fn known_device_specs() -> Vec<KnownDeviceSpec> {
     ]
 }
 
+pub fn known_device_spec_by_key(model_key: &str) -> Option<KnownDeviceSpec> {
+    known_device_specs()
+        .into_iter()
+        .find(|spec| spec.key == model_key)
+}
+
 pub fn default_layouts() -> Vec<DeviceLayout> {
     vec![
         DeviceLayout {
@@ -763,7 +804,9 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
     vec![
         DeviceInfo {
             key: "mx_master_3s".to_string(),
+            model_key: "mx_master_3s".to_string(),
             display_name: "MX Master 3S".to_string(),
+            nickname: None,
             product_id: Some(0xB034),
             product_name: Some("MX Master 3S".to_string()),
             transport: Some("Bluetooth Low Energy".to_string()),
@@ -780,7 +823,9 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
         },
         DeviceInfo {
             key: "mx_anywhere_3s".to_string(),
+            model_key: "mx_anywhere_3s".to_string(),
             display_name: "MX Anywhere 3S".to_string(),
+            nickname: None,
             product_id: Some(0xB037),
             product_name: Some("MX Anywhere 3S".to_string()),
             transport: Some("Bolt Receiver".to_string()),
@@ -797,7 +842,9 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
         },
         DeviceInfo {
             key: "mystery_logitech_mouse".to_string(),
+            model_key: "mystery_logitech_mouse".to_string(),
             display_name: "Mystery Logitech Mouse".to_string(),
+            nickname: None,
             product_id: Some(0xB999),
             product_name: Some("Mystery Logitech Mouse".to_string()),
             transport: Some("USB".to_string()),
@@ -840,9 +887,12 @@ pub fn build_connected_device_info(
     current_dpi: u16,
 ) -> DeviceInfo {
     if let Some(spec) = resolve_known_device(product_id, product_name) {
+        let model_key = spec.key.clone();
         return DeviceInfo {
             key: spec.key,
+            model_key,
             display_name: spec.display_name,
+            nickname: None,
             product_id,
             product_name: product_name.map(str::to_string),
             transport: transport.map(str::to_string),
@@ -864,14 +914,17 @@ pub fn build_connected_device_info(
         .or_else(|| product_id.map(|product_id| format!("Logitech PID 0x{product_id:04X}")))
         .unwrap_or_else(|| "Logitech mouse".to_string());
     let key = normalize_name(&display_name).replace(' ', "_");
+    let fallback_key = if key.is_empty() {
+        "logitech_mouse".to_string()
+    } else {
+        key
+    };
 
     DeviceInfo {
-        key: if key.is_empty() {
-            "logitech_mouse".to_string()
-        } else {
-            key
-        },
+        key: fallback_key.clone(),
+        model_key: fallback_key,
         display_name: display_name.clone(),
+        nickname: None,
         product_id,
         product_name: Some(display_name),
         transport: transport.map(str::to_string),
@@ -885,6 +938,78 @@ pub fn build_connected_device_info(
         connected: true,
         battery_level,
         current_dpi,
+    }
+}
+
+pub fn build_managed_device_info(
+    managed: &ManagedDevice,
+    live: Option<&DeviceInfo>,
+    current_dpi: u16,
+) -> DeviceInfo {
+    if let Some(spec) = known_device_spec_by_key(&managed.model_key) {
+        let display_name = managed
+            .nickname
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| managed.display_name.clone());
+        return DeviceInfo {
+            key: managed.id.clone(),
+            model_key: managed.model_key.clone(),
+            display_name,
+            nickname: managed.nickname.clone(),
+            product_id: live
+                .and_then(|device| device.product_id)
+                .or_else(|| spec.product_ids.first().copied()),
+            product_name: live
+                .and_then(|device| device.product_name.clone())
+                .or_else(|| Some(spec.display_name.clone())),
+            transport: live
+                .and_then(|device| device.transport.clone())
+                .or_else(|| managed.last_seen_transport.clone()),
+            source: live
+                .and_then(|device| device.source.clone())
+                .or_else(|| Some("managed".to_string())),
+            ui_layout: spec.ui_layout,
+            image_asset: spec.image_asset,
+            supported_controls: spec.supported_controls,
+            gesture_cids: spec.gesture_cids,
+            dpi_min: spec.dpi_min,
+            dpi_max: spec.dpi_max,
+            connected: live.is_some(),
+            battery_level: live.and_then(|device| device.battery_level),
+            current_dpi: current_dpi.max(spec.dpi_min).min(spec.dpi_max),
+        };
+    }
+
+    let display_name = managed
+        .nickname
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| managed.display_name.clone());
+    DeviceInfo {
+        key: managed.id.clone(),
+        model_key: managed.model_key.clone(),
+        display_name,
+        nickname: managed.nickname.clone(),
+        product_id: live.and_then(|device| device.product_id),
+        product_name: live
+            .and_then(|device| device.product_name.clone())
+            .or_else(|| Some(managed.display_name.clone())),
+        transport: live
+            .and_then(|device| device.transport.clone())
+            .or_else(|| managed.last_seen_transport.clone()),
+        source: live
+            .and_then(|device| device.source.clone())
+            .or_else(|| Some("managed".to_string())),
+        ui_layout: "generic_mouse".to_string(),
+        image_asset: "/assets/icons/mouse-simple.svg".to_string(),
+        supported_controls: LogicalControl::all(),
+        gesture_cids: vec![0x00C3, 0x00D7],
+        dpi_min: 200,
+        dpi_max: 8000,
+        connected: live.is_some(),
+        battery_level: live.and_then(|device| device.battery_level),
+        current_dpi: current_dpi.max(200).min(8000),
     }
 }
 

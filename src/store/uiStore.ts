@@ -1,13 +1,16 @@
 import { create } from "zustand";
 import type { DebugEventRecord } from "../lib/types";
 
-export type SectionName = "devices" | "buttons" | "profiles" | "settings" | "debug";
+export type SectionName = "devices" | "buttons" | "profiles" | "debug";
+export type ShellMode = "dashboard" | "detail";
 
 interface UiState {
+  shellMode: ShellMode;
   activeSection: SectionName;
   selectedProfileId: string | null;
   importDraft: string;
   eventLog: DebugEventRecord[];
+  setShellMode: (mode: ShellMode) => void;
   setActiveSection: (section: SectionName) => void;
   setSelectedProfileId: (profileId: string | null) => void;
   setImportDraft: (value: string) => void;
@@ -17,10 +20,12 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  activeSection: "buttons",
+  shellMode: "dashboard",
+  activeSection: "devices",
   selectedProfileId: null,
   importDraft: "",
   eventLog: [],
+  setShellMode: (shellMode) => set({ shellMode }),
   setActiveSection: (activeSection) => set({ activeSection }),
   setSelectedProfileId: (selectedProfileId) => set({ selectedProfileId }),
   setImportDraft: (importDraft) => set({ importDraft }),

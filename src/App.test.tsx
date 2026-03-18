@@ -20,6 +20,9 @@ const apiMocks = vi.hoisted(() => ({
   profilesCreate: vi.fn(),
   profilesUpdate: vi.fn(),
   profilesDelete: vi.fn(),
+  devicesAdd: vi.fn(),
+  devicesRemove: vi.fn(),
+  devicesSelect: vi.fn(),
   devicesSelectMock: vi.fn(),
   importLegacyConfig: vi.fn(),
   debugClearLog: vi.fn(),
@@ -35,6 +38,9 @@ vi.mock("./lib/api", () => ({
   profilesCreate: apiMocks.profilesCreate,
   profilesUpdate: apiMocks.profilesUpdate,
   profilesDelete: apiMocks.profilesDelete,
+  devicesAdd: apiMocks.devicesAdd,
+  devicesRemove: apiMocks.devicesRemove,
+  devicesSelect: apiMocks.devicesSelect,
   devicesSelectMock: apiMocks.devicesSelectMock,
   importLegacyConfig: apiMocks.importLegacyConfig,
   debugClearLog: apiMocks.debugClearLog,
@@ -72,6 +78,17 @@ function makeBootstrap(): BootstrapPayload {
         })),
       },
     ],
+    managedDevices: [
+      {
+        id: "mx_master_3s",
+        modelKey: "mx_master_3s",
+        displayName: "MX Master 3S",
+        nickname: null,
+        createdAtMs: 1,
+        lastSeenAtMs: 1,
+        lastSeenTransport: "Bluetooth Low Energy",
+      },
+    ],
     settings: {
       startMinimized: true,
       startAtLogin: false,
@@ -91,7 +108,9 @@ function makeBootstrap(): BootstrapPayload {
   const devices: DeviceInfo[] = [
     {
       key: "mx_master_3s",
+      modelKey: "mx_master_3s",
       displayName: "MX Master 3S",
+      nickname: null,
       productId: 45108,
       productName: "MX Master 3S",
       transport: "Bluetooth Low Energy",
@@ -172,9 +191,36 @@ function makeBootstrap(): BootstrapPayload {
         iconAsset: null,
       },
     ],
+    supportedDevices: [
+      {
+        key: "mx_master_3s",
+        displayName: "MX Master 3S",
+        productIds: [45108],
+        aliases: ["Logitech MX Master 3S"],
+        gestureCids: [195, 215],
+        uiLayout: "mx_master",
+        imageAsset: "/assets/mouse.png",
+        supportedControls: config.profiles[0].bindings.map((binding) => binding.control),
+        dpiMin: 200,
+        dpiMax: 8000,
+      },
+      {
+        key: "mx_anywhere_3s",
+        displayName: "MX Anywhere 3S",
+        productIds: [45111],
+        aliases: ["Logitech MX Anywhere 3S"],
+        gestureCids: [195],
+        uiLayout: "generic_mouse",
+        imageAsset: "/assets/icons/mouse-simple.svg",
+        supportedControls: config.profiles[0].bindings.map((binding) => binding.control),
+        dpiMin: 200,
+        dpiMax: 8000,
+      },
+    ],
     layouts,
     engineSnapshot: {
       devices,
+      detectedDevices: devices,
       activeDeviceKey: "mx_master_3s",
       activeDevice: devices[0],
       engineStatus: {
@@ -264,6 +310,9 @@ describe("App", () => {
     apiMocks.profilesCreate.mockReset();
     apiMocks.profilesUpdate.mockReset();
     apiMocks.profilesDelete.mockReset();
+    apiMocks.devicesAdd.mockReset();
+    apiMocks.devicesRemove.mockReset();
+    apiMocks.devicesSelect.mockReset();
     apiMocks.devicesSelectMock.mockReset();
     apiMocks.importLegacyConfig.mockReset();
     apiMocks.debugClearLog.mockReset();
@@ -319,10 +368,92 @@ describe("App", () => {
       };
       return currentBootstrap;
     });
-    apiMocks.devicesSelectMock.mockImplementation(async (deviceKey: string) => {
+    apiMocks.devicesAdd.mockImplementation(async (modelKey: string) => {
+      const supportedDevice = currentBootstrap.supportedDevices.find(
+        (device) => device.key === modelKey,
+      );
+      if (!supportedDevice) {
+        return currentBootstrap;
+      }
+
+      const nextDevice: DeviceInfo = {
+        key: `${modelKey}-${(currentBootstrap.config.managedDevices?.length ?? 0) + 1}`,
+        modelKey,
+        displayName: supportedDevice.displayName,
+        nickname: null,
+        productId: supportedDevice.productIds[0] ?? null,
+        productName: supportedDevice.displayName,
+        transport: null,
+        source: "managed",
+        uiLayout: supportedDevice.uiLayout,
+        imageAsset: supportedDevice.imageAsset,
+        supportedControls: supportedDevice.supportedControls,
+        gestureCids: supportedDevice.gestureCids,
+        dpiMin: supportedDevice.dpiMin,
+        dpiMax: supportedDevice.dpiMax,
+        connected: false,
+        batteryLevel: null,
+        currentDpi: currentBootstrap.config.settings.dpi,
+      };
+
+      currentBootstrap = {
+        ...currentBootstrap,
+        config: {
+          ...currentBootstrap.config,
+          managedDevices: [
+            ...(currentBootstrap.config.managedDevices ?? []),
+            {
+              id: nextDevice.key,
+              modelKey,
+              displayName: supportedDevice.displayName,
+              nickname: null,
+              createdAtMs: 1,
+              lastSeenAtMs: null,
+              lastSeenTransport: null,
+            },
+          ],
+        },
+        engineSnapshot: {
+          ...currentBootstrap.engineSnapshot,
+          devices: [...currentBootstrap.engineSnapshot.devices, nextDevice],
+        },
+      };
+      return currentBootstrap;
+    });
+    apiMocks.devicesRemove.mockImplementation(async (deviceKey: string) => {
+      currentBootstrap = {
+        ...currentBootstrap,
+        config: {
+          ...currentBootstrap.config,
+          managedDevices: (currentBootstrap.config.managedDevices ?? []).filter(
+            (device) => device.id !== deviceKey,
+          ),
+        },
+        engineSnapshot: {
+          ...currentBootstrap.engineSnapshot,
+          devices: currentBootstrap.engineSnapshot.devices.filter(
+            (device) => device.key !== deviceKey,
+          ),
+          activeDeviceKey:
+            currentBootstrap.engineSnapshot.activeDeviceKey === deviceKey
+              ? null
+              : currentBootstrap.engineSnapshot.activeDeviceKey,
+          activeDevice:
+            currentBootstrap.engineSnapshot.activeDevice?.key === deviceKey
+              ? null
+              : currentBootstrap.engineSnapshot.activeDevice,
+        },
+      };
+      return currentBootstrap;
+    });
+    apiMocks.devicesSelect.mockImplementation(async (deviceKey: string) => {
       const devices = currentBootstrap.engineSnapshot.devices.map((device) => ({
         ...device,
-        connected: device.key === deviceKey,
+        connected:
+          device.key === deviceKey &&
+          currentBootstrap.engineSnapshot.detectedDevices.some(
+            (detected) => detected.modelKey === device.modelKey,
+          ),
       }));
       const activeDevice = devices.find((device) => device.key === deviceKey) ?? null;
       currentBootstrap = {
@@ -341,6 +472,7 @@ describe("App", () => {
       };
       return currentBootstrap.engineSnapshot;
     });
+    apiMocks.devicesSelectMock.mockImplementation(apiMocks.devicesSelect);
     apiMocks.importLegacyConfig.mockImplementation(async () => {
       currentBootstrap = makeImportedBootstrap();
       return {
@@ -365,6 +497,7 @@ describe("App", () => {
     });
 
     useUiStore.setState({
+      shellMode: "dashboard",
       activeSection: "devices",
       selectedProfileId: null,
       importDraft: "",
@@ -405,9 +538,9 @@ describe("App", () => {
     });
   });
 
-  it("saves settings changes through config_save", async () => {
+  it("saves device tuning changes through config_save", async () => {
     const { user } = renderApp();
-    await user.click(await screen.findByRole("button", { name: "Point + Scroll" }));
+    await user.click(await screen.findByRole("button", { name: "Tune" }));
     const dpiInput = await screen.findByTestId("dpi-input");
     await user.clear(dpiInput);
     await user.type(dpiInput, "900");
@@ -426,6 +559,7 @@ describe("App", () => {
 
   it("hydrates the UI from the legacy importer flow", async () => {
     const { user } = renderApp();
+    await user.click(await screen.findByTestId("device-layout-card"));
     await user.click(await screen.findByRole("button", { name: "Debug" }));
     await user.click(await screen.findByTestId("legacy-import-button"));
     await user.click(await screen.findByRole("button", { name: "Profiles" }));
@@ -437,6 +571,7 @@ describe("App", () => {
 
   it("prefers source-path imports over raw JSON when a path is provided", async () => {
     const { user } = renderApp();
+    await user.click(await screen.findByTestId("device-layout-card"));
     await user.click(await screen.findByRole("button", { name: "Debug" }));
 
     await user.type(
@@ -458,7 +593,25 @@ describe("App", () => {
     });
   });
 
-  it("shows a neutral device status when there is no active device", async () => {
+  it("opens app settings in a global dialog", async () => {
+    const { user } = renderApp();
+    await user.click(await screen.findByRole("button", { name: "App settings" }));
+    expect(await screen.findByText("App Settings")).toBeInTheDocument();
+    await user.click(screen.getByText("Start at login"));
+
+    await waitFor(() => {
+      expect(apiMocks.configSave).toHaveBeenCalled();
+      const calls = apiMocks.configSave.mock.calls;
+      const lastCall = calls[calls.length - 1];
+      expect(lastCall?.[0]).toEqual(
+        expect.objectContaining({
+          settings: expect.objectContaining({ startAtLogin: true }),
+        }),
+      );
+    });
+  });
+
+  it("keeps the dashboard usable when there is no active device", async () => {
     currentBootstrap = {
       ...makeBootstrap(),
       engineSnapshot: {
@@ -475,6 +628,7 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText("No device")).toBeInTheDocument();
+    expect(await screen.findByText("MX Master 3S")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "App settings" })).toBeInTheDocument();
   });
 });

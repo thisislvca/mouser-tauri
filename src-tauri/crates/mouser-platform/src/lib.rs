@@ -134,8 +134,10 @@ impl StaticDeviceCatalog {
             devices: known_device_specs()
                 .into_iter()
                 .map(|spec| DeviceInfo {
-                    key: spec.key,
+                    key: spec.key.clone(),
+                    model_key: spec.key,
                     display_name: spec.display_name.clone(),
+                    nickname: None,
                     product_id: spec.product_ids.first().copied(),
                     product_name: Some(spec.display_name),
                     transport: None,

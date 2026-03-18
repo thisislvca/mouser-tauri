@@ -1,12 +1,14 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use mouser_core::{
-    clamp_dpi, default_action_catalog, default_known_apps, effective_layout_key, layout_by_key,
-    manual_layout_choices, AppConfig, BootstrapPayload, DebugEvent, DebugEventKind, DeviceInfo,
-    EngineSnapshot, EngineStatus, PlatformCapabilities, Profile,
+    build_managed_device_info, clamp_dpi, default_action_catalog, effective_layout_key,
+    known_device_spec_by_key, known_device_specs, layout_by_key, manual_layout_choices, AppConfig,
+    BootstrapPayload, DebugEvent, DebugEventKind, DeviceInfo, EngineSnapshot, EngineStatus,
+    ManagedDevice, PlatformCapabilities, Profile,
 };
 use mouser_platform::{
     macos::{MacOsAppFocusBackend, MacOsHidBackend, MacOsHookBackend},
@@ -22,7 +24,7 @@ pub struct AppRuntime {
     hook_backend: Box<dyn HookBackend>,
     app_focus_backend: Box<dyn AppFocusBackend>,
     config: AppConfig,
-    devices: Vec<DeviceInfo>,
+    detected_devices: Vec<DeviceInfo>,
     selected_device_key: Option<String>,
     frontmost_app: Option<String>,
     enabled: bool,
@@ -44,7 +46,7 @@ impl AppRuntime {
             hook_backend: current_hook_backend(),
             app_focus_backend: current_app_focus_backend(),
             config,
-            devices: Vec::new(),
+            detected_devices: Vec::new(),
             selected_device_key: None,
             frontmost_app: None,
             enabled: true,
@@ -75,7 +77,8 @@ impl AppRuntime {
         BootstrapPayload {
             config: self.config.clone(),
             available_actions: default_action_catalog(),
-            known_apps: default_known_apps(),
+            known_apps: self.catalog.known_apps(),
+            supported_devices: known_device_specs(),
             layouts: self.catalog.all_layouts(),
             engine_snapshot: self.engine_snapshot(),
             platform_capabilities: self.platform_capabilities(),
@@ -170,17 +173,68 @@ impl AppRuntime {
         }
     }
 
-    pub fn select_device(&mut self, device_key: &str) {
-        self.selected_device_key = Some(device_key.to_string());
-        if let Some(device) = self.active_device_raw() {
-            self.config.settings.dpi = clamp_dpi(Some(device), device.current_dpi);
-            self.persist_config();
-        }
+    pub fn add_managed_device(&mut self, model_key: &str) -> Option<String> {
+        let Some(device_id) = self.add_managed_device_record(model_key) else {
+            self.push_debug(
+                DebugEventKind::Warning,
+                format!("Unsupported managed device `{model_key}`"),
+            );
+            return None;
+        };
+
+        self.selected_device_key = Some(device_id.clone());
+        self.config.settings.dpi = self
+            .catalog
+            .clamp_dpi(Some(model_key), self.config.settings.dpi);
+        self.persist_config();
         self.push_debug(
             DebugEventKind::Info,
-            format!("Selected device `{device_key}`"),
+            format!("Added managed device `{model_key}`"),
         );
-        self.log_device_inventory("Device probe");
+        self.log_device_inventory("Device library");
+        Some(device_id)
+    }
+
+    pub fn remove_managed_device(&mut self, device_key: &str) {
+        let before = self.config.managed_devices.len();
+        self.config
+            .managed_devices
+            .retain(|device| device.id != device_key);
+        if before == self.config.managed_devices.len() {
+            return;
+        }
+
+        self.config.settings.device_layout_overrides.remove(device_key);
+        if self.selected_device_key.as_deref() == Some(device_key) {
+            self.selected_device_key = None;
+        }
+        self.ensure_selected_device();
+        self.persist_config();
+        self.push_debug(
+            DebugEventKind::Info,
+            format!("Removed managed device `{device_key}`"),
+        );
+        self.log_device_inventory("Device library");
+    }
+
+    pub fn select_device(&mut self, device_key: &str) {
+        if self
+            .config
+            .managed_devices
+            .iter()
+            .any(|device| device.id == device_key)
+        {
+            self.selected_device_key = Some(device_key.to_string());
+            if let Some(device) = self.active_device_info() {
+                self.config.settings.dpi = clamp_dpi(Some(&device), self.config.settings.dpi);
+                self.persist_config();
+            }
+            self.push_debug(
+                DebugEventKind::Info,
+                format!("Selected device `{device_key}`"),
+            );
+            self.log_device_inventory("Device library");
+        }
     }
 
     pub fn apply_imported_config(&mut self, config: AppConfig) {
@@ -193,7 +247,7 @@ impl AppRuntime {
     }
 
     pub fn devices(&self) -> Vec<DeviceInfo> {
-        self.devices.clone()
+        self.managed_device_infos()
     }
 
     pub fn last_debug_event(&self) -> Option<DebugEvent> {
@@ -213,23 +267,30 @@ impl AppRuntime {
     }
 
     pub fn engine_snapshot(&self) -> EngineSnapshot {
-        let active_device = self.active_device_raw().cloned().map(|mut device| {
-            let layout_key =
-                effective_layout_key(&self.config.settings, Some(&device.key), &device.ui_layout);
-            device.ui_layout = layout_key.clone();
-            if let Some(layout) = layout_by_key(&self.catalog.all_layouts(), &layout_key) {
-                device.image_asset = layout.image_asset;
-            }
-            device
-        });
+        let devices = self.managed_device_infos();
+        let active_device = self
+            .selected_device_key
+            .as_ref()
+            .and_then(|device_key| devices.iter().find(|device| &device.key == device_key))
+            .cloned()
+            .map(|mut device| {
+                let layout_key =
+                    effective_layout_key(&self.config.settings, Some(&device.key), &device.ui_layout);
+                device.ui_layout = layout_key.clone();
+                if let Some(layout) = layout_by_key(&self.catalog.all_layouts(), &layout_key) {
+                    device.image_asset = layout.image_asset;
+                }
+                device
+            });
 
         EngineSnapshot {
-            devices: self.devices.clone(),
+            devices,
+            detected_devices: self.detected_devices.clone(),
             active_device_key: self.selected_device_key.clone(),
-            active_device,
+            active_device: active_device.clone(),
             engine_status: EngineStatus {
                 enabled: self.enabled,
-                connected: self.active_device_raw().is_some(),
+                connected: active_device.as_ref().is_some_and(|device| device.connected),
                 active_profile_id: self.config.active_profile_id.clone(),
                 frontmost_app: self.frontmost_app.clone(),
                 selected_device_key: self.selected_device_key.clone(),
@@ -251,27 +312,22 @@ impl AppRuntime {
     fn apply_config(&mut self, mut config: AppConfig) -> bool {
         let debug_mode_was_enabled = self.config.settings.debug_mode;
         config.ensure_invariants();
-        let selected_device_key = self.selected_device_key.as_deref();
-        config.settings.dpi = self
-            .catalog
-            .clamp_dpi(selected_device_key, config.settings.dpi);
+        let selected_model_key = self.selected_managed_device().map(|device| device.model_key.as_str());
+        config.settings.dpi = self.catalog.clamp_dpi(selected_model_key, config.settings.dpi);
         self.config = config;
+        self.ensure_selected_device();
 
-        if let Some(device_key) = selected_device_key {
-            if let Err(error) = self
-                .hid_backend
-                .set_device_dpi(device_key, self.config.settings.dpi)
-            {
-                self.push_debug(
-                    DebugEventKind::Warning,
-                    format!("Failed to apply DPI to {device_key}: {error}"),
-                );
-            } else if let Some(device) = self
-                .devices
-                .iter_mut()
-                .find(|device| device.key == device_key)
-            {
-                device.current_dpi = self.config.settings.dpi;
+        if let Some(device) = self.active_device_info() {
+            if let Some(backend_key) = self.selected_backend_device_key() {
+                if let Err(error) = self
+                    .hid_backend
+                    .set_device_dpi(backend_key, self.config.settings.dpi)
+                {
+                    self.push_debug(
+                        DebugEventKind::Warning,
+                        format!("Failed to apply DPI to {}: {error}", device.display_name),
+                    );
+                }
             }
         }
 
@@ -285,7 +341,7 @@ impl AppRuntime {
         let previous_frontmost_app = self.frontmost_app.clone();
 
         match self.hid_backend.list_devices() {
-            Ok(devices) => self.replace_devices(devices),
+            Ok(devices) => self.replace_detected_devices(devices),
             Err(error) => self.push_debug(
                 DebugEventKind::Warning,
                 format!("Live HID refresh failed: {error}"),
@@ -313,35 +369,50 @@ impl AppRuntime {
         }
     }
 
-    fn replace_devices(&mut self, devices: Vec<DeviceInfo>) {
+    fn replace_detected_devices(&mut self, devices: Vec<DeviceInfo>) {
         let previous_summary = self.describe_devices();
-        self.devices = devices;
+        let previously_connected = self.connected_managed_device_ids();
+        self.detected_devices = devices;
 
-        if self.devices.is_empty() {
-            self.selected_device_key = None;
-            self.push_debug_if_enabled(DebugEventKind::Info, "No supported Logitech HID devices");
-            return;
+        let mut changed_config = false;
+        if self.config.managed_devices.is_empty() && !self.detected_devices.is_empty() {
+            let detected_model_keys = self
+                .detected_devices
+                .iter()
+                .map(|device| device.model_key.clone())
+                .collect::<Vec<_>>();
+            for model_key in detected_model_keys {
+                if self.add_managed_device_record(&model_key).is_some() {
+                    changed_config = true;
+                }
+            }
         }
 
-        let keep_current = self
-            .selected_device_key
-            .as_ref()
-            .is_some_and(|selected_device_key| {
-                self.devices
-                    .iter()
-                    .any(|device| device.key == *selected_device_key)
-            });
-
-        if !keep_current {
-            self.selected_device_key = self.devices.first().map(|device| device.key.clone());
+        let assignments = self.matched_live_device_indexes();
+        let now = now_ms();
+        for device in &mut self.config.managed_devices {
+            if let Some(index) = assignments.get(&device.id) {
+                let live = &self.detected_devices[*index];
+                let was_connected = previously_connected.contains(&device.id);
+                if !was_connected || device.last_seen_transport != live.transport {
+                    device.last_seen_at_ms = Some(now);
+                    device.last_seen_transport = live.transport.clone();
+                    changed_config = true;
+                }
+            }
         }
 
-        if let Some(device) = self.active_device_raw() {
-            let device_dpi = clamp_dpi(Some(device), device.current_dpi);
+        self.ensure_selected_device();
+        if let Some(device) = self.active_device_info() {
+            let device_dpi = clamp_dpi(Some(&device), self.config.settings.dpi);
             if self.config.settings.dpi != device_dpi {
                 self.config.settings.dpi = device_dpi;
-                self.persist_config();
+                changed_config = true;
             }
+        }
+
+        if changed_config {
+            self.persist_config();
         }
 
         if self.describe_devices() != previous_summary {
@@ -519,37 +590,186 @@ impl AppRuntime {
     }
 
     fn describe_devices(&self) -> String {
-        if self.devices.is_empty() {
-            return "no devices".to_string();
-        }
+        let managed = self.managed_device_infos();
+        let managed_summary = if managed.is_empty() {
+            "no managed devices".to_string()
+        } else {
+            managed
+                .iter()
+                .map(|device| {
+                    format!(
+                        "{} [{}; transport={}; dpi={}]",
+                        device.display_name,
+                        if device.connected { "connected" } else { "added" },
+                        device.transport.as_deref().unwrap_or("unknown"),
+                        device.current_dpi,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
 
-        self.devices
-            .iter()
-            .map(|device| {
-                format!(
-                    "{} (pid={}, transport={}, source={}, dpi={}, battery={})",
-                    device.display_name,
-                    device
-                        .product_id
-                        .map(|product_id| format!("0x{product_id:04x}"))
-                        .unwrap_or_else(|| "n/a".to_string()),
-                    device.transport.as_deref().unwrap_or("unknown"),
-                    device.source.as_deref().unwrap_or("unknown"),
-                    device.current_dpi,
-                    device
-                        .battery_level
-                        .map(|level| format!("{level}%"))
-                        .unwrap_or_else(|| "n/a".to_string()),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" | ")
+        let detected_summary = if self.detected_devices.is_empty() {
+            "no live detections".to_string()
+        } else {
+            self.detected_devices
+                .iter()
+                .map(|device| {
+                    format!(
+                        "{} (model={}, source={}, transport={})",
+                        device.display_name,
+                        device.model_key,
+                        device.source.as_deref().unwrap_or("unknown"),
+                        device.transport.as_deref().unwrap_or("unknown"),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+
+        format!("managed: {managed_summary}; detected: {detected_summary}")
     }
 
-    fn active_device_raw(&self) -> Option<&DeviceInfo> {
-        self.selected_device_key
+    fn add_managed_device_record(&mut self, model_key: &str) -> Option<String> {
+        let spec = known_device_spec_by_key(model_key)?;
+        let id = self.next_managed_device_id(model_key);
+        let device = ManagedDevice {
+            id: id.clone(),
+            model_key: spec.key,
+            display_name: spec.display_name,
+            nickname: None,
+            created_at_ms: now_ms(),
+            last_seen_at_ms: None,
+            last_seen_transport: None,
+        };
+        self.config.managed_devices.push(device);
+
+        if let Some(existing_override) = self
+            .config
+            .settings
+            .device_layout_overrides
+            .get(model_key)
+            .cloned()
+        {
+            self.config
+                .settings
+                .device_layout_overrides
+                .entry(id.clone())
+                .or_insert(existing_override);
+        }
+
+        Some(id)
+    }
+
+    fn next_managed_device_id(&self, model_key: &str) -> String {
+        let base = model_key.replace(' ', "_");
+        let mut suffix = self
+            .config
+            .managed_devices
+            .iter()
+            .filter(|device| device.model_key == model_key)
+            .count()
+            + 1;
+        let mut candidate = format!("{base}-{suffix}");
+        let existing = self
+            .config
+            .managed_devices
+            .iter()
+            .map(|device| device.id.as_str())
+            .collect::<BTreeSet<_>>();
+        while existing.contains(candidate.as_str()) {
+            suffix += 1;
+            candidate = format!("{base}-{suffix}");
+        }
+        candidate
+    }
+
+    fn ensure_selected_device(&mut self) {
+        let keep_current = self
+            .selected_device_key
             .as_ref()
-            .and_then(|device_key| self.devices.iter().find(|device| &device.key == device_key))
+            .is_some_and(|selected_device_key| {
+                self.config
+                    .managed_devices
+                    .iter()
+                    .any(|device| device.id == *selected_device_key)
+            });
+
+        if keep_current {
+            return;
+        }
+
+        let connected_ids = self.connected_managed_device_ids();
+        self.selected_device_key = self
+            .config
+            .managed_devices
+            .iter()
+            .find(|device| connected_ids.contains(&device.id))
+            .map(|device| device.id.clone())
+            .or_else(|| self.config.managed_devices.first().map(|device| device.id.clone()));
+    }
+
+    fn managed_device_infos(&self) -> Vec<DeviceInfo> {
+        let assignments = self.matched_live_device_indexes();
+        self.config
+            .managed_devices
+            .iter()
+            .map(|device| {
+                let live = assignments
+                    .get(&device.id)
+                    .and_then(|index| self.detected_devices.get(*index));
+                build_managed_device_info(device, live, self.config.settings.dpi)
+            })
+            .collect()
+    }
+
+    fn matched_live_device_indexes(&self) -> BTreeMap<String, usize> {
+        let mut assignments = BTreeMap::new();
+        let mut remaining_indexes = (0..self.detected_devices.len()).collect::<Vec<_>>();
+
+        for device in &self.config.managed_devices {
+            if let Some(position) = remaining_indexes.iter().position(|index| {
+                self.detected_devices[*index].model_key == device.model_key
+            }) {
+                let index = remaining_indexes.remove(position);
+                assignments.insert(device.id.clone(), index);
+            }
+        }
+
+        assignments
+    }
+
+    fn connected_managed_device_ids(&self) -> BTreeSet<String> {
+        self.matched_live_device_indexes()
+            .into_keys()
+            .collect::<BTreeSet<_>>()
+    }
+
+    fn selected_managed_device(&self) -> Option<&ManagedDevice> {
+        self.selected_device_key.as_ref().and_then(|device_key| {
+            self.config
+                .managed_devices
+                .iter()
+                .find(|device| &device.id == device_key)
+        })
+    }
+
+    fn selected_live_device_raw(&self) -> Option<&DeviceInfo> {
+        let selected_device_key = self.selected_device_key.as_ref()?;
+        let assignments = self.matched_live_device_indexes();
+        let index = assignments.get(selected_device_key)?;
+        self.detected_devices.get(*index)
+    }
+
+    fn selected_backend_device_key(&self) -> Option<&str> {
+        self.selected_live_device_raw().map(|device| device.key.as_str())
+    }
+
+    fn active_device_info(&self) -> Option<DeviceInfo> {
+        let selected_device_key = self.selected_device_key.as_ref()?;
+        self.managed_device_infos()
+            .into_iter()
+            .find(|device| &device.key == selected_device_key)
     }
 }
 

@@ -9,6 +9,7 @@ import {
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  House,
   BugBeetle,
   MouseLeftClick,
   MouseScroll,
@@ -35,7 +36,9 @@ import {
   bootstrapLoad,
   configSave,
   debugClearLog,
-  devicesSelectMock,
+  devicesAdd,
+  devicesRemove,
+  devicesSelect,
   importLegacyConfig,
   profilesCreate,
   profilesDelete,
@@ -51,6 +54,7 @@ import type {
   DeviceInfo,
   DeviceLayout,
   ImportLegacyRequest,
+  KnownDeviceSpec,
   LogicalControl,
   Profile,
 } from "./lib/types";
@@ -59,10 +63,9 @@ import { cn } from "./lib/utils";
 import { type SectionName, useUiStore } from "./store/uiStore";
 
 const SECTION_ORDER: SectionName[] = [
-  "buttons",
   "devices",
+  "buttons",
   "profiles",
-  "settings",
   "debug",
 ];
 
@@ -78,16 +81,12 @@ const SECTION_META: Record<
     icon: MouseLeftClick,
   },
   devices: {
-    label: "Point + Scroll",
+    label: "Devices",
     icon: MouseScroll,
   },
   profiles: {
     label: "Profiles",
     icon: Stack,
-  },
-  settings: {
-    label: "Settings",
-    icon: SlidersHorizontal,
   },
   debug: {
     label: "Debug",
@@ -119,6 +118,8 @@ function App() {
   const queryClient = useQueryClient();
   useRuntimeEvents();
 
+  const shellMode = useUiStore((state) => state.shellMode);
+  const setShellMode = useUiStore((state) => state.setShellMode);
   const activeSection = useUiStore((state) => state.activeSection);
   const setActiveSection = useUiStore((state) => state.setActiveSection);
   const selectedProfileId = useUiStore((state) => state.selectedProfileId);
@@ -133,6 +134,8 @@ function App() {
   const [newProfileApp, setNewProfileApp] = useState("");
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const [importSourcePath, setImportSourcePath] = useState("");
+  const [isAddDeviceOpen, setAddDeviceOpen] = useState(false);
+  const [isAppSettingsOpen, setAppSettingsOpen] = useState(false);
   const lastActiveProfileIdRef = useRef<string | null>(null);
 
   const bootstrapQuery = useQuery({
@@ -171,14 +174,17 @@ function App() {
     mutationFn: profilesDelete,
     onSuccess: setBootstrapQueryData,
   });
+  const addDeviceMutation = useMutation({
+    mutationFn: devicesAdd,
+    onSuccess: setBootstrapQueryData,
+  });
+  const removeDeviceMutation = useMutation({
+    mutationFn: devicesRemove,
+    onSuccess: setBootstrapQueryData,
+  });
   const selectDeviceMutation = useMutation({
-    mutationFn: devicesSelectMock,
-    onSuccess: (engineSnapshot) => {
-      patchBootstrapQueryData((current) => ({
-        ...current,
-        engineSnapshot,
-      }));
-    },
+    mutationFn: devicesSelect,
+    onSuccess: () => void invalidateBootstrap(),
   });
   const importMutation = useMutation({
     mutationFn: importLegacyConfig,
@@ -229,12 +235,24 @@ function App() {
     setSelectedProfileId,
   ]);
 
+  useEffect(() => {
+    if (shellMode !== "detail" || !bootstrapQuery.data) {
+      return;
+    }
+
+    if (bootstrapQuery.data.engineSnapshot.devices.length === 0) {
+      setShellMode("dashboard");
+    }
+  }, [bootstrapQuery.data, setShellMode, shellMode]);
+
   const bootstrap = bootstrapQuery.data;
   const isMutating =
     configMutation.isPending ||
     createProfileMutation.isPending ||
     updateProfileMutation.isPending ||
     deleteProfileMutation.isPending ||
+    addDeviceMutation.isPending ||
+    removeDeviceMutation.isPending ||
     selectDeviceMutation.isPending ||
     importMutation.isPending ||
     clearDebugLogMutation.isPending;
@@ -292,6 +310,15 @@ function App() {
     configMutation.mutate(nextConfig);
   };
 
+  const openDeviceDetail = (deviceKey: string, section: SectionName = "devices") => {
+    selectDeviceMutation.mutate(deviceKey, {
+      onSuccess: () => {
+        setShellMode("detail");
+        setActiveSection(section);
+      },
+    });
+  };
+
   const createProfileFromDraft = () => {
     const labelSource =
       newProfileLabel.trim() ||
@@ -316,201 +343,211 @@ function App() {
     setActiveSection("profiles");
   };
 
-  const shellTitle = activeDevice?.displayName ?? "Mouser";
+  const shellTitle = activeDevice?.displayName ?? SECTION_META[activeSection].label;
   const batteryLabel =
     activeDevice?.batteryLevel != null ? `${activeDevice.batteryLevel}%` : "N/A";
   const connectionStatus = activeDevice?.connected
     ? { tone: "success" as const, value: "Connected" }
-    : { tone: "neutral" as const, value: "No device" };
+    : activeDevice
+      ? { tone: "neutral" as const, value: "Added" }
+      : { tone: "neutral" as const, value: "No device" };
+  const isDashboard = shellMode === "dashboard";
 
   return (
     <main className="min-h-screen bg-[var(--app-bg)] text-[var(--foreground)] antialiased">
-      <div className="min-h-screen lg:pl-[18rem]">
-        <aside className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:flex lg:w-[18rem] lg:flex-col lg:bg-[var(--sidebar)] lg:px-5 lg:py-6">
-          <div className="px-3 pb-6 pt-3">
-            <p className="text-[13px] font-semibold uppercase tracking-[0.28em] text-[var(--sidebar-foreground)]">
-              Mouser
-            </p>
-          </div>
-
-          <nav className="space-y-1.5">
-            {SECTION_ORDER.map((section) => (
-              <SectionNavButton
-                active={activeSection === section}
-                icon={SECTION_META[section].icon}
-                key={section}
-                label={SECTION_META[section].label}
-                onClick={() => setActiveSection(section)}
-              />
-            ))}
-          </nav>
-
-          <div className="mt-auto">
-            <Card className="bg-[var(--sidebar-surface)]">
-              <CardContent className="flex items-center justify-between px-4 py-4">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--muted-foreground)]">
-                    Battery
-                  </p>
-                  <p className="mt-1 text-sm font-semibold text-[var(--foreground)]">{batteryLabel}</p>
-                </div>
-                <StatusPill tone={connectionStatus.tone} value={connectionStatus.value} />
-              </CardContent>
-            </Card>
-          </div>
-        </aside>
-
-        <div className="min-h-screen p-3 sm:p-4 lg:p-5">
-          <div className="flex min-h-[calc(100vh-1.5rem)] flex-col overflow-hidden rounded-[32px] bg-[var(--surface)] shadow-[0_36px_120px_rgba(15,23,42,0.10)] ring-1 ring-[var(--border-soft)] sm:min-h-[calc(100vh-2rem)]">
-            <header className="border-b border-[var(--border)] px-5 py-5 sm:px-8">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-              <div className="min-w-0">
-                <h2 className="truncate text-[24px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
-                  {shellTitle}
-                </h2>
+      {isDashboard ? (
+        <DashboardShell
+          activeDevice={activeDevice}
+          engineSnapshot={engineSnapshot}
+          isAddDeviceOpen={isAddDeviceOpen}
+          isMutating={isMutating}
+          onAddDevice={(modelKey) => addDeviceMutation.mutate(modelKey)}
+          onCloseAddDevice={() => setAddDeviceOpen(false)}
+          onOpenAddDevice={() => setAddDeviceOpen(true)}
+          onOpenAppSettings={() => setAppSettingsOpen(true)}
+          onOpenDevice={(deviceKey, section) => openDeviceDetail(deviceKey, section)}
+          onRemoveDevice={removeDeviceMutation.mutate}
+          supportedDevices={bootstrap.supportedDevices}
+        />
+      ) : (
+        <div className="min-h-screen lg:pl-[18rem]">
+          <aside className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:flex lg:w-[18rem] lg:flex-col lg:bg-[var(--sidebar)] lg:px-5 lg:py-6">
+            <div className="space-y-5 px-3 pb-6 pt-3">
+              <Button
+                className="w-full justify-start"
+                onClick={() => setShellMode("dashboard")}
+                variant="ghost"
+              >
+                <House size={18} />
+                Dashboard
+              </Button>
+              <div>
+                <p className="text-[13px] font-semibold uppercase tracking-[0.28em] text-[var(--sidebar-foreground)]">
+                  Mouser
+                </p>
+                <p className="mt-2 text-sm font-semibold text-[var(--foreground)]">
+                  {activeDevice?.displayName ?? "Device"}
+                </p>
               </div>
+            </div>
 
-                <div className="flex shrink-0 items-center gap-3">
-                  {isMutating && <StatusPill tone="accent" value="Applying" />}
-                  <Button onClick={() => setActiveSection("profiles")} variant="outline">
-                    + Add application
-                  </Button>
-                </div>
-              </div>
+            <nav className="space-y-1.5">
+              {SECTION_ORDER.map((section) => (
+                <SectionNavButton
+                  active={activeSection === section}
+                  icon={SECTION_META[section].icon}
+                  key={section}
+                  label={SECTION_META[section].label}
+                  onClick={() => setActiveSection(section)}
+                />
+              ))}
+            </nav>
 
-              <div className="mt-5 lg:hidden">
-                <ScrollArea className="w-full whitespace-nowrap">
-                  <div className="flex gap-2 pb-1">
-                    {SECTION_ORDER.map((section) => (
-                      <SectionNavButton
-                        active={activeSection === section}
-                        compact
-                        icon={SECTION_META[section].icon}
-                        key={section}
-                        label={SECTION_META[section].label}
-                        onClick={() => setActiveSection(section)}
-                      />
-                    ))}
+            <div className="mt-auto space-y-3">
+              <Card className="bg-[var(--sidebar-surface)]">
+                <CardContent className="flex items-center justify-between px-4 py-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--muted-foreground)]">
+                      Battery
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-[var(--foreground)]">{batteryLabel}</p>
                   </div>
-                </ScrollArea>
-              </div>
-            </header>
+                  <StatusPill tone={connectionStatus.tone} value={connectionStatus.value} />
+                </CardContent>
+              </Card>
+              <Button
+                className="w-full"
+                onClick={() => setAppSettingsOpen(true)}
+                variant="outline"
+              >
+                <SlidersHorizontal size={18} />
+                App settings
+              </Button>
+            </div>
+          </aside>
 
-            <div className="min-h-0 flex-1">
-              <ScrollArea className="h-full">
-                <section className="min-w-0 px-5 py-6 sm:px-8 sm:py-8">
-                  {activeSection === "buttons" && (
-                    <ButtonsView
-                      actionLookup={actionLookup}
-                      activeDevice={activeDevice}
-                      activeLayout={activeLayout}
-                      config={config}
-                      groupedActions={groupedActions}
-                      mappingEngineReady={platformCapabilities.mappingEngineReady}
-                      platformCapabilities={platformCapabilities}
-                      profile={selectedProfile}
-                      updateSelectedProfile={updateSelectedProfile}
-                    />
-                  )}
+          <div className="min-h-screen p-3 sm:p-4 lg:p-5">
+            <div className="flex min-h-[calc(100vh-1.5rem)] flex-col overflow-hidden rounded-[32px] bg-[var(--surface)] shadow-[0_36px_120px_rgba(15,23,42,0.10)] ring-1 ring-[var(--border-soft)] sm:min-h-[calc(100vh-2rem)]">
+              <header className="border-b border-[var(--border)] px-5 py-5 sm:px-8">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <h2 className="truncate text-[24px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+                      {shellTitle}
+                    </h2>
+                  </div>
 
-                  {activeSection === "devices" && (
-                    <PointAndScrollView
-                      actionLookup={actionLookup}
-                      activeDevice={activeDevice}
-                      activeLayout={activeLayout}
-                      bootstrap={bootstrap}
-                      config={config}
-                      engineSnapshot={engineSnapshot}
-                      layoutChoices={bootstrap.manualLayoutChoices}
-                      profile={selectedProfile}
-                      saveSettings={saveSettings}
-                      selectDevice={selectDeviceMutation.mutate}
-                    />
-                  )}
+                  <div className="flex shrink-0 items-center gap-3">
+                    {isMutating && <StatusPill tone="accent" value="Applying" />}
+                    <Button onClick={() => setAppSettingsOpen(true)} variant="outline">
+                      App settings
+                    </Button>
+                    <Button onClick={() => setAddDeviceOpen(true)} variant="outline">
+                      + Add device
+                    </Button>
+                  </div>
+                </div>
 
-                  {activeSection === "profiles" && (
-                    <ProfilesView
-                      deleteProfile={deleteProfileMutation.mutate}
-                      knownApps={knownApps}
-                      profile={selectedProfile}
-                      profiles={config.profiles}
-                      setSelectedProfileId={setSelectedProfileId}
-                      updateSelectedProfile={updateSelectedProfile}
-                    />
-                  )}
+                <div className="mt-5 lg:hidden">
+                  <div className="flex gap-2 pb-1">
+                    <Button onClick={() => setShellMode("dashboard")} size="sm" variant="ghost">
+                      <House size={16} />
+                      Dashboard
+                    </Button>
+                    <ScrollArea className="w-full whitespace-nowrap">
+                      <div className="flex gap-2 pb-1">
+                        {SECTION_ORDER.map((section) => (
+                          <SectionNavButton
+                            active={activeSection === section}
+                            compact
+                            icon={SECTION_META[section].icon}
+                            key={section}
+                            label={SECTION_META[section].label}
+                            onClick={() => setActiveSection(section)}
+                          />
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  </div>
+                </div>
+              </header>
 
-                  {activeSection === "settings" && (
-                    <div className="space-y-6">
-                      <Card>
-                        <CardHeader className="grid gap-4 pb-0 md:grid-cols-[minmax(0,1fr)_220px] md:items-end">
-                          <div>
-                            <CardTitle className="text-[26px]">New Profile</CardTitle>
-                          </div>
-                          <div className="md:justify-self-end">
-                            <Button className="w-full md:w-auto" onClick={createProfileFromDraft}>
-                              Create profile
-                            </Button>
-                          </div>
-                        </CardHeader>
-                        <CardContent className="pt-6">
-                          <div className="grid gap-3 md:grid-cols-2">
-                            <Input
-                              list="known-apps"
-                              placeholder="Known app executable"
-                              value={newProfileApp}
-                              onChange={(event) => setNewProfileApp(event.currentTarget.value)}
-                            />
-                            <Input
-                              placeholder="Optional custom label"
-                              value={newProfileLabel}
-                              onChange={(event) => setNewProfileLabel(event.currentTarget.value)}
-                            />
-                          </div>
-                          <datalist id="known-apps">
-                            {knownApps.map((app) => (
-                              <option key={app.executable} value={app.executable}>
-                                {app.label}
-                              </option>
-                            ))}
-                          </datalist>
-                        </CardContent>
-                      </Card>
-
-                      <SettingsView
+              <div className="min-h-0 flex-1">
+                <ScrollArea className="h-full">
+                  <section className="min-w-0 px-5 py-6 sm:px-8 sm:py-8">
+                    {activeSection === "buttons" && (
+                      <ButtonsView
+                        actionLookup={actionLookup}
                         activeDevice={activeDevice}
+                        activeLayout={activeLayout}
                         config={config}
+                        groupedActions={groupedActions}
+                        mappingEngineReady={platformCapabilities.mappingEngineReady}
                         platformCapabilities={platformCapabilities}
+                        profile={selectedProfile}
+                        updateSelectedProfile={updateSelectedProfile}
+                      />
+                    )}
+
+                    {activeSection === "devices" && (
+                      <DeviceDetailView
+                        activeDevice={activeDevice}
+                        activeLayout={activeLayout}
+                        config={config}
+                        layoutChoices={bootstrap.manualLayoutChoices}
                         saveSettings={saveSettings}
                       />
-                    </div>
-                  )}
+                    )}
 
-                  {activeSection === "debug" && (
-                    <DebugView
-                      clearDebugLog={clearDebugLogMutation.mutate}
-                      config={config}
-                      debugEvents={runtimeEvents}
-                      importDraft={importDraft}
-                      importSourcePath={importSourcePath}
-                      importWarnings={importWarnings}
-                      isClearing={clearDebugLogMutation.isPending}
-                      onImport={() =>
-                        importMutation.mutate(
-                          buildImportRequest(importSourcePath, importDraft),
-                        )
-                      }
-                      platformCapabilities={platformCapabilities}
-                      saveSettings={saveSettings}
-                      setImportDraft={setImportDraft}
-                      setImportSourcePath={setImportSourcePath}
-                    />
-                  )}
-                </section>
-              </ScrollArea>
+                    {activeSection === "profiles" && (
+                      <ProfilesView
+                        createProfileFromDraft={createProfileFromDraft}
+                        deleteProfile={deleteProfileMutation.mutate}
+                        knownApps={knownApps}
+                        newProfileApp={newProfileApp}
+                        newProfileLabel={newProfileLabel}
+                        profile={selectedProfile}
+                        profiles={config.profiles}
+                        setNewProfileApp={setNewProfileApp}
+                        setNewProfileLabel={setNewProfileLabel}
+                        setSelectedProfileId={setSelectedProfileId}
+                        updateSelectedProfile={updateSelectedProfile}
+                      />
+                    )}
+
+                    {activeSection === "debug" && (
+                      <DebugView
+                        clearDebugLog={clearDebugLogMutation.mutate}
+                        config={config}
+                        debugEvents={runtimeEvents}
+                        importDraft={importDraft}
+                        importSourcePath={importSourcePath}
+                        importWarnings={importWarnings}
+                        isClearing={clearDebugLogMutation.isPending}
+                        onImport={() =>
+                          importMutation.mutate(
+                            buildImportRequest(importSourcePath, importDraft),
+                          )
+                        }
+                        platformCapabilities={platformCapabilities}
+                        saveSettings={saveSettings}
+                        setImportDraft={setImportDraft}
+                        setImportSourcePath={setImportSourcePath}
+                      />
+                    )}
+                  </section>
+                </ScrollArea>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
+      <AppSettingsDialog
+        config={config}
+        onClose={() => setAppSettingsOpen(false)}
+        open={isAppSettingsOpen}
+        platformCapabilities={platformCapabilities}
+        saveSettings={saveSettings}
+      />
     </main>
   );
 }
@@ -611,192 +648,294 @@ function ButtonsView(props: {
   );
 }
 
-function PointAndScrollView(props: {
-  actionLookup: Map<string, ActionDefinition>;
-  bootstrap: BootstrapPayload;
-  config: AppConfig;
+function DashboardShell(props: {
   activeDevice: DeviceInfo | null;
-  activeLayout: DeviceLayout;
   engineSnapshot: BootstrapPayload["engineSnapshot"];
-  layoutChoices: BootstrapPayload["manualLayoutChoices"];
-  profile: Profile;
-  saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
-  selectDevice: (deviceKey: string) => void;
+  isAddDeviceOpen: boolean;
+  isMutating: boolean;
+  onAddDevice: (modelKey: string) => void;
+  onCloseAddDevice: () => void;
+  onOpenAddDevice: () => void;
+  onOpenAppSettings: () => void;
+  onOpenDevice: (deviceKey: string, section: SectionName) => void;
+  onRemoveDevice: (deviceKey: string) => void;
+  supportedDevices: KnownDeviceSpec[];
 }) {
-  const layoutOptions = props.layoutChoices.map(
-    (choice) =>
-      ({
-        label: choice.label,
-        value: choice.key,
-      }) satisfies SelectOption,
+  const detectedModelKeys = new Set(
+    props.engineSnapshot.detectedDevices.map((device) => device.modelKey),
   );
+  const managedModelKeys = new Set(
+    props.engineSnapshot.devices.map((device) => device.modelKey),
+  );
+  const unmanagedDetectedDevices = props.engineSnapshot.detectedDevices.filter(
+    (device) => !managedModelKeys.has(device.modelKey),
+  );
+  const selectedDeviceKey =
+    props.engineSnapshot.activeDeviceKey ?? props.activeDevice?.key ?? null;
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_380px]">
-        <StagePanel
-          title={props.activeDevice?.displayName ?? "Point and scroll"}
-        >
-          {props.activeDevice ? (
-            <DeviceCanvas
-              actionLookup={props.actionLookup}
-              device={props.activeDevice}
-              layout={props.activeLayout}
-              profile={props.profile}
-            />
-          ) : (
-            <EmptyStage
-              body="Select or connect a Logitech device to tune DPI and wheel behavior."
-              title="No active device"
-            />
-          )}
-        </StagePanel>
-
-        <Panel
-          title="Tuning"
-        >
-          <div className="space-y-4">
-            <Field label="DPI">
-              <Input
-                data-testid="dpi-input"
-                max={props.activeDevice?.dpiMax ?? 8000}
-                min={props.activeDevice?.dpiMin ?? 200}
-                type="number"
-                value={props.config.settings.dpi}
-                onChange={(event) =>
-                  props.saveSettings((nextConfig) => {
-                    nextConfig.settings.dpi = Number(event.currentTarget.value);
-                  })
-                }
-              />
-            </Field>
-
-            <Field label="Manual layout override">
-              <Select
-                ariaLabel="Manual layout override"
-                options={layoutOptions}
-                value={props.activeDevice ? props.config.settings.deviceLayoutOverrides[props.activeDevice.key] ?? "" : ""}
-                onValueChange={(value) =>
-                  props.saveSettings((nextConfig) => {
-                    if (!props.activeDevice) {
-                      return;
-                    }
-
-                    if (value) {
-                      nextConfig.settings.deviceLayoutOverrides[props.activeDevice.key] =
-                        value;
-                    } else {
-                      delete nextConfig.settings.deviceLayoutOverrides[props.activeDevice.key];
-                    }
-                  })
-                }
-              />
-            </Field>
-
-            <SwitchRow
-              checked={props.config.settings.invertHorizontalScroll}
-              label="Invert thumb wheel"
-              onChange={(value) =>
-                props.saveSettings((nextConfig) => {
-                  nextConfig.settings.invertHorizontalScroll = value;
-                })
-              }
-            />
-            <SwitchRow
-              checked={props.config.settings.invertVerticalScroll}
-              label="Invert vertical scroll"
-              onChange={(value) =>
-                props.saveSettings((nextConfig) => {
-                  nextConfig.settings.invertVerticalScroll = value;
-                })
-              }
-            />
-            <Field label="Gesture threshold">
-              <Input
-                type="number"
-                value={props.config.settings.gestureThreshold}
-                onChange={(event) =>
-                  props.saveSettings((nextConfig) => {
-                    nextConfig.settings.gestureThreshold = Number(event.currentTarget.value);
-                  })
-                }
-              />
-            </Field>
-            <Field label="Gesture deadzone">
-              <Input
-                type="number"
-                value={props.config.settings.gestureDeadzone}
-                onChange={(event) =>
-                  props.saveSettings((nextConfig) => {
-                    nextConfig.settings.gestureDeadzone = Number(event.currentTarget.value);
-                  })
-                }
-              />
-            </Field>
+    <div className="min-h-screen bg-white">
+      <div className="mx-auto max-w-[1680px] px-6 py-8 sm:px-10 sm:py-10">
+        <header className="flex flex-wrap items-start justify-between gap-6">
+          <div>
+            <p className="text-[38px] font-semibold tracking-[-0.06em] text-[var(--foreground)] sm:text-[48px]">
+              {currentGreeting()}
+            </p>
+            <p className="mt-3 max-w-2xl text-sm text-[var(--muted-foreground)]">
+              {props.engineSnapshot.devices.length > 0
+                ? "Your device library lives here. Pick a device to tune it, remap buttons, or inspect its live status."
+                : "Add supported devices to build your library before you start customizing them."}
+            </p>
           </div>
-        </Panel>
-      </div>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <Panel
-          title="Devices"
-        >
-          <div className="space-y-3">
-            {props.engineSnapshot.devices.length > 0 ? (
-              props.engineSnapshot.devices.map((device) => (
-                <button
-                  className={[
-                    "w-full rounded-[24px] px-4 py-4 text-left transition ring-1",
-                    device.key === props.engineSnapshot.activeDeviceKey
-                      ? "bg-[var(--card)] text-[var(--foreground)] ring-[#c3d8fb] shadow-[0_16px_34px_rgba(37,99,235,0.10)]"
-                      : "bg-[var(--card-muted)] ring-[var(--border)] hover:bg-[var(--card)]",
-                  ].join(" ")}
-                  key={device.key}
-                  onClick={() => props.selectDevice(device.key)}
-                  type="button"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-semibold">{device.displayName}</p>
-                      <p
+          <div className="flex flex-wrap items-center gap-3">
+            {props.isMutating && <StatusPill tone="accent" value="Applying" />}
+            <Button onClick={props.onOpenAddDevice} variant="ghost">
+              + Add device
+            </Button>
+            <Button onClick={props.onOpenAppSettings} variant="ghost">
+              App settings
+            </Button>
+          </div>
+        </header>
+
+        <div className="mt-10 rounded-[40px] bg-white">
+          {props.engineSnapshot.devices.length > 0 ? (
+            <div className="grid gap-10 sm:grid-cols-2 xl:grid-cols-4">
+              {props.engineSnapshot.devices.map((device) => (
+                <div className="min-w-0" key={device.key}>
+                  <button
+                    className="group w-full text-center"
+                    data-testid={
+                      device.key === selectedDeviceKey
+                        ? "device-layout-card"
+                        : undefined
+                    }
+                    onClick={() => props.onOpenDevice(device.key, "devices")}
+                    type="button"
+                  >
+                    <div
+                      className={[
+                        "mx-auto flex h-[320px] w-full items-center justify-center rounded-[36px] transition-all duration-300",
+                        device.key === selectedDeviceKey
+                          ? "bg-[radial-gradient(circle_at_center,rgba(15,23,42,0.06),rgba(255,255,255,0)_68%)]"
+                          : "opacity-80 hover:opacity-100",
+                      ].join(" ")}
+                    >
+                      <img
+                        alt={device.displayName}
                         className={[
-                          "mt-1 text-xs",
-                          device.key === props.engineSnapshot.activeDeviceKey
-                            ? "text-[#717787]"
-                            : "text-[#717787]",
+                          "max-h-[260px] w-auto object-contain drop-shadow-[0_24px_28px_rgba(15,23,42,0.18)] transition-transform duration-300",
+                          device.key === selectedDeviceKey
+                            ? "scale-[1.02]"
+                            : "group-hover:scale-[1.02]",
                         ].join(" ")}
-                      >
-                        {device.transport ?? "Unknown transport"}
+                        data-testid={
+                          device.key === selectedDeviceKey
+                            ? "device-layout-image"
+                            : undefined
+                        }
+                        src={device.imageAsset}
+                      />
+                    </div>
+
+                    <div className="mt-5 flex items-center justify-center gap-2">
+                      <StatusPill
+                        tone={device.connected ? "success" : "neutral"}
+                        value={
+                          device.batteryLevel != null
+                            ? `${device.batteryLevel}%`
+                            : device.connected
+                              ? "Connected"
+                              : "Added"
+                        }
+                      />
+                      <StatusPill
+                        tone={device.connected ? "success" : "neutral"}
+                        value={device.connected ? "Live" : "Waiting"}
+                      />
+                    </div>
+
+                    <p className="mt-4 text-base font-semibold text-[var(--foreground)]">
+                      {device.displayName}
+                    </p>
+                  </button>
+
+                  <div className="mt-3 flex items-center justify-center gap-2">
+                    <Button
+                      onClick={() => {
+                        props.onOpenDevice(device.key, "buttons");
+                      }}
+                      size="sm"
+                      variant="outline"
+                    >
+                      Buttons
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        props.onOpenDevice(device.key, "devices");
+                      }}
+                      size="sm"
+                      variant="outline"
+                    >
+                      Tune
+                    </Button>
+                    <Button
+                      onClick={() => props.onRemoveDevice(device.key)}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex min-h-[420px] flex-col items-center justify-center text-center">
+              <h3 className="text-[28px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+                No devices added
+              </h3>
+              <p className="mt-3 max-w-md text-sm text-[var(--muted-foreground)]">
+                Build your device library first, then select a device when you want to customize it.
+              </p>
+              <Button className="mt-6" onClick={props.onOpenAddDevice} variant="outline">
+                + Add device
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {unmanagedDetectedDevices.length > 0 && (
+          <div className="mt-8 rounded-[32px] border border-[var(--border)] bg-[var(--card-muted)] px-6 py-6">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
+                  Detected Now
+                </p>
+                <p className="mt-2 text-sm text-[var(--muted-foreground)]">
+                  Devices the backend can see right now but that are not yet in your library.
+                </p>
+              </div>
+              <StatusPill tone="neutral" value={String(unmanagedDetectedDevices.length)} />
+            </div>
+
+            <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {unmanagedDetectedDevices.map((device) => (
+                <div
+                  className="flex items-center justify-between gap-3 rounded-[24px] bg-white px-4 py-4 ring-1 ring-[var(--border)]"
+                  key={`${device.modelKey}-${device.transport ?? "unknown"}`}
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-[var(--foreground)]">
+                      {device.displayName}
+                    </p>
+                    <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
+                      {device.transport ?? "Unknown transport"}
+                    </p>
+                  </div>
+                  <Button onClick={() => props.onAddDevice(device.modelKey)} variant="outline">
+                    Add
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <AddDeviceModal
+          detectedModelKeys={detectedModelKeys}
+          managedDevices={props.engineSnapshot.devices}
+          onAddDevice={props.onAddDevice}
+          onClose={props.onCloseAddDevice}
+          open={props.isAddDeviceOpen}
+          supportedDevices={props.supportedDevices}
+        />
+      </div>
+    </div>
+  );
+}
+
+function AddDeviceModal(props: {
+  detectedModelKeys: Set<string>;
+  managedDevices: DeviceInfo[];
+  onAddDevice: (modelKey: string) => void;
+  onClose: () => void;
+  open: boolean;
+  supportedDevices: KnownDeviceSpec[];
+}) {
+  if (!props.open) {
+    return null;
+  }
+
+  const managedCounts = props.managedDevices.reduce<Map<string, number>>((counts, device) => {
+    counts.set(device.modelKey, (counts.get(device.modelKey) ?? 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(15,23,42,0.28)] px-4">
+      <Card className="max-h-[85vh] w-full max-w-4xl overflow-hidden">
+        <CardHeader className="flex flex-row items-start justify-between gap-4 border-b border-[var(--border)] pb-5">
+          <div>
+            <CardTitle className="text-[24px]">Add Device</CardTitle>
+            <CardDescription className="mt-2">
+              Add supported devices to your managed library, then connect them when ready.
+            </CardDescription>
+          </div>
+          <Button onClick={props.onClose} variant="ghost">
+            <X size={16} />
+          </Button>
+        </CardHeader>
+
+        <ScrollArea className="max-h-[70vh]">
+          <CardContent className="grid gap-4 px-6 py-6 sm:grid-cols-2">
+            {props.supportedDevices.map((device) => {
+              const addedCount = managedCounts.get(device.key) ?? 0;
+              const isDetected = props.detectedModelKeys.has(device.key);
+              return (
+                <div
+                  className="rounded-[28px] border border-[var(--border)] bg-[var(--card-muted)] p-5"
+                  key={device.key}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-[var(--foreground)]">
+                        {device.displayName}
+                      </p>
+                      <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                        DPI {device.dpiMin}-{device.dpiMax}
                       </p>
                     </div>
-                    <StatusPill
-                      tone={device.connected ? "success" : "neutral"}
-                      value={device.connected ? "Active" : "Seen"}
-                    />
+                    {isDetected ? (
+                      <StatusPill tone="success" value="Detected" />
+                    ) : addedCount > 0 ? (
+                      <StatusPill tone="neutral" value={`Added ${addedCount}`} />
+                    ) : (
+                      <StatusPill tone="neutral" value="Supported" />
+                    )}
                   </div>
-                </button>
-              ))
-            ) : (
-              <EmptyState
-                body="No Logitech HID interface was detected by the current backend."
-                title="No devices"
-              />
-            )}
-          </div>
-        </Panel>
 
-        <Panel
-          title="Runtime"
-        >
-          <div className="space-y-3">
-            <CapabilityRow label="Active HID backend" value={props.bootstrap.platformCapabilities.activeHidBackend} />
-            <CapabilityRow label="Active hook backend" value={props.bootstrap.platformCapabilities.activeHookBackend} />
-            <CapabilityRow label="Active focus backend" value={props.bootstrap.platformCapabilities.activeFocusBackend} />
-            <CapabilityRow label="hidapi" value={props.bootstrap.platformCapabilities.hidapiAvailable ? "Ready" : "Unavailable"} />
-            <CapabilityRow label="iokit" value={props.bootstrap.platformCapabilities.iokitAvailable ? "Ready" : "Not ported"} />
-          </div>
-        </Panel>
-      </div>
+                  <div className="mt-5 flex items-center justify-between gap-3">
+                    <p className="text-xs text-[var(--muted-foreground)]">
+                      {device.aliases[0] ?? "Supported in Mouser"}
+                    </p>
+                    <Button
+                      onClick={() => {
+                        props.onAddDevice(device.key);
+                        props.onClose();
+                      }}
+                      variant="outline"
+                    >
+                      Add device
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </CardContent>
+        </ScrollArea>
+      </Card>
     </div>
   );
 }
@@ -805,54 +944,95 @@ function ProfilesView(props: {
   profiles: Profile[];
   profile: Profile;
   knownApps: BootstrapPayload["knownApps"];
+  createProfileFromDraft: () => void;
+  newProfileApp: string;
+  newProfileLabel: string;
+  setNewProfileApp: (value: string) => void;
+  setNewProfileLabel: (value: string) => void;
   setSelectedProfileId: (profileId: string | null) => void;
   updateSelectedProfile: (mutateProfile: (profile: Profile) => void) => void;
   deleteProfile: (profileId: string) => void;
 }) {
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
-      <Panel
-        title="Profiles"
-      >
-        <div className="space-y-3">
-          {props.profiles.map((profile) => {
-            const profileApp = profile.appMatchers[0]?.value
-              ? props.knownApps.find((app) => app.executable === profile.appMatchers[0]?.value) ?? null
-              : null;
-            return (
-              <button
-                className={[
-                  "flex w-full items-center justify-between gap-4 rounded-[24px] px-4 py-4 text-left transition ring-1",
-                  profile.id === props.profile.id
-                    ? "bg-[var(--card)] shadow-[0_16px_34px_rgba(37,99,235,0.10)] ring-[#c3d8fb]"
-                    : "bg-[var(--card-muted)] ring-[var(--border)] hover:bg-[var(--card)]",
-                ].join(" ")}
-                key={profile.id}
-                onClick={() => props.setSelectedProfileId(profile.id)}
-                type="button"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-[var(--foreground)]">
-                    {profile.label}
-                  </p>
-                  <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
-                    {profile.appMatchers.map((matcher) => matcher.value).join(", ") || "All applications"}
-                  </p>
-                </div>
-                {profileApp?.iconAsset ? (
-                  <img
-                    alt={profileApp.label}
-                    className="h-11 w-11 rounded-2xl border border-[var(--border)] bg-white object-cover"
-                    src={profileApp.iconAsset}
-                  />
-                ) : (
-                  <StatusPill tone="neutral" value={profile.id} />
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </Panel>
+      <div className="space-y-6">
+        <Panel title="New Profile">
+          <div className="space-y-4">
+            <Field label="Label">
+              <Input
+                placeholder="Design apps"
+                value={props.newProfileLabel}
+                onChange={(event) => props.setNewProfileLabel(event.currentTarget.value)}
+              />
+            </Field>
+
+            <Field label="App executable (optional)">
+              <Input
+                list="known-apps"
+                placeholder="Code.exe"
+                value={props.newProfileApp}
+                onChange={(event) => props.setNewProfileApp(event.currentTarget.value)}
+              />
+            </Field>
+            <datalist id="known-apps">
+              {props.knownApps.map((app) => (
+                <option key={app.executable} value={app.executable}>
+                  {app.label}
+                </option>
+              ))}
+            </datalist>
+
+            <Button
+              className="w-full"
+              disabled={!props.newProfileLabel.trim() && !props.newProfileApp.trim()}
+              onClick={props.createProfileFromDraft}
+            >
+              Create profile
+            </Button>
+          </div>
+        </Panel>
+
+        <Panel title="Profiles">
+          <div className="space-y-3">
+            {props.profiles.map((profile) => {
+              const profileApp = profile.appMatchers[0]?.value
+                ? props.knownApps.find((app) => app.executable === profile.appMatchers[0]?.value) ?? null
+                : null;
+              return (
+                <button
+                  className={[
+                    "flex w-full items-center justify-between gap-4 rounded-[24px] px-4 py-4 text-left transition ring-1",
+                    profile.id === props.profile.id
+                      ? "bg-[var(--card)] shadow-[0_16px_34px_rgba(37,99,235,0.10)] ring-[#c3d8fb]"
+                      : "bg-[var(--card-muted)] ring-[var(--border)] hover:bg-[var(--card)]",
+                  ].join(" ")}
+                  key={profile.id}
+                  onClick={() => props.setSelectedProfileId(profile.id)}
+                  type="button"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-[var(--foreground)]">
+                      {profile.label}
+                    </p>
+                    <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
+                      {profile.appMatchers.map((matcher) => matcher.value).join(", ") || "All applications"}
+                    </p>
+                  </div>
+                  {profileApp?.iconAsset ? (
+                    <img
+                      alt={profileApp.label}
+                      className="h-11 w-11 rounded-2xl border border-[var(--border)] bg-white object-cover"
+                      src={profileApp.iconAsset}
+                    />
+                  ) : (
+                    <StatusPill tone="neutral" value={profile.id} />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </Panel>
+      </div>
 
       <Panel
         title="Profile"
@@ -915,12 +1095,189 @@ function ProfilesView(props: {
   );
 }
 
-function SettingsView(props: {
+function DeviceDetailView(props: {
   config: AppConfig;
   activeDevice: DeviceInfo | null;
+  activeLayout: DeviceLayout;
+  layoutChoices: BootstrapPayload["manualLayoutChoices"];
+  saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
+}) {
+  if (!props.activeDevice) {
+    return (
+      <EmptyStage
+        body="Pick a device from the dashboard to tune scroll behavior, DPI, and layout handling."
+        title="No device selected"
+      />
+    );
+  }
+
+  const activeDevice = props.activeDevice;
+  const layoutOptions = props.layoutChoices.map(
+    (choice) =>
+      ({
+        label: choice.label,
+        value: choice.key,
+      }) satisfies SelectOption,
+  );
+
+  return (
+    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="space-y-6">
+        <StagePanel
+          subtitle="This page is device-specific. App-wide behavior lives in App settings."
+          title={activeDevice.displayName}
+        >
+          <div className="rounded-[30px] bg-white/90 p-6 ring-1 ring-[var(--border)]">
+            <div className="flex min-h-[420px] flex-col items-center justify-center rounded-[26px] bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.98),rgba(241,244,250,0.90)_46%,rgba(236,240,246,0.74))] px-8 py-10 text-center">
+              <img
+                alt={activeDevice.displayName}
+                className="max-h-[300px] w-auto object-contain drop-shadow-[0_28px_44px_rgba(15,23,42,0.16)]"
+                data-testid="device-layout-image"
+                src={props.activeLayout.imageAsset}
+              />
+              <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+                <StatusPill
+                  tone={activeDevice.connected ? "success" : "neutral"}
+                  value={
+                    activeDevice.batteryLevel != null
+                      ? `${activeDevice.batteryLevel}% battery`
+                      : activeDevice.connected
+                        ? "Connected"
+                        : "Added"
+                  }
+                />
+                <StatusPill
+                  tone={activeDevice.connected ? "success" : "neutral"}
+                  value={activeDevice.transport ?? "Unknown transport"}
+                />
+                <StatusPill tone="neutral" value={`DPI ${activeDevice.dpiMin}-${activeDevice.dpiMax}`} />
+              </div>
+            </div>
+          </div>
+        </StagePanel>
+
+        <Panel title={`${activeDevice.displayName} Tuning`}>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="DPI">
+              <Input
+                data-testid="dpi-input"
+                max={activeDevice.dpiMax}
+                min={activeDevice.dpiMin}
+                type="number"
+                value={props.config.settings.dpi}
+                onChange={(event) =>
+                  props.saveSettings((nextConfig) => {
+                    nextConfig.settings.dpi = Number(event.currentTarget.value);
+                  })
+                }
+              />
+            </Field>
+
+            <Field label="Manual layout override">
+              <Select
+                ariaLabel="Manual layout override"
+                options={layoutOptions}
+                value={
+                  props.config.settings.deviceLayoutOverrides[activeDevice.key] ??
+                  props.config.settings.deviceLayoutOverrides[activeDevice.modelKey] ??
+                  ""
+                }
+                onValueChange={(value) =>
+                  props.saveSettings((nextConfig) => {
+                    if (value) {
+                      nextConfig.settings.deviceLayoutOverrides[activeDevice.key] = value;
+                    } else {
+                      delete nextConfig.settings.deviceLayoutOverrides[activeDevice.key];
+                    }
+                  })
+                }
+              />
+            </Field>
+
+            <SwitchRow
+              checked={props.config.settings.invertHorizontalScroll}
+              label="Invert thumb wheel"
+              onChange={(value) =>
+                props.saveSettings((nextConfig) => {
+                  nextConfig.settings.invertHorizontalScroll = value;
+                })
+              }
+            />
+            <SwitchRow
+              checked={props.config.settings.invertVerticalScroll}
+              label="Invert vertical scroll"
+              onChange={(value) =>
+                props.saveSettings((nextConfig) => {
+                  nextConfig.settings.invertVerticalScroll = value;
+                })
+              }
+            />
+            <Field label="Gesture threshold">
+              <Input
+                type="number"
+                value={props.config.settings.gestureThreshold}
+                onChange={(event) =>
+                  props.saveSettings((nextConfig) => {
+                    nextConfig.settings.gestureThreshold = Number(event.currentTarget.value);
+                  })
+                }
+              />
+            </Field>
+            <Field label="Gesture deadzone">
+              <Input
+                type="number"
+                value={props.config.settings.gestureDeadzone}
+                onChange={(event) =>
+                  props.saveSettings((nextConfig) => {
+                    nextConfig.settings.gestureDeadzone = Number(event.currentTarget.value);
+                  })
+                }
+              />
+            </Field>
+          </div>
+        </Panel>
+      </div>
+
+      <Panel title="Status">
+        <div className="space-y-3">
+          <CapabilityRow label="Selected DPI" value={`${props.config.settings.dpi}`} />
+          <CapabilityRow label="Transport" value={activeDevice.transport ?? "Unknown"} />
+          <CapabilityRow label="Battery" value={activeDevice.batteryLevel != null ? `${activeDevice.batteryLevel}%` : "N/A"} />
+          <CapabilityRow label="Layout family" value={props.activeLayout.label} />
+          <CapabilityRow label="Product" value={activeDevice.productName ?? activeDevice.displayName} />
+          <CapabilityRow label="Status" value={activeDevice.connected ? "Connected" : "Added"} />
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function AppSettingsDialog(props: {
+  config: AppConfig;
+  open: boolean;
+  onClose: () => void;
   platformCapabilities: BootstrapPayload["platformCapabilities"];
   saveSettings: (mutateConfig: (nextConfig: AppConfig) => void) => void;
 }) {
+  useEffect(() => {
+    if (!props.open) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        props.onClose();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [props.onClose, props.open]);
+
+  if (!props.open) {
+    return null;
+  }
+
   const appearanceOptions = [
     { label: "System", value: "system" },
     { label: "Light", value: "light" },
@@ -928,88 +1285,110 @@ function SettingsView(props: {
   ] satisfies SelectOption[];
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
-      <Panel
-        title="Settings"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(15,23,42,0.30)] px-4"
+      onClick={props.onClose}
+    >
+      <Card
+        className="max-h-[88vh] w-full max-w-4xl overflow-hidden"
+        onClick={(event) => event.stopPropagation()}
       >
-        <div className="grid gap-4 md:grid-cols-2">
-          <SwitchRow
-            checked={props.config.settings.startMinimized}
-            label="Start minimized"
-            onChange={(value) =>
-              props.saveSettings((nextConfig) => {
-                nextConfig.settings.startMinimized = value;
-              })
-            }
-          />
-          <SwitchRow
-            checked={props.config.settings.startAtLogin}
-            label="Start at login"
-            onChange={(value) =>
-              props.saveSettings((nextConfig) => {
-                nextConfig.settings.startAtLogin = value;
-              })
-            }
-          />
-          <SwitchRow
-            checked={props.config.settings.debugMode}
-            label="Enable debug mode"
-            onChange={(value) =>
-              props.saveSettings((nextConfig) => {
-                nextConfig.settings.debugMode = value;
-              })
-            }
-          />
-          <Field label="Appearance mode">
-            <Select
-              ariaLabel="Appearance mode"
-              options={appearanceOptions}
-              value={props.config.settings.appearanceMode}
-              onValueChange={(value) =>
-                props.saveSettings((nextConfig) => {
-                  nextConfig.settings.appearanceMode =
-                    value as AppConfig["settings"]["appearanceMode"];
-                })
-              }
-            />
-          </Field>
-          <Field label="Gesture timeout (ms)">
-            <Input
-              type="number"
-              value={props.config.settings.gestureTimeoutMs}
-              onChange={(event) =>
-                props.saveSettings((nextConfig) => {
-                  nextConfig.settings.gestureTimeoutMs = Number(event.currentTarget.value);
-                })
-              }
-            />
-          </Field>
-          <Field label="Gesture cooldown (ms)">
-            <Input
-              type="number"
-              value={props.config.settings.gestureCooldownMs}
-              onChange={(event) =>
-                props.saveSettings((nextConfig) => {
-                  nextConfig.settings.gestureCooldownMs = Number(event.currentTarget.value);
-                })
-              }
-            />
-          </Field>
-        </div>
-      </Panel>
+        <CardHeader className="flex flex-row items-start justify-between gap-4 border-b border-[var(--border)] pb-5">
+          <div>
+            <CardTitle className="text-[24px]">App Settings</CardTitle>
+            <CardDescription className="mt-2">
+              Settings here affect Mouser globally, not just the currently selected device.
+            </CardDescription>
+          </div>
+          <Button aria-label="Close app settings" onClick={props.onClose} variant="ghost">
+            <X size={16} />
+          </Button>
+        </CardHeader>
 
-      <Panel
-        title="Status"
-      >
-        <div className="space-y-3">
-          <CapabilityRow label="Platform" value={props.platformCapabilities.platform} />
-          <CapabilityRow label="Selected DPI" value={`${props.config.settings.dpi}`} />
-          <CapabilityRow label="Live HID" value={props.platformCapabilities.liveHidAvailable ? "Ready" : "Fallback"} />
-          <CapabilityRow label="Live remapping" value={props.platformCapabilities.mappingEngineReady ? "Ready" : "Not yet"} />
-          <CapabilityRow label="Selected device" value={props.activeDevice?.displayName ?? "None"} />
-          <CapabilityRow label="Tray" value={props.platformCapabilities.trayReady ? "Ready" : "Pending"} />
-        </div>
-      </Panel>
+        <ScrollArea className="max-h-[76vh]">
+          <CardContent className="grid gap-6 px-6 py-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="space-y-6">
+              <Panel title="General">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <SwitchRow
+                    checked={props.config.settings.startMinimized}
+                    label="Start minimized"
+                    onChange={(value) =>
+                      props.saveSettings((nextConfig) => {
+                        nextConfig.settings.startMinimized = value;
+                      })
+                    }
+                  />
+                  <SwitchRow
+                    checked={props.config.settings.startAtLogin}
+                    label="Start at login"
+                    onChange={(value) =>
+                      props.saveSettings((nextConfig) => {
+                        nextConfig.settings.startAtLogin = value;
+                      })
+                    }
+                  />
+                  <SwitchRow
+                    checked={props.config.settings.debugMode}
+                    label="Enable debug mode"
+                    onChange={(value) =>
+                      props.saveSettings((nextConfig) => {
+                        nextConfig.settings.debugMode = value;
+                      })
+                    }
+                  />
+                  <Field label="Appearance mode">
+                    <Select
+                      ariaLabel="Appearance mode"
+                      options={appearanceOptions}
+                      value={props.config.settings.appearanceMode}
+                      onValueChange={(value) =>
+                        props.saveSettings((nextConfig) => {
+                          nextConfig.settings.appearanceMode =
+                            value as AppConfig["settings"]["appearanceMode"];
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Gesture timeout (ms)">
+                    <Input
+                      type="number"
+                      value={props.config.settings.gestureTimeoutMs}
+                      onChange={(event) =>
+                        props.saveSettings((nextConfig) => {
+                          nextConfig.settings.gestureTimeoutMs = Number(event.currentTarget.value);
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Gesture cooldown (ms)">
+                    <Input
+                      type="number"
+                      value={props.config.settings.gestureCooldownMs}
+                      onChange={(event) =>
+                        props.saveSettings((nextConfig) => {
+                          nextConfig.settings.gestureCooldownMs = Number(event.currentTarget.value);
+                        })
+                      }
+                    />
+                  </Field>
+                </div>
+              </Panel>
+            </div>
+
+            <Panel title="Platform">
+              <div className="space-y-3">
+                <CapabilityRow label="Platform" value={props.platformCapabilities.platform} />
+                <CapabilityRow label="Live HID" value={props.platformCapabilities.liveHidAvailable ? "Ready" : "Fallback"} />
+                <CapabilityRow label="Live remapping" value={props.platformCapabilities.mappingEngineReady ? "Ready" : "Not yet"} />
+                <CapabilityRow label="Tray" value={props.platformCapabilities.trayReady ? "Ready" : "Pending"} />
+                <CapabilityRow label="HID backend" value={props.platformCapabilities.activeHidBackend} />
+                <CapabilityRow label="Focus backend" value={props.platformCapabilities.activeFocusBackend} />
+              </div>
+            </Panel>
+          </CardContent>
+        </ScrollArea>
+      </Card>
     </div>
   );
 }
@@ -1444,58 +1823,6 @@ function SheetActionField(props: {
   );
 }
 
-function DeviceCanvas(props: {
-  device: DeviceInfo;
-  layout: DeviceLayout;
-  profile: Profile;
-  actionLookup: Map<string, ActionDefinition>;
-}) {
-  return (
-    <div
-      className="rounded-[28px] bg-white p-6 ring-1 ring-[var(--border)]"
-      data-testid="device-layout-card"
-    >
-      <div className="relative mx-auto min-h-[500px] w-full max-w-[920px]">
-        <div
-          className="relative mx-auto"
-          style={{ width: props.layout.imageWidth, height: props.layout.imageHeight }}
-        >
-          <img
-            alt={props.layout.label}
-            className="absolute inset-0 h-full w-full object-contain drop-shadow-[0_24px_36px_rgba(15,23,42,0.12)]"
-            data-testid="device-layout-image"
-            src={props.layout.imageAsset}
-          />
-          {props.layout.hotspots.map((hotspot) => {
-            const summary = summarizeHotspot(props.profile, hotspot.control, props.actionLookup);
-            const labelX = hotspot.normX * props.layout.imageWidth + hotspot.labelOffX;
-            const labelY = hotspot.normY * props.layout.imageHeight + hotspot.labelOffY;
-            return (
-              <div key={hotspot.control}>
-                <span
-                  className="absolute z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-white bg-[#111318] shadow-[0_10px_24px_rgba(15,23,42,0.14)]"
-                  style={{
-                    left: hotspot.normX * props.layout.imageWidth,
-                    top: hotspot.normY * props.layout.imageHeight,
-                  }}
-                  title={hotspot.label}
-                />
-                <div
-                  className="absolute z-20 max-w-[240px] rounded-[22px] bg-white px-4 py-3 shadow-[0_12px_24px_rgba(15,23,42,0.08)] ring-1 ring-[var(--border)]"
-                  style={{ left: labelX, top: labelY }}
-                >
-                  <p className="text-sm font-semibold text-[var(--foreground)]">{hotspot.label}</p>
-                  <p className="mt-1 text-xs leading-5 text-[var(--muted-foreground)]">{summary}</p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function StatusPill(props: {
   tone: "success" | "accent" | "neutral" | "warning";
   value: string;
@@ -1795,10 +2122,15 @@ function cloneProfile(profile: Profile): Profile {
   };
 }
 
+function cloneManagedDevice(device: NonNullable<AppConfig["managedDevices"]>[number]) {
+  return { ...device };
+}
+
 function cloneConfig(config: AppConfig): AppConfig {
   return {
     ...config,
     profiles: config.profiles.map(cloneProfile),
+    managedDevices: (config.managedDevices ?? []).map(cloneManagedDevice),
     settings: {
       ...config.settings,
       deviceLayoutOverrides: { ...config.settings.deviceLayoutOverrides },
@@ -1832,7 +2164,9 @@ function resolveActiveLayout(
     return layouts.find((layout) => layout.key === "generic_mouse") ?? layouts[0];
   }
 
-  const overrideKey = config.settings.deviceLayoutOverrides[device.key];
+  const overrideKey =
+    config.settings.deviceLayoutOverrides[device.key] ??
+    config.settings.deviceLayoutOverrides[device.modelKey];
   const targetKey = overrideKey || device.uiLayout;
   return layouts.find((layout) => layout.key === targetKey) ?? layouts[0];
 }
@@ -1856,6 +2190,17 @@ function buildImportRequest(
     sourcePath: trimmedSourcePath || null,
     rawJson: trimmedSourcePath ? null : rawJson,
   };
+}
+
+function currentGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) {
+    return "Good Morning";
+  }
+  if (hour < 18) {
+    return "Good Afternoon";
+  }
+  return "Good Evening";
 }
 
 export default App;

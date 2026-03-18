@@ -144,7 +144,37 @@ fn devices_list(state: State<'_, AppState>) -> CommandResult<Vec<DeviceInfo>> {
 
 #[tauri::command]
 #[specta::specta]
-fn devices_select_mock(
+fn devices_add(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    model_key: String,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.add_managed_device(&model_key);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn devices_remove(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_key: String,
+) -> Result<BootstrapPayload, String> {
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
+        runtime.remove_managed_device(&device_key);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
+    emit_runtime_events(&app, &payload, debug_event)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn devices_select(
     app: AppHandle,
     state: State<'_, AppState>,
     device_key: String,
@@ -155,6 +185,16 @@ fn devices_select_mock(
     })?;
     emit_runtime_events(&app, &payload, debug_event)?;
     Ok(payload.engine_snapshot)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn devices_select_mock(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_key: String,
+) -> Result<EngineSnapshot, String> {
+    devices_select(app, state, device_key)
 }
 
 #[tauri::command]
@@ -393,6 +433,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             profiles_update,
             profiles_delete,
             devices_list,
+            devices_add,
+            devices_remove,
+            devices_select,
             devices_select_mock,
             import_legacy_config,
             debug_clear_log
