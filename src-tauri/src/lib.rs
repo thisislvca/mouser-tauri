@@ -6,8 +6,8 @@ use std::{
 };
 
 use mouser_core::{
-    AppConfig, BootstrapPayload, DebugEvent, DeviceInfo, EngineSnapshot, LegacyImportReport,
-    DeviceSettings, Profile, Settings,
+    AppConfig, BootstrapPayload, DebugEvent, DeviceInfo, DeviceSettings, EngineSnapshot,
+    LegacyImportReport, Profile, Settings,
 };
 use mouser_import::{import_legacy_config as import_legacy_payload, ImportSource};
 use runtime::AppRuntime;

@@ -55,6 +55,7 @@ pub struct HookBackendEvent {
 pub struct HookBackendSettings {
     pub invert_horizontal_scroll: bool,
     pub invert_vertical_scroll: bool,
+    pub macos_thumb_wheel_simulate_trackpad: bool,
     pub gesture_threshold: u16,
     pub gesture_deadzone: u16,
     pub gesture_timeout_ms: u32,
@@ -63,10 +64,17 @@ pub struct HookBackendSettings {
 }
 
 impl HookBackendSettings {
-    pub fn from_app_and_device(settings: &Settings, device_settings: &DeviceSettings) -> Self {
+    pub fn from_app_and_device(
+        settings: &Settings,
+        device_settings: &DeviceSettings,
+        device_model_key: Option<&str>,
+    ) -> Self {
         Self {
             invert_horizontal_scroll: device_settings.invert_horizontal_scroll,
             invert_vertical_scroll: device_settings.invert_vertical_scroll,
+            macos_thumb_wheel_simulate_trackpad: cfg!(target_os = "macos")
+                && device_settings.macos_thumb_wheel_simulate_trackpad
+                && supports_macos_thumb_wheel_trackpad_model(device_model_key),
             gesture_threshold: device_settings.gesture_threshold,
             gesture_deadzone: device_settings.gesture_deadzone,
             gesture_timeout_ms: device_settings.gesture_timeout_ms,
@@ -74,6 +82,11 @@ impl HookBackendSettings {
             debug_mode: settings.debug_mode,
         }
     }
+}
+
+fn supports_macos_thumb_wheel_trackpad_model(model_key: Option<&str>) -> bool {
+    model_key
+        .is_some_and(|model_key| model_key == "mx_master" || model_key.starts_with("mx_master_"))
 }
 
 pub(crate) const HOOK_EVENT_BUFFER_LIMIT: usize = 128;
@@ -379,6 +392,7 @@ fn migrate_app_config_value(value: &mut Value) {
         .and_then(Value::as_object)
         .cloned();
 
+    let had_device_defaults = root.get("deviceDefaults").is_some();
     let mut device_defaults = root
         .get("deviceDefaults")
         .cloned()
@@ -394,8 +408,9 @@ fn migrate_app_config_value(value: &mut Value) {
             "gestureTimeoutMs",
             "gestureCooldownMs",
         ] {
-            if defaults.get(field).is_none() {
-                if let Some(legacy_value) = legacy_settings.and_then(|settings| settings.get(field)) {
+            if !had_device_defaults || defaults.get(field).is_none() {
+                if let Some(legacy_value) = legacy_settings.and_then(|settings| settings.get(field))
+                {
                     defaults.insert(field.to_string(), legacy_value.clone());
                 }
             }
@@ -824,8 +839,7 @@ pub mod macos {
             dpi,
             fingerprint,
         )
-        .key
-            == device_key
+        .key == device_key
     }
 
     #[cfg(target_os = "macos")]
@@ -1030,6 +1044,7 @@ pub mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mouser_core::default_settings;
 
     fn unique_test_path(name: &str) -> PathBuf {
         let timestamp_ms = SystemTime::now()
@@ -1068,6 +1083,30 @@ mod tests {
             events.last().map(|event| event.message.as_str()),
             Some("event-132")
         );
+    }
+
+    #[test]
+    fn thumb_wheel_trackpad_setting_only_enables_for_mx_master_models() {
+        let settings = default_settings();
+        let mut device_settings = default_device_settings();
+        device_settings.macos_thumb_wheel_simulate_trackpad = true;
+
+        let mx_master = HookBackendSettings::from_app_and_device(
+            &settings,
+            &device_settings,
+            Some("mx_master_3s"),
+        );
+        let generic_mouse =
+            HookBackendSettings::from_app_and_device(&settings, &device_settings, Some("mouse"));
+        let unknown_device =
+            HookBackendSettings::from_app_and_device(&settings, &device_settings, None);
+
+        assert_eq!(
+            mx_master.macos_thumb_wheel_simulate_trackpad,
+            cfg!(target_os = "macos")
+        );
+        assert!(!generic_mouse.macos_thumb_wheel_simulate_trackpad);
+        assert!(!unknown_device.macos_thumb_wheel_simulate_trackpad);
     }
 
     #[test]
@@ -1143,11 +1182,13 @@ mod tests {
         assert_eq!(config.device_defaults.dpi, 1600);
         assert!(config.device_defaults.invert_horizontal_scroll);
         assert!(config.device_defaults.invert_vertical_scroll);
+        assert!(!config.device_defaults.macos_thumb_wheel_simulate_trackpad);
         assert_eq!(config.device_defaults.gesture_threshold, 75);
         assert_eq!(config.managed_devices.len(), 1);
         let managed = &config.managed_devices[0];
         assert_eq!(managed.settings.dpi, 1600);
         assert!(managed.settings.invert_horizontal_scroll);
+        assert!(!managed.settings.macos_thumb_wheel_simulate_trackpad);
         assert_eq!(
             managed.settings.manual_layout_override.as_deref(),
             Some("mx_master")

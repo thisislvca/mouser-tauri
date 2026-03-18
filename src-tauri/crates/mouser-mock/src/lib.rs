@@ -123,7 +123,10 @@ impl MockRuntime {
                 last_seen_transport: device.transport,
             })
             .collect();
-        let selected_device_key = config.managed_devices.first().map(|device| device.id.clone());
+        let selected_device_key = config
+            .managed_devices
+            .first()
+            .map(|device| device.id.clone());
         let config_store = MemoryConfigStore::new(config);
         let mut runtime = Self {
             catalog,
@@ -283,7 +286,9 @@ impl MockRuntime {
             active_device: active_device.clone(),
             engine_status: EngineStatus {
                 enabled: self.enabled,
-                connected: active_device.as_ref().is_some_and(|device| device.connected),
+                connected: active_device
+                    .as_ref()
+                    .is_some_and(|device| device.connected),
                 active_profile_id: self.config().active_profile_id,
                 frontmost_app: self.frontmost_app.clone(),
                 selected_device_key: self.selected_device_key.clone(),
@@ -310,8 +315,7 @@ impl MockRuntime {
             .filter(|device| device.model_key == selected_key || device.key == selected_key)
             .map(|mut device| {
                 device.connected = true;
-                device.current_dpi =
-                    clamp_dpi(Some(&device), self.selected_device_settings().dpi);
+                device.current_dpi = clamp_dpi(Some(&device), self.selected_device_settings().dpi);
                 device
             })
             .collect();
@@ -341,8 +345,10 @@ impl MockRuntime {
         let selected_profile_id = self
             .selected_managed_device()
             .and_then(|device| device.profile_id);
-        let changed =
-            config.sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_deref());
+        let changed = config.sync_active_profile(
+            selected_profile_id.as_deref(),
+            self.frontmost_app.as_deref(),
+        );
         if changed {
             self.config_store.save(&config).unwrap();
         }

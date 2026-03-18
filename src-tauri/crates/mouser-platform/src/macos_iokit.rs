@@ -134,8 +134,8 @@ pub fn enumerate_iokit_infos() -> Result<Vec<MacOsIoKitInfo>, PlatformError> {
             let transport = get_string_property(device_ref as IOHIDDeviceRef, "Transport");
             let product_string = get_string_property(device_ref as IOHIDDeviceRef, "Product");
             let serial_number = get_string_property(device_ref as IOHIDDeviceRef, "SerialNumber");
-            let location_id =
-                get_number_property(device_ref as IOHIDDeviceRef, "LocationID").map(|value| value as u32);
+            let location_id = get_number_property(device_ref as IOHIDDeviceRef, "LocationID")
+                .map(|value| value as u32);
             let dedupe_key = (
                 product_id,
                 usage_page,

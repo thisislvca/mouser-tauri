@@ -184,6 +184,7 @@ impl WindowsHookShared {
                 &HookBackendSettings::from_app_and_device(
                     &config.settings,
                     &config.device_defaults,
+                    None,
                 ),
                 &profile,
                 true,
@@ -1178,8 +1179,7 @@ fn device_key_matches(
         dpi,
         fingerprint,
     )
-    .key
-        == device_key
+    .key == device_key
 }
 
 #[cfg(target_os = "windows")]

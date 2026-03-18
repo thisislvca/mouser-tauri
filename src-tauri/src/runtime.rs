@@ -257,7 +257,10 @@ impl AppRuntime {
         let mut config = self.config.clone();
         config.device_defaults = settings;
         self.apply_config(config);
-        self.push_debug(DebugEventKind::Info, "Updated default settings for new devices");
+        self.push_debug(
+            DebugEventKind::Info,
+            "Updated default settings for new devices",
+        );
     }
 
     pub fn update_managed_device_settings(&mut self, device_key: &str, settings: DeviceSettings) {
@@ -278,11 +281,7 @@ impl AppRuntime {
         self.log_dpi_state("DPI snapshot");
     }
 
-    pub fn update_managed_device_profile(
-        &mut self,
-        device_key: &str,
-        profile_id: Option<String>,
-    ) {
+    pub fn update_managed_device_profile(&mut self, device_key: &str, profile_id: Option<String>) {
         let mut config = self.config.clone();
         let Some(device) = config
             .managed_devices
@@ -300,11 +299,7 @@ impl AppRuntime {
         self.log_active_profile_snapshot("Active bindings");
     }
 
-    pub fn update_managed_device_nickname(
-        &mut self,
-        device_key: &str,
-        nickname: Option<String>,
-    ) {
+    pub fn update_managed_device_nickname(&mut self, device_key: &str, nickname: Option<String>) {
         let mut config = self.config.clone();
         let Some(device) = config
             .managed_devices
@@ -378,7 +373,9 @@ impl AppRuntime {
             active_device: active_device.clone(),
             engine_status: EngineStatus {
                 enabled: self.enabled,
-                connected: active_device.as_ref().is_some_and(|device| device.connected),
+                connected: active_device
+                    .as_ref()
+                    .is_some_and(|device| device.connected),
                 active_profile_id: self.config.active_profile_id.clone(),
                 frontmost_app: self.frontmost_app.clone(),
                 selected_device_key: self.selected_device_key.clone(),
@@ -423,10 +420,7 @@ impl AppRuntime {
 
         if let Some(device) = active_device.as_ref() {
             if let Some(backend_key) = self.selected_backend_device_key() {
-                if let Err(error) = self
-                    .hid_backend
-                    .set_device_dpi(backend_key, configured_dpi)
-                {
+                if let Err(error) = self.hid_backend.set_device_dpi(backend_key, configured_dpi) {
                     self.push_debug(
                         DebugEventKind::Warning,
                         format!("Failed to apply DPI to {}: {error}", device.display_name),
@@ -564,10 +558,10 @@ impl AppRuntime {
         let selected_profile_id = self
             .selected_managed_device()
             .and_then(|device| device.profile_id.clone());
-        if self
-            .config
-            .sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_deref())
-        {
+        if self.config.sync_active_profile(
+            selected_profile_id.as_deref(),
+            self.frontmost_app.as_deref(),
+        ) {
             self.persist_config();
             self.push_debug(
                 DebugEventKind::Info,
@@ -588,6 +582,8 @@ impl AppRuntime {
         let hook_settings = HookBackendSettings::from_app_and_device(
             &self.config.settings,
             self.selected_device_settings(),
+            self.selected_managed_device()
+                .map(|device| device.model_key.as_str()),
         );
 
         if let Err(error) = self
@@ -750,8 +746,7 @@ impl AppRuntime {
                 } else {
                     format!(
                         "configured_vs_live=drift(configured={}, live={})",
-                        configured_dpi,
-                        device.current_dpi,
+                        configured_dpi, device.current_dpi,
                     )
                 }
             })
@@ -808,7 +803,11 @@ impl AppRuntime {
                     format!(
                         "{} [{}; transport={}; dpi={}]",
                         device.display_name,
-                        if device.connected { "connected" } else { "added" },
+                        if device.connected {
+                            "connected"
+                        } else {
+                            "added"
+                        },
                         device.transport.as_deref().unwrap_or("unknown"),
                         device.current_dpi,
                     )
@@ -903,7 +902,12 @@ impl AppRuntime {
             .iter()
             .find(|device| connected_ids.contains(&device.id))
             .map(|device| device.id.clone())
-            .or_else(|| self.config.managed_devices.first().map(|device| device.id.clone()));
+            .or_else(|| {
+                self.config
+                    .managed_devices
+                    .first()
+                    .map(|device| device.id.clone())
+            });
     }
 
     fn managed_device_infos(&self) -> Vec<DeviceInfo> {
@@ -991,7 +995,8 @@ impl AppRuntime {
     }
 
     fn selected_backend_device_key(&self) -> Option<&str> {
-        self.selected_live_device_raw().map(|device| device.key.as_str())
+        self.selected_live_device_raw()
+            .map(|device| device.key.as_str())
     }
 
     fn active_device_info(&self) -> Option<DeviceInfo> {
