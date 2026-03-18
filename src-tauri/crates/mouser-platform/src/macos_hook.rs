@@ -1,11 +1,12 @@
-use crate::{HookBackend, HookBackendEvent, HookCapabilities, PlatformError};
 #[cfg(target_os = "macos")]
 use crate::macos_iokit::{enumerate_iokit_infos, MacOsIoKitInfo, MacOsNativeHidDevice};
-use mouser_core::{Profile, Settings};
-#[cfg(target_os = "macos")]
-use mouser_core::{
-    build_connected_device_info, Binding, DebugEventKind, LogicalControl,
+use crate::{
+    horizontal_scroll_control, push_bounded_hook_event, HookBackend, HookBackendEvent,
+    HookCapabilities, PlatformError,
 };
+#[cfg(target_os = "macos")]
+use mouser_core::{build_connected_device_info, Binding, DebugEventKind, LogicalControl};
+use mouser_core::{Profile, Settings};
 
 #[cfg(not(target_os = "macos"))]
 pub struct MacOsHookBackend;
@@ -14,6 +15,12 @@ pub struct MacOsHookBackend;
 impl MacOsHookBackend {
     pub fn new() -> Self {
         Self
+    }
+}
+
+impl Default for MacOsHookBackend {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -47,27 +54,27 @@ impl HookBackend for MacOsHookBackend {
 
 #[cfg(target_os = "macos")]
 use std::{
-    panic::{self, AssertUnwindSafe},
     collections::BTreeMap,
+    panic::{self, AssertUnwindSafe},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Arc, Mutex, RwLock,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 #[cfg(target_os = "macos")]
+use core_foundation::runloop::CFRunLoop;
+#[cfg(target_os = "macos")]
 use core_foundation::{
     base::TCFType,
     string::{CFString, CFStringRef},
 };
-#[cfg(target_os = "macos")]
-use core_foundation::runloop::CFRunLoop;
 use core_graphics::{
     event::{
-        CallbackResult, CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions,
-        CGEventTapPlacement, CGEventType, EventField, KeyCode, ScrollEventUnit,
+        CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions,
+        CGEventTapPlacement, CGEventType, CallbackResult, EventField, KeyCode, ScrollEventUnit,
     },
     event_source::{CGEventSource, CGEventSourceStateID},
 };
@@ -106,6 +113,8 @@ const GESTURE_RAWXY_FLAGS: u8 = 0x33;
 const GESTURE_UNDIVERT_FLAGS: u8 = 0x02;
 #[cfg(target_os = "macos")]
 const GESTURE_UNDIVERT_RAWXY_FLAGS: u8 = 0x22;
+#[cfg(target_os = "macos")]
+type HidppMessage = (u8, u8, u8, u8, Vec<u8>);
 
 #[cfg(target_os = "macos")]
 const NX_PLAY: isize = 16;
@@ -268,7 +277,7 @@ struct GestureTrackingState {
 
 #[cfg(target_os = "macos")]
 struct MacOsHookShared {
-    config: Mutex<MacOsHookConfig>,
+    config: RwLock<Arc<MacOsHookConfig>>,
     gesture_state: Mutex<GestureTrackingState>,
     events: Mutex<Vec<HookBackendEvent>>,
     intercepting: AtomicBool,
@@ -279,7 +288,7 @@ struct MacOsHookShared {
 impl MacOsHookShared {
     fn new() -> Self {
         Self {
-            config: Mutex::new(MacOsHookConfig::default()),
+            config: RwLock::new(Arc::new(MacOsHookConfig::default())),
             gesture_state: Mutex::new(GestureTrackingState::default()),
             events: Mutex::new(Vec::new()),
             intercepting: AtomicBool::new(false),
@@ -289,38 +298,31 @@ impl MacOsHookShared {
 
     fn push_event(&self, kind: DebugEventKind, message: impl Into<String>) {
         let mut events = self.events.lock().unwrap();
-        events.push(HookBackendEvent {
-            kind,
-            message: message.into(),
-        });
-        if events.len() > 128 {
-            let excess = events.len() - 128;
-            events.drain(0..excess);
-        }
+        push_bounded_hook_event(&mut events, kind, message);
     }
 
     fn push_debug(&self, message: impl Into<String>) {
-        let debug_enabled = self.config.lock().unwrap().debug_mode;
+        let debug_enabled = self.config.read().unwrap().debug_mode;
         if debug_enabled {
             self.push_event(DebugEventKind::Info, message);
         }
     }
 
     fn push_gesture_debug(&self, message: impl Into<String>) {
-        let debug_enabled = self.config.lock().unwrap().debug_mode;
+        let debug_enabled = self.config.read().unwrap().debug_mode;
         if debug_enabled {
             self.push_event(DebugEventKind::Gesture, message);
         }
     }
 
     fn reconfigure(&self, settings: &Settings, profile: &Profile, enabled: bool) {
-        let next = MacOsHookConfig::from_runtime(settings, profile, enabled);
+        let next = Arc::new(MacOsHookConfig::from_runtime(settings, profile, enabled));
         let changed = {
-            let mut config = self.config.lock().unwrap();
-            if *config == next {
+            let mut config = self.config.write().unwrap();
+            if config.as_ref() == next.as_ref() {
                 false
             } else {
-                *config = next.clone();
+                *config = Arc::clone(&next);
                 true
             }
         };
@@ -341,8 +343,8 @@ impl MacOsHookShared {
         }
     }
 
-    fn current_config(&self) -> MacOsHookConfig {
-        self.config.lock().unwrap().clone()
+    fn current_config(&self) -> Arc<MacOsHookConfig> {
+        Arc::clone(&self.config.read().unwrap())
     }
 
     fn gesture_capture_requested(&self) -> bool {
@@ -412,15 +414,9 @@ impl MacOsHookShared {
         let config = self.current_config();
         let horizontal_fixed =
             event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_2);
-        if horizontal_fixed != 0 {
-            let control = if horizontal_fixed > 0 {
-                LogicalControl::HscrollRight
-            } else {
-                LogicalControl::HscrollLeft
-            };
-
+        if let Some(control) = horizontal_scroll_control(horizontal_fixed as i32) {
             if config.handles_control(control) {
-                self.dispatch_control_action(&config, control);
+                self.dispatch_control_action(config.as_ref(), control);
                 return CallbackResult::Drop;
             }
         }
@@ -460,7 +456,13 @@ impl MacOsHookShared {
             return CallbackResult::Drop;
         }
 
-        self.accumulate_gesture_delta(&config, &mut state, delta_x, delta_y, GestureInputSource::EventTap);
+        self.accumulate_gesture_delta(
+            &config,
+            &mut state,
+            delta_x,
+            delta_y,
+            GestureInputSource::EventTap,
+        );
         CallbackResult::Drop
     }
 
@@ -573,11 +575,9 @@ impl MacOsHookShared {
         }
 
         let now = Instant::now();
-        let idle_timed_out = state
-            .last_move_at
-            .is_some_and(|last_move_at| {
-                now.duration_since(last_move_at).as_millis() > u128::from(config.gesture_timeout_ms)
-            });
+        let idle_timed_out = state.last_move_at.is_some_and(|last_move_at| {
+            now.duration_since(last_move_at).as_millis() > u128::from(config.gesture_timeout_ms)
+        });
         if idle_timed_out {
             self.push_gesture_debug(format!(
                 "Gesture segment reset after {} ms",
@@ -949,7 +949,10 @@ fn run_gesture_worker(shared: Arc<MacOsHookShared>, stop: Arc<AtomicBool>) {
                 if let Some(mut failed_session) = session.take() {
                     failed_session.shutdown();
                 }
-                shared.mark_gesture_connected(false, Some("Gesture listener disconnected".to_string()));
+                shared.mark_gesture_connected(
+                    false,
+                    Some("Gesture listener disconnected".to_string()),
+                );
                 thread::sleep(Duration::from_millis(500));
             }
         }
@@ -1027,7 +1030,16 @@ fn initialize_gesture_session(
         };
 
         for gesture_cid in &gesture_candidates {
-            if set_gesture_reporting(&device, dev_idx, feature_idx, *gesture_cid, GESTURE_RAWXY_FLAGS, 250)?.is_some() {
+            if set_gesture_reporting(
+                &device,
+                dev_idx,
+                feature_idx,
+                *gesture_cid,
+                GESTURE_RAWXY_FLAGS,
+                250,
+            )?
+            .is_some()
+            {
                 shared.push_gesture_debug(format!(
                     "Diverted gesture cid 0x{:04X} with RawXY via devIdx=0x{:02X}",
                     gesture_cid, dev_idx
@@ -1043,7 +1055,16 @@ fn initialize_gesture_session(
                 });
             }
 
-            if set_gesture_reporting(&device, dev_idx, feature_idx, *gesture_cid, GESTURE_DIVERT_FLAGS, 250)?.is_some() {
+            if set_gesture_reporting(
+                &device,
+                dev_idx,
+                feature_idx,
+                *gesture_cid,
+                GESTURE_DIVERT_FLAGS,
+                250,
+            )?
+            .is_some()
+            {
                 shared.push_gesture_debug(format!(
                     "Diverted gesture cid 0x{:04X} via devIdx=0x{:02X}",
                     gesture_cid, dev_idx
@@ -1116,13 +1137,22 @@ fn find_hidpp_feature(
 ) -> Result<Option<u8>, PlatformError> {
     let feature_hi = ((feature_id >> 8) & 0xFF) as u8;
     let feature_lo = (feature_id & 0xFF) as u8;
-    let Some((_dev_idx, _feature, _function, _sw, params)) =
-        hidpp_request(device, dev_idx, 0x00, 0, &[feature_hi, feature_lo, 0x00], timeout_ms)?
+    let Some((_dev_idx, _feature, _function, _sw, params)) = hidpp_request(
+        device,
+        dev_idx,
+        0x00,
+        0,
+        &[feature_hi, feature_lo, 0x00],
+        timeout_ms,
+    )?
     else {
         return Ok(None);
     };
 
-    Ok(params.first().copied().filter(|feature_index| *feature_index != 0))
+    Ok(params
+        .first()
+        .copied()
+        .filter(|feature_index| *feature_index != 0))
 }
 
 #[cfg(target_os = "macos")]
@@ -1133,7 +1163,7 @@ fn set_gesture_reporting(
     gesture_cid: u16,
     flags: u8,
     timeout_ms: i32,
-) -> Result<Option<(u8, u8, u8, u8, Vec<u8>)>, PlatformError> {
+) -> Result<Option<HidppMessage>, PlatformError> {
     hidpp_request(
         device,
         dev_idx,
@@ -1158,20 +1188,26 @@ fn hidpp_request(
     function: u8,
     params: &[u8],
     timeout_ms: i32,
-) -> Result<Option<(u8, u8, u8, u8, Vec<u8>)>, PlatformError> {
+) -> Result<Option<HidppMessage>, PlatformError> {
     write_hidpp_request(device, dev_idx, feature_idx, function, params)?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(50) as u64);
     let expected_reply_functions = [function, (function + 1) & 0x0F];
 
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let packet = device.read_timeout(remaining.min(Duration::from_millis(80)).as_millis() as i32)?;
+        let packet =
+            device.read_timeout(remaining.min(Duration::from_millis(80)).as_millis() as i32)?;
         if packet.is_empty() {
             continue;
         }
 
-        let Some((response_dev_idx, response_feature, response_function, response_sw, response_params)) =
-            parse_hidpp_message(&packet)
+        let Some((
+            response_dev_idx,
+            response_feature,
+            response_function,
+            response_sw,
+            response_params,
+        )) = parse_hidpp_message(&packet)
         else {
             continue;
         };
@@ -1220,7 +1256,7 @@ fn write_hidpp_request(
 }
 
 #[cfg(target_os = "macos")]
-fn parse_hidpp_message(raw: &[u8]) -> Option<(u8, u8, u8, u8, Vec<u8>)> {
+fn parse_hidpp_message(raw: &[u8]) -> Option<HidppMessage> {
     if raw.len() < 4 {
         return None;
     }
@@ -1248,7 +1284,9 @@ fn decode_s16(hi: u8, lo: u8) -> i16 {
 
 #[cfg(target_os = "macos")]
 fn cooldown_active(state: &GestureTrackingState) -> bool {
-    state.cooldown_until.is_some_and(|cooldown_until| Instant::now() < cooldown_until)
+    state
+        .cooldown_until
+        .is_some_and(|cooldown_until| Instant::now() < cooldown_until)
 }
 
 #[cfg(target_os = "macos")]
@@ -1590,9 +1628,9 @@ fn send_media_key(key_id: isize) -> Result<(), PlatformError> {
     )
     .ok_or_else(|| PlatformError::Message("failed to create media-key up event".to_string()))?;
 
-    let down_cg = down
-        .CGEvent()
-        .ok_or_else(|| PlatformError::Message("media-key down event missing CGEvent".to_string()))?;
+    let down_cg = down.CGEvent().ok_or_else(|| {
+        PlatformError::Message("media-key down event missing CGEvent".to_string())
+    })?;
     let up_cg = up
         .CGEvent()
         .ok_or_else(|| PlatformError::Message("media-key up event missing CGEvent".to_string()))?;

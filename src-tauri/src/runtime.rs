@@ -4,9 +4,9 @@ use std::{
 };
 
 use mouser_core::{
-    clamp_dpi, default_action_catalog, default_config, default_known_apps, effective_layout_key,
-    layout_by_key, manual_layout_choices, AppConfig, BootstrapPayload, DebugEvent, DebugEventKind,
-    DeviceInfo, EngineSnapshot, EngineStatus, PlatformCapabilities, Profile,
+    clamp_dpi, default_action_catalog, default_known_apps, effective_layout_key, layout_by_key,
+    manual_layout_choices, AppConfig, BootstrapPayload, DebugEvent, DebugEventKind, DeviceInfo,
+    EngineSnapshot, EngineStatus, PlatformCapabilities, Profile,
 };
 use mouser_platform::{
     macos::{MacOsAppFocusBackend, MacOsHidBackend, MacOsHookBackend},
@@ -34,7 +34,7 @@ impl AppRuntime {
         let catalog = StaticDeviceCatalog::new();
         let config_store =
             JsonConfigStore::new(config_path.unwrap_or_else(JsonConfigStore::default_path));
-        let mut config = config_store.load().unwrap_or_else(|_| default_config());
+        let (mut config, load_warning) = config_store.load_or_recover();
         config.ensure_invariants();
 
         let mut runtime = Self {
@@ -51,6 +51,9 @@ impl AppRuntime {
             debug_log: Vec::new(),
         };
 
+        if let Some(load_warning) = load_warning {
+            runtime.push_debug(DebugEventKind::Warning, load_warning);
+        }
         runtime.refresh_live_state();
         runtime.sync_hook_backend();
         runtime.push_debug(
@@ -84,36 +87,8 @@ impl AppRuntime {
         self.config.clone()
     }
 
-    pub fn save_config(&mut self, mut config: AppConfig) {
-        let debug_mode_was_enabled = self.config.settings.debug_mode;
-        config.ensure_invariants();
-        let selected_device_key = self.selected_device_key.as_deref();
-        config.settings.dpi = self
-            .catalog
-            .clamp_dpi(selected_device_key, config.settings.dpi);
-        self.config = config;
-
-        if let Some(device_key) = selected_device_key {
-            if let Err(error) = self
-                .hid_backend
-                .set_device_dpi(device_key, self.config.settings.dpi)
-            {
-                self.push_debug(
-                    DebugEventKind::Warning,
-                    format!("Failed to apply DPI to {device_key}: {error}"),
-                );
-            } else if let Some(device) = self
-                .devices
-                .iter_mut()
-                .find(|device| device.key == device_key)
-            {
-                device.current_dpi = self.config.settings.dpi;
-            }
-        }
-
-        self.persist_config();
-        self.sync_active_profile();
-        self.sync_hook_backend();
+    pub fn save_config(&mut self, config: AppConfig) {
+        let debug_mode_was_enabled = self.apply_config(config);
         self.push_debug(
             DebugEventKind::Info,
             format!(
@@ -208,14 +183,13 @@ impl AppRuntime {
         self.log_device_inventory("Device probe");
     }
 
-    pub fn apply_imported_config(&mut self, mut config: AppConfig) {
-        config.ensure_invariants();
-        self.config = config;
-        self.persist_config();
-        self.sync_active_profile();
-        self.sync_hook_backend();
+    pub fn apply_imported_config(&mut self, config: AppConfig) {
+        let debug_mode_was_enabled = self.apply_config(config);
         self.push_debug(DebugEventKind::Info, "Imported legacy Mouser config");
         self.log_active_profile_snapshot("Imported bindings");
+        if !debug_mode_was_enabled && self.config.settings.debug_mode {
+            self.log_debug_session_state();
+        }
     }
 
     pub fn devices(&self) -> Vec<DeviceInfo> {
@@ -272,6 +246,39 @@ impl AppRuntime {
                 format!("Failed to save config: {error}"),
             );
         }
+    }
+
+    fn apply_config(&mut self, mut config: AppConfig) -> bool {
+        let debug_mode_was_enabled = self.config.settings.debug_mode;
+        config.ensure_invariants();
+        let selected_device_key = self.selected_device_key.as_deref();
+        config.settings.dpi = self
+            .catalog
+            .clamp_dpi(selected_device_key, config.settings.dpi);
+        self.config = config;
+
+        if let Some(device_key) = selected_device_key {
+            if let Err(error) = self
+                .hid_backend
+                .set_device_dpi(device_key, self.config.settings.dpi)
+            {
+                self.push_debug(
+                    DebugEventKind::Warning,
+                    format!("Failed to apply DPI to {device_key}: {error}"),
+                );
+            } else if let Some(device) = self
+                .devices
+                .iter_mut()
+                .find(|device| device.key == device_key)
+            {
+                device.current_dpi = self.config.settings.dpi;
+            }
+        }
+
+        self.persist_config();
+        self.sync_active_profile();
+        self.sync_hook_backend();
+        debug_mode_was_enabled
     }
 
     fn refresh_live_state(&mut self) {
@@ -443,8 +450,16 @@ impl AppRuntime {
             DebugEventKind::Info,
             format!(
                 "Transport support: hidapi={} iokit={}",
-                if cfg!(target_os = "macos") { "ready" } else { "unavailable" },
-                if cfg!(target_os = "macos") { "ready" } else { "unavailable" },
+                if cfg!(target_os = "macos") {
+                    "ready"
+                } else {
+                    "unavailable"
+                },
+                if cfg!(target_os = "macos") {
+                    "ready"
+                } else {
+                    "unavailable"
+                },
             ),
         );
         if !self.hook_backend.capabilities().can_intercept_buttons {

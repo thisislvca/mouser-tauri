@@ -1,6 +1,9 @@
 mod runtime;
 
-use std::{sync::Mutex, time::Duration};
+use std::{
+    sync::{Mutex, MutexGuard},
+    time::Duration,
+};
 
 use mouser_core::{
     AppConfig, BootstrapPayload, DebugEvent, DeviceInfo, EngineSnapshot, LegacyImportReport,
@@ -27,6 +30,9 @@ const TRAY_QUIT_ID: &str = "quit";
 struct AppState {
     runtime: Mutex<AppRuntime>,
 }
+
+type CommandResult<T> = Result<T, String>;
+const RUNTIME_STATE_ERROR: &str = "runtime state is unavailable";
 
 #[derive(Debug, Deserialize, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -60,14 +66,14 @@ struct DebugEventEnvelope(pub DebugEvent);
 
 #[tauri::command]
 #[specta::specta]
-fn bootstrap_load(state: State<'_, AppState>) -> Result<BootstrapPayload, String> {
-    Ok(state.runtime.lock().unwrap().bootstrap_payload())
+fn bootstrap_load(state: State<'_, AppState>) -> CommandResult<BootstrapPayload> {
+    with_runtime(&state, AppRuntime::bootstrap_payload)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn config_get(state: State<'_, AppState>) -> Result<AppConfig, String> {
-    Ok(state.runtime.lock().unwrap().config())
+fn config_get(state: State<'_, AppState>) -> CommandResult<AppConfig> {
+    with_runtime(&state, AppRuntime::config)
 }
 
 #[tauri::command]
@@ -77,11 +83,10 @@ fn config_save(
     state: State<'_, AppState>,
     config: AppConfig,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = {
-        let mut runtime = state.runtime.lock().unwrap();
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
         runtime.save_config(config);
         (runtime.bootstrap_payload(), runtime.last_debug_event())
-    };
+    })?;
     emit_runtime_events(&app, &payload, debug_event)?;
     Ok(payload)
 }
@@ -93,11 +98,10 @@ fn profiles_create(
     state: State<'_, AppState>,
     profile: Profile,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = {
-        let mut runtime = state.runtime.lock().unwrap();
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
         runtime.create_profile(profile);
         (runtime.bootstrap_payload(), runtime.last_debug_event())
-    };
+    })?;
     emit_runtime_events(&app, &payload, debug_event)?;
     Ok(payload)
 }
@@ -109,11 +113,10 @@ fn profiles_update(
     state: State<'_, AppState>,
     profile: Profile,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = {
-        let mut runtime = state.runtime.lock().unwrap();
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
         runtime.update_profile(profile);
         (runtime.bootstrap_payload(), runtime.last_debug_event())
-    };
+    })?;
     emit_runtime_events(&app, &payload, debug_event)?;
     Ok(payload)
 }
@@ -125,19 +128,18 @@ fn profiles_delete(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = {
-        let mut runtime = state.runtime.lock().unwrap();
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
         runtime.delete_profile(&profile_id);
         (runtime.bootstrap_payload(), runtime.last_debug_event())
-    };
+    })?;
     emit_runtime_events(&app, &payload, debug_event)?;
     Ok(payload)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn devices_list(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
-    Ok(state.runtime.lock().unwrap().devices())
+fn devices_list(state: State<'_, AppState>) -> CommandResult<Vec<DeviceInfo>> {
+    with_runtime(&state, AppRuntime::devices)
 }
 
 #[tauri::command]
@@ -147,11 +149,10 @@ fn devices_select_mock(
     state: State<'_, AppState>,
     device_key: String,
 ) -> Result<EngineSnapshot, String> {
-    let (payload, debug_event) = {
-        let mut runtime = state.runtime.lock().unwrap();
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
         runtime.select_device(&device_key);
         (runtime.bootstrap_payload(), runtime.last_debug_event())
-    };
+    })?;
     emit_runtime_events(&app, &payload, debug_event)?;
     Ok(payload.engine_snapshot)
 }
@@ -169,30 +170,58 @@ fn import_legacy_config(
     })
     .map_err(|error| error.to_string())?;
 
-    let debug_event = {
-        let mut runtime = state.runtime.lock().unwrap();
+    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
         runtime.apply_imported_config(report.config.clone());
-        runtime.last_debug_event()
-    };
-
-    let payload = state.runtime.lock().unwrap().bootstrap_payload();
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    })?;
     emit_runtime_events(&app, &payload, debug_event)?;
     Ok(report)
 }
 
 #[tauri::command]
 #[specta::specta]
-fn debug_clear_log(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<EngineSnapshot, String> {
-    let payload = {
-        let mut runtime = state.runtime.lock().unwrap();
+fn debug_clear_log(app: AppHandle, state: State<'_, AppState>) -> Result<EngineSnapshot, String> {
+    let payload = with_runtime_mut(&state, |runtime| {
         runtime.clear_debug_log();
         runtime.bootstrap_payload()
-    };
+    })?;
     emit_runtime_events(&app, &payload, None)?;
     Ok(payload.engine_snapshot)
+}
+
+fn lock_runtime<'a>(state: &'a State<'_, AppState>) -> CommandResult<MutexGuard<'a, AppRuntime>> {
+    state
+        .runtime
+        .lock()
+        .map_err(|_| RUNTIME_STATE_ERROR.to_string())
+}
+
+fn with_runtime<T>(
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&AppRuntime) -> T,
+) -> CommandResult<T> {
+    let runtime = lock_runtime(state)?;
+    Ok(f(&runtime))
+}
+
+fn with_runtime_mut<T>(
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&mut AppRuntime) -> T,
+) -> CommandResult<T> {
+    let mut runtime = lock_runtime(state)?;
+    Ok(f(&mut runtime))
+}
+
+fn with_manager_runtime<M, T>(manager: &M, f: impl FnOnce(&mut AppRuntime) -> T) -> CommandResult<T>
+where
+    M: Manager<Wry>,
+{
+    let state = manager.state::<AppState>();
+    let mut runtime = state
+        .runtime
+        .lock()
+        .map_err(|_| RUNTIME_STATE_ERROR.to_string())?;
+    Ok(f(&mut runtime))
 }
 
 fn emit_runtime_events(
@@ -270,11 +299,9 @@ fn sync_tray_menu(app: &AppHandle<Wry>, payload: &BootstrapPayload) -> Result<()
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let (remapping_enabled, debug_mode) = {
-        let state = app.state::<AppState>();
-        let runtime = state.runtime.lock().unwrap();
-        (runtime.enabled(), runtime.debug_mode())
-    };
+    let (remapping_enabled, debug_mode) =
+        with_manager_runtime(app, |runtime| (runtime.enabled(), runtime.debug_mode()))
+            .unwrap_or((true, false));
     let menu = build_tray_menu(app, remapping_enabled, debug_mode)?;
     let icon = app.default_window_icon().cloned();
     let builder = TrayIconBuilder::with_id(TRAY_ID)
@@ -285,26 +312,28 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             |app: &AppHandle<Wry>, event: MenuEvent| match event.id.as_ref() {
                 TRAY_SHOW_ID => show_main_window(app),
                 TRAY_TOGGLE_REMAPPING_ID => {
-                    let (payload, debug_event) = {
-                        let state = app.state::<AppState>();
-                        let mut runtime = state.runtime.lock().unwrap();
+                    let Ok((payload, debug_event)) = with_manager_runtime(app, |runtime| {
                         let next_enabled = !runtime.enabled();
                         runtime.set_enabled(next_enabled);
                         (runtime.bootstrap_payload(), runtime.last_debug_event())
+                    }) else {
+                        return;
                     };
                     let _ = emit_runtime_events(app, &payload, debug_event);
                 }
                 TRAY_TOGGLE_DEBUG_ID => {
-                    let (payload, debug_event, debug_mode) = {
-                        let state = app.state::<AppState>();
-                        let mut runtime = state.runtime.lock().unwrap();
-                        let next_debug_mode = !runtime.debug_mode();
-                        runtime.set_debug_mode(next_debug_mode);
-                        (
-                            runtime.bootstrap_payload(),
-                            runtime.last_debug_event(),
-                            next_debug_mode,
-                        )
+                    let Ok((payload, debug_event, debug_mode)) =
+                        with_manager_runtime(app, |runtime| {
+                            let next_debug_mode = !runtime.debug_mode();
+                            runtime.set_debug_mode(next_debug_mode);
+                            (
+                                runtime.bootstrap_payload(),
+                                runtime.last_debug_event(),
+                                next_debug_mode,
+                            )
+                        })
+                    else {
+                        return;
                     };
                     let _ = emit_runtime_events(app, &payload, debug_event);
                     if debug_mode {
@@ -329,9 +358,7 @@ fn spawn_runtime_poller(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(900));
 
-        let (changed, payload, debug_event) = {
-            let state = app.state::<AppState>();
-            let mut runtime = state.runtime.lock().unwrap();
+        let Ok((changed, payload, debug_event)) = with_manager_runtime(&app, |runtime| {
             let changed = runtime.poll();
             let payload = if changed {
                 Some(runtime.bootstrap_payload())
@@ -344,6 +371,8 @@ fn spawn_runtime_poller(app: AppHandle) {
                 None
             };
             (changed, payload, debug_event)
+        }) else {
+            break;
         };
 
         if changed {

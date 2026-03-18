@@ -5,7 +5,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        mpsc, Arc, Mutex, OnceLock,
+        mpsc, Arc, Mutex, OnceLock, RwLock,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -17,8 +17,8 @@ use mouser_core::{
 };
 
 use crate::{
-    AppFocusBackend, HidBackend, HidCapabilities, HookBackend, HookBackendEvent,
-    HookCapabilities, PlatformError,
+    horizontal_scroll_control, push_bounded_hook_event, AppFocusBackend, HidBackend,
+    HidCapabilities, HookBackend, HookBackendEvent, HookCapabilities, PlatformError,
 };
 
 #[cfg(target_os = "windows")]
@@ -27,10 +27,7 @@ use hidapi::{BusType, DeviceInfo as HidDeviceInfo, HidApi, HidDevice};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
     System::{LibraryLoader::GetModuleHandleW, Threading::*},
-    UI::{
-        Input::KeyboardAndMouse::*,
-        WindowsAndMessaging::*,
-    },
+    UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 
 const LOGI_VID: u16 = 0x046D;
@@ -102,7 +99,10 @@ impl WindowsHookConfig {
     }
 
     fn handles_control(&self, control: LogicalControl) -> bool {
-        self.enabled && self.action_for(control).is_some_and(|action_id| action_id != "none")
+        self.enabled
+            && self
+                .action_for(control)
+                .is_some_and(|action_id| action_id != "none")
     }
 
     fn gesture_direction_enabled(&self) -> bool {
@@ -126,7 +126,10 @@ impl WindowsHookConfig {
                 LogicalControl::GestureDown,
             ]
             .into_iter()
-            .any(|control| self.action_for(control).is_some_and(|action_id| action_id != "none"))
+            .any(|control| {
+                self.action_for(control)
+                    .is_some_and(|action_id| action_id != "none")
+            })
     }
 }
 
@@ -158,7 +161,7 @@ struct GestureTrackingState {
 }
 
 struct WindowsHookShared {
-    config: Mutex<WindowsHookConfig>,
+    config: RwLock<Arc<WindowsHookConfig>>,
     events: Mutex<Vec<HookBackendEvent>>,
     gesture_state: Mutex<GestureTrackingState>,
     hook_running: AtomicBool,
@@ -174,11 +177,11 @@ impl WindowsHookShared {
             .unwrap_or_else(|| config.profiles[0].clone());
 
         Self {
-            config: Mutex::new(WindowsHookConfig::from_runtime(
+            config: RwLock::new(Arc::new(WindowsHookConfig::from_runtime(
                 &config.settings,
                 &profile,
                 true,
-            )),
+            ))),
             events: Mutex::new(Vec::new()),
             gesture_state: Mutex::new(GestureTrackingState::default()),
             hook_running: AtomicBool::new(false),
@@ -186,18 +189,22 @@ impl WindowsHookShared {
         }
     }
 
-    fn current_config(&self) -> WindowsHookConfig {
-        self.config.lock().unwrap().clone()
+    fn current_config(&self) -> Arc<WindowsHookConfig> {
+        Arc::clone(&self.config.read().unwrap())
     }
 
     fn reconfigure(&self, settings: &Settings, profile: &Profile, enabled: bool) {
-        let mut config = self.config.lock().unwrap();
-        let previous = config.clone();
-        let next = WindowsHookConfig::from_runtime(settings, profile, enabled);
-        let changed = previous != next;
+        let next = Arc::new(WindowsHookConfig::from_runtime(settings, profile, enabled));
+        let changed = {
+            let mut config = self.config.write().unwrap();
+            if config.as_ref() == next.as_ref() {
+                false
+            } else {
+                *config = Arc::clone(&next);
+                true
+            }
+        };
         let gesture_capture_requested = next.gesture_capture_requested();
-        *config = next.clone();
-        drop(config);
 
         if !gesture_capture_requested {
             self.reset_gesture_state();
@@ -216,20 +223,17 @@ impl WindowsHookShared {
 
     fn push_event(&self, kind: DebugEventKind, message: impl Into<String>) {
         let mut events = self.events.lock().unwrap();
-        events.push(HookBackendEvent {
-            kind,
-            message: message.into(),
-        });
+        push_bounded_hook_event(&mut events, kind, message);
     }
 
     fn push_debug(&self, message: impl Into<String>) {
-        if self.config.lock().unwrap().debug_mode {
+        if self.config.read().unwrap().debug_mode {
             self.push_event(DebugEventKind::Info, message);
         }
     }
 
     fn push_gesture_debug(&self, message: impl Into<String>) {
-        if self.config.lock().unwrap().debug_mode {
+        if self.config.read().unwrap().debug_mode {
             self.push_event(DebugEventKind::Gesture, message);
         }
     }
@@ -240,13 +244,13 @@ impl WindowsHookShared {
     }
 
     fn gesture_capture_requested(&self) -> bool {
-        self.config.lock().unwrap().gesture_capture_requested()
+        self.config.read().unwrap().gesture_capture_requested()
     }
 
     fn mark_hook_running(&self, running: bool, message: Option<String>) {
         let previous = self.hook_running.swap(running, Ordering::SeqCst);
         if let Some(message) = message {
-            if previous != running || self.config.lock().unwrap().debug_mode {
+            if previous != running || self.config.read().unwrap().debug_mode {
                 self.push_event(DebugEventKind::Info, message);
             }
         }
@@ -255,7 +259,7 @@ impl WindowsHookShared {
     fn mark_gesture_connected(&self, connected: bool, message: Option<String>) {
         let previous = self.gesture_connected.swap(connected, Ordering::SeqCst);
         if let Some(message) = message {
-            if previous != connected || self.config.lock().unwrap().debug_mode {
+            if previous != connected || self.config.read().unwrap().debug_mode {
                 self.push_event(DebugEventKind::Info, message);
             }
         }
@@ -365,11 +369,9 @@ impl WindowsHookShared {
         }
 
         let now = Instant::now();
-        let idle_timed_out = state
-            .last_move_at
-            .is_some_and(|last_move_at| {
-                now.duration_since(last_move_at).as_millis() > u128::from(config.gesture_timeout_ms)
-            });
+        let idle_timed_out = state.last_move_at.is_some_and(|last_move_at| {
+            now.duration_since(last_move_at).as_millis() > u128::from(config.gesture_timeout_ms)
+        });
         if idle_timed_out {
             self.push_gesture_debug(format!(
                 "Gesture segment reset after {} ms",
@@ -451,6 +453,12 @@ impl WindowsHookBackend {
                 gesture_worker: Mutex::new(Some(gesture_worker)),
             }
         }
+    }
+}
+
+impl Default for WindowsHookBackend {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -800,14 +808,12 @@ unsafe extern "system" fn low_level_mouse_proc(
         WM_MOUSEHWHEEL => {
             let delta = hiword(data.mouseData);
             if delta != 0 {
-                let control = if delta > 0 {
-                    LogicalControl::HscrollLeft
-                } else {
-                    LogicalControl::HscrollRight
+                let Some(control) = horizontal_scroll_control(delta) else {
+                    return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
                 };
 
                 if config.handles_control(control) {
-                    shared.dispatch_control_action(&config, control);
+                    shared.dispatch_control_action(config.as_ref(), control);
                     return 1;
                 }
 
@@ -886,7 +892,10 @@ fn run_gesture_worker(shared: Arc<WindowsHookShared>, stop: Arc<AtomicBool>) {
                 if let Some(mut failed_session) = session.take() {
                     failed_session.shutdown();
                 }
-                shared.mark_gesture_connected(false, Some("Gesture listener disconnected".to_string()));
+                shared.mark_gesture_connected(
+                    false,
+                    Some("Gesture listener disconnected".to_string()),
+                );
                 thread::sleep(Duration::from_millis(500));
             }
         }
@@ -1018,7 +1027,16 @@ fn initialize_gesture_session(
         };
 
         for gesture_cid in &gesture_candidates {
-            if set_gesture_reporting(&device, dev_idx, feature_idx, *gesture_cid, GESTURE_RAWXY_FLAGS, 250)?.is_some() {
+            if set_gesture_reporting(
+                &device,
+                dev_idx,
+                feature_idx,
+                *gesture_cid,
+                GESTURE_RAWXY_FLAGS,
+                250,
+            )?
+            .is_some()
+            {
                 shared.push_gesture_debug(format!(
                     "Diverted gesture cid 0x{:04X} with RawXY via devIdx=0x{:02X}",
                     gesture_cid, dev_idx
@@ -1035,7 +1053,16 @@ fn initialize_gesture_session(
                 });
             }
 
-            if set_gesture_reporting(&device, dev_idx, feature_idx, *gesture_cid, GESTURE_DIVERT_FLAGS, 250)?.is_some() {
+            if set_gesture_reporting(
+                &device,
+                dev_idx,
+                feature_idx,
+                *gesture_cid,
+                GESTURE_DIVERT_FLAGS,
+                250,
+            )?
+            .is_some()
+            {
                 shared.push_gesture_debug(format!(
                     "Diverted gesture cid 0x{:04X} via devIdx=0x{:02X}",
                     gesture_cid, dev_idx
@@ -1084,7 +1111,10 @@ fn vendor_hid_infos(api: &HidApi) -> Vec<&HidDeviceInfo> {
 
 #[cfg(target_os = "windows")]
 fn probe_hidapi_device(device: &HidDevice, info: &HidDeviceInfo) -> Option<DeviceInfo> {
-    let current_dpi = read_hidpp_current_dpi(device).ok().flatten().unwrap_or(1000);
+    let current_dpi = read_hidpp_current_dpi(device)
+        .ok()
+        .flatten()
+        .unwrap_or(1000);
     let battery_level = read_hidpp_battery(device).ok().flatten();
     Some(build_connected_device_info(
         Some(info.product_id()),
@@ -1098,10 +1128,7 @@ fn probe_hidapi_device(device: &HidDevice, info: &HidDeviceInfo) -> Option<Devic
 
 #[cfg(target_os = "windows")]
 fn push_unique_device(devices: &mut Vec<DeviceInfo>, device: DeviceInfo) {
-    if devices
-        .iter()
-        .all(|existing| existing.key != device.key)
-    {
+    if devices.iter().all(|existing| existing.key != device.key) {
         devices.push(device);
     }
 }
@@ -1115,15 +1142,7 @@ fn device_key_matches(
     source: &'static str,
     dpi: u16,
 ) -> bool {
-    build_connected_device_info(
-        product_id,
-        product_name,
-        transport,
-        Some(source),
-        None,
-        dpi,
-    )
-    .key
+    build_connected_device_info(product_id, product_name, transport, Some(source), None, dpi).key
         == device_key
 }
 
@@ -1190,7 +1209,10 @@ fn find_feature(device: &HidDevice, feature_id: u16) -> Result<Option<u8>, Platf
         return Ok(None);
     };
 
-    Ok(response.first().copied().filter(|feature_index| *feature_index != 0))
+    Ok(response
+        .first()
+        .copied()
+        .filter(|feature_index| *feature_index != 0))
 }
 
 #[cfg(target_os = "windows")]
@@ -1291,13 +1313,22 @@ fn find_hidpp_feature(
 ) -> Result<Option<u8>, PlatformError> {
     let feature_hi = ((feature_id >> 8) & 0xFF) as u8;
     let feature_lo = (feature_id & 0xFF) as u8;
-    let Some((_dev_idx, _feature, _function, _sw, params)) =
-        hidpp_request(device, dev_idx, 0x00, 0, &[feature_hi, feature_lo, 0x00], timeout_ms)?
+    let Some((_dev_idx, _feature, _function, _sw, params)) = hidpp_request(
+        device,
+        dev_idx,
+        0x00,
+        0,
+        &[feature_hi, feature_lo, 0x00],
+        timeout_ms,
+    )?
     else {
         return Ok(None);
     };
 
-    Ok(params.first().copied().filter(|feature_index| *feature_index != 0))
+    Ok(params
+        .first()
+        .copied()
+        .filter(|feature_index| *feature_index != 0))
 }
 
 #[cfg(target_os = "windows")]
@@ -1348,8 +1379,13 @@ fn hidpp_request(
             continue;
         }
 
-        let Some((response_dev_idx, response_feature, response_function, response_sw, response_params)) =
-            parse_hidpp_message(&packet)
+        let Some((
+            response_dev_idx,
+            response_feature,
+            response_function,
+            response_sw,
+            response_params,
+        )) = parse_hidpp_message(&packet)
         else {
             continue;
         };
@@ -1426,7 +1462,9 @@ fn map_hid_error(error: hidapi::HidError) -> PlatformError {
 }
 
 fn cooldown_active(state: &GestureTrackingState) -> bool {
-    state.cooldown_until.is_some_and(|cooldown_until| Instant::now() < cooldown_until)
+    state
+        .cooldown_until
+        .is_some_and(|cooldown_until| Instant::now() < cooldown_until)
 }
 
 fn start_gesture_tracking(state: &mut GestureTrackingState) {

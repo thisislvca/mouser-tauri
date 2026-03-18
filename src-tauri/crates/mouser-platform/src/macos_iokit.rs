@@ -105,10 +105,7 @@ pub fn enumerate_iokit_infos() -> Result<Vec<MacOsIoKitInfo>, PlatformError> {
 
     let matching = vendor_matching_dictionary(LOGI_VID);
     let devices = unsafe {
-        IOHIDManagerSetDeviceMatching(
-            manager,
-            matching.as_concrete_TypeRef() as *const c_void,
-        );
+        IOHIDManagerSetDeviceMatching(manager, matching.as_concrete_TypeRef() as *const c_void);
         let status = IOHIDManagerOpen(manager, 0);
         if status != 0 {
             CFRelease(manager as CFTypeRef);
@@ -128,12 +125,10 @@ pub fn enumerate_iokit_infos() -> Result<Vec<MacOsIoKitInfo>, PlatformError> {
                 Some(value) if value > 0 => value as u16,
                 _ => continue,
             };
-            let usage_page =
-                get_number_property(device_ref as IOHIDDeviceRef, "PrimaryUsagePage").unwrap_or(0)
-                    as u32;
-            let usage =
-                get_number_property(device_ref as IOHIDDeviceRef, "PrimaryUsage").unwrap_or(0)
-                    as u32;
+            let usage_page = get_number_property(device_ref as IOHIDDeviceRef, "PrimaryUsagePage")
+                .unwrap_or(0) as u32;
+            let usage = get_number_property(device_ref as IOHIDDeviceRef, "PrimaryUsage")
+                .unwrap_or(0) as u32;
             let transport = get_string_property(device_ref as IOHIDDeviceRef, "Transport");
             let product_string = get_string_property(device_ref as IOHIDDeviceRef, "Product");
             let dedupe_key = (
@@ -184,10 +179,7 @@ impl MacOsNativeHidDevice {
         }
 
         let device = unsafe {
-            IOHIDManagerSetDeviceMatching(
-                manager,
-                matching.as_concrete_TypeRef() as *const c_void,
-            );
+            IOHIDManagerSetDeviceMatching(manager, matching.as_concrete_TypeRef() as *const c_void);
             let status = IOHIDManagerOpen(manager, 0);
             if status != 0 {
                 CFRelease(manager as CFTypeRef);
@@ -282,8 +274,7 @@ impl MacOsNativeHidDevice {
             Err(TryRecvError::Empty) => {}
         }
 
-        let deadline = std::time::Instant::now()
-            + Duration::from_millis(timeout_ms.max(0) as u64);
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(0) as u64);
 
         while std::time::Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());

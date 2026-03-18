@@ -1,17 +1,21 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs::{self, File},
+    io::Write,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 #[cfg(target_os = "macos")]
 use std::{
     path::Path,
     time::{Duration, Instant},
 };
 
-use mouser_core::{
-    clamp_dpi, default_config, default_known_apps, default_layouts, known_device_specs,
-    AppConfig, DebugEventKind, DeviceInfo, DeviceLayout, KnownApp, LogicalControl, Profile,
-    Settings,
-};
 #[cfg(target_os = "macos")]
 use mouser_core::build_connected_device_info;
+use mouser_core::{
+    clamp_dpi, default_config, default_known_apps, default_layouts, known_device_specs, AppConfig,
+    DebugEventKind, DeviceInfo, DeviceLayout, KnownApp, LogicalControl, Profile, Settings,
+};
 use thiserror::Error;
 
 mod macos_hook;
@@ -44,6 +48,8 @@ pub struct HookBackendEvent {
     pub kind: DebugEventKind,
     pub message: String,
 }
+
+pub(crate) const HOOK_EVENT_BUFFER_LIMIT: usize = 128;
 
 #[derive(Debug, Error)]
 pub enum PlatformError {
@@ -89,6 +95,29 @@ pub trait DeviceCatalog: Send + Sync {
 pub trait ConfigStore: Send + Sync {
     fn load(&self) -> Result<AppConfig, PlatformError>;
     fn save(&self, config: &AppConfig) -> Result<(), PlatformError>;
+}
+
+pub(crate) fn horizontal_scroll_control(delta: i32) -> Option<LogicalControl> {
+    match delta.cmp(&0) {
+        std::cmp::Ordering::Greater => Some(LogicalControl::HscrollRight),
+        std::cmp::Ordering::Less => Some(LogicalControl::HscrollLeft),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
+pub(crate) fn push_bounded_hook_event(
+    events: &mut Vec<HookBackendEvent>,
+    kind: DebugEventKind,
+    message: impl Into<String>,
+) {
+    events.push(HookBackendEvent {
+        kind,
+        message: message.into(),
+    });
+    if events.len() > HOOK_EVENT_BUFFER_LIMIT {
+        let excess = events.len() - HOOK_EVENT_BUFFER_LIMIT;
+        events.drain(0..excess);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -186,6 +215,71 @@ impl JsonConfigStore {
         }
         Ok(())
     }
+
+    pub fn load_or_recover(&self) -> (AppConfig, Option<String>) {
+        if !self.path.exists() {
+            return (default_config(), None);
+        }
+
+        match fs::read_to_string(&self.path) {
+            Ok(raw) => match serde_json::from_str::<AppConfig>(&raw) {
+                Ok(config) => (config, None),
+                Err(error) => {
+                    let warning = self
+                        .preserve_unreadable_config()
+                        .map(|backup_path| {
+                            format!(
+                                "Failed to decode config at {}: {error}. Preserved unreadable file at {} and loaded defaults.",
+                                self.path.display(),
+                                backup_path.display()
+                            )
+                        })
+                        .unwrap_or_else(|rename_error| {
+                            format!(
+                                "Failed to decode config at {}: {error}. Could not preserve the unreadable file: {rename_error}. Loaded defaults.",
+                                self.path.display()
+                            )
+                        });
+                    (default_config(), Some(warning))
+                }
+            },
+            Err(error) => (
+                default_config(),
+                Some(format!(
+                    "Failed to read config at {}: {error}. Loaded defaults.",
+                    self.path.display()
+                )),
+            ),
+        }
+    }
+
+    fn preserve_unreadable_config(&self) -> Result<PathBuf, PlatformError> {
+        let backup_path = self.recovery_path("corrupt");
+        fs::rename(&self.path, &backup_path).map_err(|error| PlatformError::Io {
+            path: self.path.display().to_string(),
+            message: error.to_string(),
+        })?;
+        Ok(backup_path)
+    }
+
+    fn temporary_write_path(&self) -> PathBuf {
+        self.recovery_path("tmp")
+    }
+
+    fn recovery_path(&self, suffix: &str) -> PathBuf {
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let mut path = self.path.clone();
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config.json");
+        path.set_file_name(format!("{file_name}.{suffix}-{timestamp_ms}"));
+        path
+    }
 }
 
 impl ConfigStore for JsonConfigStore {
@@ -205,9 +299,33 @@ impl ConfigStore for JsonConfigStore {
 
     fn save(&self, config: &AppConfig) -> Result<(), PlatformError> {
         self.ensure_parent()?;
-        let json = serde_json::to_string_pretty(config)
+        let json = serde_json::to_vec_pretty(config)
             .map_err(|error| PlatformError::Message(error.to_string()))?;
-        fs::write(&self.path, json).map_err(|error| PlatformError::Io {
+        let temp_path = self.temporary_write_path();
+        let mut temp_file = File::create(&temp_path).map_err(|error| PlatformError::Io {
+            path: temp_path.display().to_string(),
+            message: error.to_string(),
+        })?;
+        temp_file
+            .write_all(&json)
+            .map_err(|error| PlatformError::Io {
+                path: temp_path.display().to_string(),
+                message: error.to_string(),
+            })?;
+        temp_file.sync_all().map_err(|error| PlatformError::Io {
+            path: temp_path.display().to_string(),
+            message: error.to_string(),
+        })?;
+
+        #[cfg(target_os = "windows")]
+        if self.path.exists() {
+            fs::remove_file(&self.path).map_err(|error| PlatformError::Io {
+                path: self.path.display().to_string(),
+                message: error.to_string(),
+            })?;
+        }
+
+        fs::rename(&temp_path, &self.path).map_err(|error| PlatformError::Io {
             path: self.path.display().to_string(),
             message: error.to_string(),
         })
@@ -489,7 +607,10 @@ pub mod macos {
         transport: Option<&str>,
         source: &'static str,
     ) -> Option<DeviceInfo> {
-        let current_dpi = read_hidpp_current_dpi(device).ok().flatten().unwrap_or(1000);
+        let current_dpi = read_hidpp_current_dpi(device)
+            .ok()
+            .flatten()
+            .unwrap_or(1000);
         let battery_level = read_hidpp_battery(device).ok().flatten();
         Some(build_connected_device_info(
             product_id,
@@ -539,15 +660,8 @@ pub mod macos {
         source: &'static str,
         dpi: u16,
     ) -> bool {
-        build_connected_device_info(
-            product_id,
-            product_name,
-            transport,
-            Some(source),
-            None,
-            dpi,
-        )
-        .key
+        build_connected_device_info(product_id, product_name, transport, Some(source), None, dpi)
+            .key
             == device_key
     }
 
@@ -740,4 +854,73 @@ pub mod windows {
     pub use crate::windows_backend::{
         WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_test_path(name: &str) -> PathBuf {
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        std::env::temp_dir().join(format!("mouser-platform-{name}-{timestamp_ms}.json"))
+    }
+
+    #[test]
+    fn horizontal_scroll_mapping_is_consistent() {
+        assert_eq!(
+            horizontal_scroll_control(120),
+            Some(LogicalControl::HscrollRight)
+        );
+        assert_eq!(
+            horizontal_scroll_control(-120),
+            Some(LogicalControl::HscrollLeft)
+        );
+        assert_eq!(horizontal_scroll_control(0), None);
+    }
+
+    #[test]
+    fn bounded_hook_event_queue_keeps_latest_entries() {
+        let mut events = Vec::new();
+        for index in 0..(HOOK_EVENT_BUFFER_LIMIT + 5) {
+            push_bounded_hook_event(&mut events, DebugEventKind::Info, format!("event-{index}"));
+        }
+
+        assert_eq!(events.len(), HOOK_EVENT_BUFFER_LIMIT);
+        assert_eq!(
+            events.first().map(|event| event.message.as_str()),
+            Some("event-5")
+        );
+        assert_eq!(
+            events.last().map(|event| event.message.as_str()),
+            Some("event-132")
+        );
+    }
+
+    #[test]
+    fn load_or_recover_preserves_invalid_json() {
+        let path = unique_test_path("recover");
+        fs::write(&path, "{not valid json").unwrap();
+        let store = JsonConfigStore::new(path.clone());
+
+        let (config, warning) = store.load_or_recover();
+
+        assert_eq!(config, default_config());
+        let warning = warning.expect("expected recovery warning");
+        assert!(warning.contains("Preserved unreadable file"));
+        assert!(!path.exists());
+
+        let parent = path.parent().unwrap();
+        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+        let recovered = fs::read_dir(parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with(&file_name))
+            .expect("expected preserved config backup");
+
+        assert!(recovered.path().exists());
+        let _ = fs::remove_file(recovered.path());
+    }
 }

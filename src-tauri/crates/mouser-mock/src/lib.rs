@@ -125,13 +125,8 @@ impl MockRuntime {
         self.config_store.load().unwrap()
     }
 
-    pub fn save_config(&mut self, mut config: AppConfig) {
-        config.ensure_invariants();
-        let device_key = self.selected_device_key.as_deref();
-        config.settings.dpi = self.catalog.clamp_dpi(device_key, config.settings.dpi);
-        self.config_store.save(&config).unwrap();
-        self.apply_device_selection();
-        let profile_changed = self.sync_active_profile();
+    pub fn save_config(&mut self, config: AppConfig) {
+        let profile_changed = self.apply_config(config);
         self.push_debug(
             DebugEventKind::Info,
             format!(
@@ -193,11 +188,8 @@ impl MockRuntime {
         }
     }
 
-    pub fn apply_imported_config(&mut self, mut config: AppConfig) {
-        config.ensure_invariants();
-        self.config_store.save(&config).unwrap();
-        self.apply_device_selection();
-        self.sync_active_profile();
+    pub fn apply_imported_config(&mut self, config: AppConfig) {
+        self.apply_config(config);
         self.push_debug(DebugEventKind::Info, "Imported legacy Mouser config");
     }
 
@@ -278,6 +270,15 @@ impl MockRuntime {
             self.config_store.save(&config).unwrap();
         }
         changed
+    }
+
+    fn apply_config(&mut self, mut config: AppConfig) -> bool {
+        config.ensure_invariants();
+        let device_key = self.selected_device_key.as_deref();
+        config.settings.dpi = self.catalog.clamp_dpi(device_key, config.settings.dpi);
+        self.config_store.save(&config).unwrap();
+        self.apply_device_selection();
+        self.sync_active_profile()
     }
 
     fn push_debug(&mut self, kind: DebugEventKind, message: impl Into<String>) {
@@ -366,5 +367,20 @@ mod tests {
         let after = runtime.engine_snapshot().engine_status.debug_log.len();
         assert!(after >= before);
         assert!(runtime.last_debug_event().is_some());
+    }
+
+    #[test]
+    fn imported_config_clamps_selected_device_dpi() {
+        let mut runtime = MockRuntime::new();
+        let mut config = runtime.config();
+        config.settings.dpi = 20_000;
+
+        runtime.apply_imported_config(config);
+
+        assert_eq!(runtime.config().settings.dpi, 8000);
+        assert_eq!(
+            runtime.engine_snapshot().active_device.unwrap().current_dpi,
+            8000
+        );
     }
 }
