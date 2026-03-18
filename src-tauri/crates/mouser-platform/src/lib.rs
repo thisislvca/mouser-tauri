@@ -56,6 +56,7 @@ pub struct HookBackendSettings {
     pub invert_horizontal_scroll: bool,
     pub invert_vertical_scroll: bool,
     pub macos_thumb_wheel_simulate_trackpad: bool,
+    pub macos_thumb_wheel_trackpad_hold_timeout_ms: u32,
     pub gesture_threshold: u16,
     pub gesture_deadzone: u16,
     pub gesture_timeout_ms: u32,
@@ -75,6 +76,8 @@ impl HookBackendSettings {
             macos_thumb_wheel_simulate_trackpad: cfg!(target_os = "macos")
                 && device_settings.macos_thumb_wheel_simulate_trackpad
                 && supports_macos_thumb_wheel_trackpad_model(device_model_key),
+            macos_thumb_wheel_trackpad_hold_timeout_ms: device_settings
+                .macos_thumb_wheel_trackpad_hold_timeout_ms,
             gesture_threshold: device_settings.gesture_threshold,
             gesture_deadzone: device_settings.gesture_deadzone,
             gesture_timeout_ms: device_settings.gesture_timeout_ms,
@@ -1090,6 +1093,7 @@ mod tests {
         let settings = default_settings();
         let mut device_settings = default_device_settings();
         device_settings.macos_thumb_wheel_simulate_trackpad = true;
+        device_settings.macos_thumb_wheel_trackpad_hold_timeout_ms = 900;
 
         let mx_master = HookBackendSettings::from_app_and_device(
             &settings,
@@ -1105,8 +1109,17 @@ mod tests {
             mx_master.macos_thumb_wheel_simulate_trackpad,
             cfg!(target_os = "macos")
         );
+        assert_eq!(mx_master.macos_thumb_wheel_trackpad_hold_timeout_ms, 900);
         assert!(!generic_mouse.macos_thumb_wheel_simulate_trackpad);
+        assert_eq!(
+            generic_mouse.macos_thumb_wheel_trackpad_hold_timeout_ms,
+            900
+        );
         assert!(!unknown_device.macos_thumb_wheel_simulate_trackpad);
+        assert_eq!(
+            unknown_device.macos_thumb_wheel_trackpad_hold_timeout_ms,
+            900
+        );
     }
 
     #[test]
@@ -1183,12 +1196,22 @@ mod tests {
         assert!(config.device_defaults.invert_horizontal_scroll);
         assert!(config.device_defaults.invert_vertical_scroll);
         assert!(!config.device_defaults.macos_thumb_wheel_simulate_trackpad);
+        assert_eq!(
+            config
+                .device_defaults
+                .macos_thumb_wheel_trackpad_hold_timeout_ms,
+            500
+        );
         assert_eq!(config.device_defaults.gesture_threshold, 75);
         assert_eq!(config.managed_devices.len(), 1);
         let managed = &config.managed_devices[0];
         assert_eq!(managed.settings.dpi, 1600);
         assert!(managed.settings.invert_horizontal_scroll);
         assert!(!managed.settings.macos_thumb_wheel_simulate_trackpad);
+        assert_eq!(
+            managed.settings.macos_thumb_wheel_trackpad_hold_timeout_ms,
+            500
+        );
         assert_eq!(
             managed.settings.manual_layout_override.as_deref(),
             Some("mx_master")

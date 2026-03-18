@@ -143,6 +143,7 @@ const DEFAULT_DEVICE_SETTINGS: NonNullable<AppConfig["deviceDefaults"]> = {
   invertHorizontalScroll: false,
   invertVerticalScroll: false,
   macosThumbWheelSimulateTrackpad: false,
+  macosThumbWheelTrackpadHoldTimeoutMs: 500,
   gestureThreshold: 50,
   gestureDeadzone: 40,
   gestureTimeoutMs: 3000,
@@ -189,6 +190,9 @@ function normalizeDeviceSettings(
     macosThumbWheelSimulateTrackpad:
       settings?.macosThumbWheelSimulateTrackpad ??
       DEFAULT_DEVICE_SETTINGS.macosThumbWheelSimulateTrackpad,
+    macosThumbWheelTrackpadHoldTimeoutMs:
+      settings?.macosThumbWheelTrackpadHoldTimeoutMs ??
+      DEFAULT_DEVICE_SETTINGS.macosThumbWheelTrackpadHoldTimeoutMs,
     gestureThreshold:
       settings?.gestureThreshold ?? DEFAULT_DEVICE_SETTINGS.gestureThreshold,
     gestureDeadzone:
@@ -1729,6 +1733,26 @@ function DeviceDetailView(props: {
                   })
                 }
               />
+            ) : null}
+            {showThumbWheelTrackpadToggle &&
+            deviceSettings.macosThumbWheelSimulateTrackpad ? (
+              <Field label="Thumb wheel swipe hold (ms)">
+                <Input
+                  aria-label="Thumb wheel swipe hold (ms)"
+                  max={5000}
+                  min={0}
+                  step={50}
+                  type="number"
+                  value={deviceSettings.macosThumbWheelTrackpadHoldTimeoutMs}
+                  onChange={(event) =>
+                    updateManagedDeviceSettings((settings) => {
+                      settings.macosThumbWheelTrackpadHoldTimeoutMs = Number(
+                        event.currentTarget.value,
+                      );
+                    })
+                  }
+                />
+              </Field>
             ) : null}
             <Field label="Gesture threshold">
               <Input

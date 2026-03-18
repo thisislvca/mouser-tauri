@@ -119,6 +119,7 @@ function makeBootstrap(): BootstrapPayload {
           invertHorizontalScroll: false,
           invertVerticalScroll: false,
           macosThumbWheelSimulateTrackpad: false,
+          macosThumbWheelTrackpadHoldTimeoutMs: 500,
           gestureThreshold: 50,
           gestureDeadzone: 40,
           gestureTimeoutMs: 3000,
@@ -141,6 +142,7 @@ function makeBootstrap(): BootstrapPayload {
       invertHorizontalScroll: false,
       invertVerticalScroll: false,
       macosThumbWheelSimulateTrackpad: false,
+      macosThumbWheelTrackpadHoldTimeoutMs: 500,
       gestureThreshold: 50,
       gestureDeadzone: 40,
       gestureTimeoutMs: 3000,
@@ -852,6 +854,35 @@ describe("App", () => {
       expect(lastCall?.[1]).toEqual(
         expect.objectContaining({
           macosThumbWheelSimulateTrackpad: true,
+        }),
+      );
+    });
+  });
+
+  it("shows and saves the thumb wheel swipe hold timeout when the beta toggle is enabled", async () => {
+    const { user } = renderApp();
+    await user.click(await screen.findByRole("button", { name: "Tune" }));
+
+    await user.click(
+      await screen.findByRole("switch", {
+        name: /Simulate trackpad swipe from thumb wheel/i,
+      }),
+    );
+
+    const timeoutInput = await screen.findByLabelText(
+      /Thumb wheel swipe hold \(ms\)/i,
+    );
+    await user.clear(timeoutInput);
+    await user.type(timeoutInput, "900");
+
+    await waitFor(() => {
+      expect(apiMocks.devicesUpdateSettings).toHaveBeenCalled();
+      const calls = apiMocks.devicesUpdateSettings.mock.calls;
+      const lastCall = calls[calls.length - 1];
+      expect(lastCall?.[0]).toBe("mx_master_3s");
+      expect(lastCall?.[1]).toEqual(
+        expect.objectContaining({
+          macosThumbWheelTrackpadHoldTimeoutMs: 900,
         }),
       );
     });

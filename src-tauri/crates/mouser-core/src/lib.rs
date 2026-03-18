@@ -97,6 +97,8 @@ pub struct DeviceSettings {
     pub invert_vertical_scroll: bool,
     #[serde(default)]
     pub macos_thumb_wheel_simulate_trackpad: bool,
+    #[serde(default = "default_macos_thumb_wheel_trackpad_hold_timeout_ms")]
+    pub macos_thumb_wheel_trackpad_hold_timeout_ms: u32,
     pub gesture_threshold: u16,
     pub gesture_deadzone: u16,
     pub gesture_timeout_ms: u32,
@@ -556,12 +558,18 @@ pub fn default_settings() -> Settings {
     }
 }
 
+pub fn default_macos_thumb_wheel_trackpad_hold_timeout_ms() -> u32 {
+    500
+}
+
 pub fn default_device_settings() -> DeviceSettings {
     DeviceSettings {
         dpi: 1000,
         invert_horizontal_scroll: false,
         invert_vertical_scroll: false,
         macos_thumb_wheel_simulate_trackpad: false,
+        macos_thumb_wheel_trackpad_hold_timeout_ms:
+            default_macos_thumb_wheel_trackpad_hold_timeout_ms(),
         gesture_threshold: 50,
         gesture_deadzone: 40,
         gesture_timeout_ms: 3000,
@@ -618,6 +626,9 @@ pub fn normalize_device_settings(model_key: Option<&str>, settings: &mut DeviceS
         .unwrap_or((200, 8000));
 
     settings.dpi = settings.dpi.max(dpi_min).min(dpi_max);
+    settings.macos_thumb_wheel_trackpad_hold_timeout_ms = settings
+        .macos_thumb_wheel_trackpad_hold_timeout_ms
+        .clamp(0, 5_000);
     settings.gesture_threshold = settings.gesture_threshold.clamp(1, 500);
     settings.gesture_deadzone = settings.gesture_deadzone.clamp(0, 500);
     settings.gesture_timeout_ms = settings.gesture_timeout_ms.clamp(100, 10_000);

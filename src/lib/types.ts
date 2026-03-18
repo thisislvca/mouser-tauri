@@ -55,6 +55,7 @@ export type Settings = BindSettings;
 
 export type DeviceSettings = BindDeviceSettings & {
   macosThumbWheelSimulateTrackpad?: boolean;
+  macosThumbWheelTrackpadHoldTimeoutMs?: number;
 };
 
 export type ManagedDevice = Omit<BindManagedDevice, "settings"> & {

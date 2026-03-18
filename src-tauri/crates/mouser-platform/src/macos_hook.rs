@@ -143,8 +143,6 @@ const SCROLL_WHEEL_EVENT_SCROLL_PHASE_FIELD: u32 = 99;
 #[cfg(target_os = "macos")]
 const SCROLL_WHEEL_EVENT_MOMENTUM_PHASE_FIELD: u32 = 123;
 #[cfg(target_os = "macos")]
-const SCROLL_WHEEL_TRACKPAD_HOLD_TIMEOUT_MS: u64 = 750;
-#[cfg(target_os = "macos")]
 const SCROLL_WHEEL_TRACKPAD_POLL_INTERVAL_MS: u64 = 8;
 #[cfg(target_os = "macos")]
 const SCROLL_WHEEL_TRACKPAD_SMOOTHING_FACTOR: f64 = 0.45;
@@ -176,6 +174,7 @@ struct MacOsHookConfig {
     invert_vertical_scroll: bool,
     invert_horizontal_scroll: bool,
     macos_thumb_wheel_simulate_trackpad: bool,
+    macos_thumb_wheel_trackpad_hold_timeout_ms: u32,
     gesture_threshold: u16,
     gesture_deadzone: u16,
     gesture_timeout_ms: u32,
@@ -193,6 +192,8 @@ impl MacOsHookConfig {
             invert_vertical_scroll: settings.invert_vertical_scroll,
             invert_horizontal_scroll: settings.invert_horizontal_scroll,
             macos_thumb_wheel_simulate_trackpad: settings.macos_thumb_wheel_simulate_trackpad,
+            macos_thumb_wheel_trackpad_hold_timeout_ms: settings
+                .macos_thumb_wheel_trackpad_hold_timeout_ms,
             gesture_threshold: settings.gesture_threshold,
             gesture_deadzone: settings.gesture_deadzone,
             gesture_timeout_ms: settings.gesture_timeout_ms,
@@ -458,7 +459,9 @@ impl MacOsHookShared {
                 );
                 CallbackResult::Keep
             }
-            CGEventType::MouseMoved | CGEventType::OtherMouseDragged => self.handle_motion_event(event),
+            CGEventType::MouseMoved | CGEventType::OtherMouseDragged => {
+                self.handle_motion_event(event)
+            }
             CGEventType::OtherMouseDown => self.handle_other_mouse_event(event, true),
             CGEventType::OtherMouseUp => self.handle_other_mouse_event(event, false),
             CGEventType::ScrollWheel => self.handle_scroll_event(event),
@@ -589,7 +592,15 @@ impl MacOsHookShared {
 
     fn take_thumb_wheel_worker_action(
         &self,
-    ) -> Option<(CGPoint, CGEventFlags, ThumbWheelTrackpadPhase, ScrollAxisDeltas)> {
+    ) -> Option<(
+        CGPoint,
+        CGEventFlags,
+        ThumbWheelTrackpadPhase,
+        ScrollAxisDeltas,
+    )> {
+        let hold_timeout_ms = self
+            .current_config()
+            .macos_thumb_wheel_trackpad_hold_timeout_ms;
         let mut state = self.thumb_wheel_state.lock().unwrap();
         if !state.active {
             return None;
@@ -622,8 +633,7 @@ impl MacOsHookShared {
 
         let should_end = state.end_requested
             || state.last_wheel_at.is_some_and(|last_wheel_at| {
-                last_wheel_at.elapsed().as_millis()
-                    >= u128::from(SCROLL_WHEEL_TRACKPAD_HOLD_TIMEOUT_MS)
+                last_wheel_at.elapsed().as_millis() >= u128::from(hold_timeout_ms)
             });
         if !should_end {
             return None;
@@ -1198,12 +1208,7 @@ fn run_gesture_worker(shared: Arc<MacOsHookShared>, stop: Arc<AtomicBool>) {
 fn run_thumb_wheel_worker(shared: Arc<MacOsHookShared>, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::SeqCst) {
         if let Some((location, flags, phase, deltas)) = shared.take_thumb_wheel_worker_action() {
-            if let Err(error) = post_thumb_wheel_trackpad_event(
-                location,
-                flags,
-                phase,
-                deltas,
-            ) {
+            if let Err(error) = post_thumb_wheel_trackpad_event(location, flags, phase, deltas) {
                 shared.push_event(
                     DebugEventKind::Warning,
                     format!("Thumb wheel trackpad swipe delivery failed: {error}"),
@@ -1797,8 +1802,10 @@ fn next_thumb_wheel_point_step(pending: f64) -> Option<i64> {
     let magnitude = if pending.abs() <= SCROLL_WHEEL_TRACKPAD_MIN_STEP {
         pending.abs()
     } else {
-        (pending.abs() * SCROLL_WHEEL_TRACKPAD_SMOOTHING_FACTOR)
-            .clamp(SCROLL_WHEEL_TRACKPAD_MIN_STEP, SCROLL_WHEEL_TRACKPAD_MAX_STEP)
+        (pending.abs() * SCROLL_WHEEL_TRACKPAD_SMOOTHING_FACTOR).clamp(
+            SCROLL_WHEEL_TRACKPAD_MIN_STEP,
+            SCROLL_WHEEL_TRACKPAD_MAX_STEP,
+        )
     };
     let step = pending.signum() * magnitude;
     Some(step.round() as i64)
