@@ -123,7 +123,10 @@ impl MockRuntime {
                 last_seen_transport: device.transport,
             })
             .collect();
-        let selected_device_key = config.managed_devices.first().map(|device| device.id.clone());
+        let selected_device_key = config
+            .managed_devices
+            .first()
+            .map(|device| device.id.clone());
         let config_store = MemoryConfigStore::new(config);
         let mut runtime = Self {
             catalog,
@@ -293,7 +296,9 @@ impl MockRuntime {
             active_device: active_device.clone(),
             engine_status: EngineStatus {
                 enabled: self.enabled,
-                connected: active_device.as_ref().is_some_and(|device| device.connected),
+                connected: active_device
+                    .as_ref()
+                    .is_some_and(|device| device.connected),
                 active_profile_id: self.config().active_profile_id,
                 frontmost_app: self
                     .frontmost_app

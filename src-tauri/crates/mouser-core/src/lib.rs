@@ -219,6 +219,10 @@ pub struct DeviceSettings {
     pub dpi: u16,
     pub invert_horizontal_scroll: bool,
     pub invert_vertical_scroll: bool,
+    #[serde(default)]
+    pub macos_thumb_wheel_simulate_trackpad: bool,
+    #[serde(default = "default_macos_thumb_wheel_trackpad_hold_timeout_ms")]
+    pub macos_thumb_wheel_trackpad_hold_timeout_ms: u32,
     pub gesture_threshold: u16,
     pub gesture_deadzone: u16,
     pub gesture_timeout_ms: u32,
@@ -401,7 +405,11 @@ impl AppConfig {
                     .unwrap_or_else(|| device.model_key.clone());
             }
 
-            if device.nickname.as_deref().is_some_and(|value| value.trim().is_empty()) {
+            if device
+                .nickname
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
                 device.nickname = None;
             }
 
@@ -721,11 +729,18 @@ pub fn default_settings() -> Settings {
     }
 }
 
+pub fn default_macos_thumb_wheel_trackpad_hold_timeout_ms() -> u32 {
+    500
+}
+
 pub fn default_device_settings() -> DeviceSettings {
     DeviceSettings {
         dpi: 1000,
         invert_horizontal_scroll: false,
         invert_vertical_scroll: false,
+        macos_thumb_wheel_simulate_trackpad: false,
+        macos_thumb_wheel_trackpad_hold_timeout_ms:
+            default_macos_thumb_wheel_trackpad_hold_timeout_ms(),
         gesture_threshold: 50,
         gesture_deadzone: 40,
         gesture_timeout_ms: 3000,
@@ -1241,7 +1256,8 @@ pub fn build_connected_device_info(
     hydrate_identity_key(product_id, &mut fingerprint);
     if let Some(spec) = resolve_known_device(product_id, product_name) {
         let model_key = spec.key.clone();
-        let display_name = non_empty_name(product_name).unwrap_or_else(|| spec.display_name.clone());
+        let display_name =
+            non_empty_name(product_name).unwrap_or_else(|| spec.display_name.clone());
         let key = live_device_key(&model_key, &fingerprint);
         return DeviceInfo {
             key,
@@ -1299,10 +1315,7 @@ pub fn build_connected_device_info(
     }
 }
 
-pub fn build_managed_device_info(
-    managed: &ManagedDevice,
-    live: Option<&DeviceInfo>,
-) -> DeviceInfo {
+pub fn build_managed_device_info(managed: &ManagedDevice, live: Option<&DeviceInfo>) -> DeviceInfo {
     let effective_current_dpi = live
         .map(|device| device.current_dpi)
         .unwrap_or(managed.settings.dpi);
@@ -1551,13 +1564,7 @@ pub fn hydrate_identity_key(product_id: Option<u16>, fingerprint: &mut DeviceFin
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|serial| {
-            format!(
-                "serial:{:04x}:{}",
-                product_id.unwrap_or_default(),
-                serial,
-            )
-        })
+        .map(|serial| format!("serial:{:04x}:{}", product_id.unwrap_or_default(), serial,))
         .or_else(|| {
             fingerprint.location_id.map(|location_id| {
                 format!(
@@ -1576,16 +1583,18 @@ pub fn hydrate_identity_key(product_id: Option<u16>, fingerprint: &mut DeviceFin
                 .filter(|value| !value.is_empty())
                 .map(|path| format!("path:{path}"))
         })
-        .or_else(|| match (
-            fingerprint.interface_number,
-            fingerprint.usage_page,
-            fingerprint.usage,
-        ) {
-            (Some(interface_number), Some(usage_page), Some(usage)) => Some(format!(
-                "interface:{:04x}:{interface_number}:{usage_page:04x}:{usage:04x}",
-                product_id.unwrap_or_default(),
-            )),
-            _ => None,
+        .or_else(|| {
+            match (
+                fingerprint.interface_number,
+                fingerprint.usage_page,
+                fingerprint.usage,
+            ) {
+                (Some(interface_number), Some(usage_page), Some(usage)) => Some(format!(
+                    "interface:{:04x}:{interface_number}:{usage_page:04x}:{usage:04x}",
+                    product_id.unwrap_or_default(),
+                )),
+                _ => None,
+            }
         });
 }
 

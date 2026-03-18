@@ -143,7 +143,8 @@ function makeBootstrap(): BootstrapPayload {
           "hscroll_left",
           "hscroll_right",
         ].map((control, index) => ({
-          control: control as AppConfig["profiles"][number]["bindings"][number]["control"],
+          control:
+            control as AppConfig["profiles"][number]["bindings"][number]["control"],
           actionId: index < 2 ? "alt_tab" : "none",
         })),
       },
@@ -160,6 +161,8 @@ function makeBootstrap(): BootstrapPayload {
           dpi: 1200,
           invertHorizontalScroll: false,
           invertVerticalScroll: false,
+          macosThumbWheelSimulateTrackpad: false,
+          macosThumbWheelTrackpadHoldTimeoutMs: 500,
           gestureThreshold: 50,
           gestureDeadzone: 40,
           gestureTimeoutMs: 3000,
@@ -181,6 +184,8 @@ function makeBootstrap(): BootstrapPayload {
       dpi: 1200,
       invertHorizontalScroll: false,
       invertVerticalScroll: false,
+      macosThumbWheelSimulateTrackpad: false,
+      macosThumbWheelTrackpadHoldTimeoutMs: 500,
       gestureThreshold: 50,
       gestureDeadzone: 40,
       gestureTimeoutMs: 3000,
@@ -201,7 +206,9 @@ function makeBootstrap(): BootstrapPayload {
       source: "mock-catalog",
       uiLayout: "mx_master",
       imageAsset: "/assets/mouse.png",
-      supportedControls: config.profiles[0].bindings.map((binding) => binding.control),
+      supportedControls: config.profiles[0].bindings.map(
+        (binding) => binding.control,
+      ),
       gestureCids: [195, 215],
       dpiMin: 200,
       dpiMax: 8000,
@@ -331,7 +338,9 @@ function makeBootstrap(): BootstrapPayload {
         gestureCids: [195, 215],
         uiLayout: "mx_master",
         imageAsset: "/assets/mouse.png",
-        supportedControls: config.profiles[0].bindings.map((binding) => binding.control),
+        supportedControls: config.profiles[0].bindings.map(
+          (binding) => binding.control,
+        ),
         dpiMin: 200,
         dpiMax: 8000,
       },
@@ -343,7 +352,9 @@ function makeBootstrap(): BootstrapPayload {
         gestureCids: [195],
         uiLayout: "generic_mouse",
         imageAsset: "/assets/icons/mouse-simple.svg",
-        supportedControls: config.profiles[0].bindings.map((binding) => binding.control),
+        supportedControls: config.profiles[0].bindings.map(
+          (binding) => binding.control,
+        ),
         dpiMin: 200,
         dpiMax: 8000,
       },
@@ -410,6 +421,66 @@ function makeImportedBootstrap(): BootstrapPayload {
   };
   next.engineSnapshot.engineStatus.activeProfileId = "vscode";
   next.engineSnapshot.engineStatus.debugMode = true;
+  return next;
+}
+
+function makeWindowsBootstrap(): BootstrapPayload {
+  const next = makeBootstrap();
+  next.platformCapabilities = {
+    ...next.platformCapabilities,
+    platform: "windows",
+  };
+  return next;
+}
+
+function makeGenericMouseBootstrap(): BootstrapPayload {
+  const next = makeBootstrap();
+  next.config = {
+    ...next.config,
+    managedDevices: next.config.managedDevices?.map((device) =>
+      device.id === "mx_master_3s"
+        ? {
+            ...device,
+            modelKey: "generic_mouse",
+            displayName: "Generic Mouse",
+          }
+        : device,
+    ),
+  };
+  next.engineSnapshot = {
+    ...next.engineSnapshot,
+    devices: next.engineSnapshot.devices.map((device) =>
+      device.key === "mx_master_3s"
+        ? {
+            ...device,
+            modelKey: "generic_mouse",
+            displayName: "Generic Mouse",
+            uiLayout: "generic_mouse",
+            imageAsset: "/assets/icons/mouse-simple.svg",
+          }
+        : device,
+    ),
+    detectedDevices: next.engineSnapshot.detectedDevices.map((device) =>
+      device.key === "mx_master_3s"
+        ? {
+            ...device,
+            modelKey: "generic_mouse",
+            displayName: "Generic Mouse",
+            uiLayout: "generic_mouse",
+            imageAsset: "/assets/icons/mouse-simple.svg",
+          }
+        : device,
+    ),
+    activeDevice: next.engineSnapshot.activeDevice
+      ? {
+          ...next.engineSnapshot.activeDevice,
+          modelKey: "generic_mouse",
+          displayName: "Generic Mouse",
+          uiLayout: "generic_mouse",
+          imageAsset: "/assets/icons/mouse-simple.svg",
+        }
+      : null,
+  };
   return next;
 }
 
@@ -641,11 +712,16 @@ describe("App", () => {
     );
     apiMocks.devicesUpdateProfile.mockImplementation(
       async (deviceKey: string, profileId: string | null) => {
+        const nextActiveProfileId =
+          currentBootstrap.engineSnapshot.engineStatus.selectedDeviceKey ===
+          deviceKey
+            ? (profileId ?? "default")
+            : currentBootstrap.config.activeProfileId;
         currentBootstrap = {
           ...currentBootstrap,
           config: {
             ...currentBootstrap.config,
-            activeProfileId: profileId ?? "default",
+            activeProfileId: nextActiveProfileId,
             managedDevices: (currentBootstrap.config.managedDevices ?? []).map(
               (device) =>
                 device.id === deviceKey ? { ...device, profileId } : device,
@@ -655,7 +731,7 @@ describe("App", () => {
             ...currentBootstrap.engineSnapshot,
             engineStatus: {
               ...currentBootstrap.engineSnapshot.engineStatus,
-              activeProfileId: profileId ?? "default",
+              activeProfileId: nextActiveProfileId,
             },
           },
         };
@@ -735,14 +811,16 @@ describe("App", () => {
         ...device,
         connected:
           device.key === deviceKey &&
-          currentBootstrap.engineSnapshot.detectedDevices.some(
-            (detected) => samePhysicalDevice(detected, device),
+          currentBootstrap.engineSnapshot.detectedDevices.some((detected) =>
+            samePhysicalDevice(detected, device),
           ),
       }));
       const activeDevice = devices.find((device) => device.key === deviceKey) ?? null;
-      const assignedProfileId =
-        currentBootstrap.config.managedDevices?.find((device) => device.id === deviceKey)
-          ?.profileId ?? currentBootstrap.config.activeProfileId;
+      const selectedManagedDevice =
+        currentBootstrap.config.managedDevices?.find(
+          (device) => device.id === deviceKey,
+        );
+      const nextActiveProfileId = selectedManagedDevice?.profileId ?? "default";
       currentBootstrap = {
         ...currentBootstrap,
         engineSnapshot: {
@@ -752,14 +830,14 @@ describe("App", () => {
           activeDevice,
           engineStatus: {
             ...currentBootstrap.engineSnapshot.engineStatus,
-            activeProfileId: assignedProfileId,
+            activeProfileId: nextActiveProfileId,
             selectedDeviceKey: deviceKey,
             connected: Boolean(activeDevice),
           },
         },
         config: {
           ...currentBootstrap.config,
-          activeProfileId: assignedProfileId,
+          activeProfileId: nextActiveProfileId,
         },
       };
       return currentBootstrap.engineSnapshot;
@@ -810,10 +888,14 @@ describe("App", () => {
     const { user } = renderApp();
 
     await user.click(await screen.findByRole("button", { name: "Buttons" }));
-    expect(screen.queryByTestId("buttons-editor-sheet")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("buttons-editor-sheet"),
+    ).not.toBeInTheDocument();
 
     await user.click(await screen.findByTestId("hotspot-card-middle"));
-    expect(await screen.findByTestId("buttons-editor-sheet")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("buttons-editor-sheet"),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("combobox", { name: "Middle button" }));
     await user.click(await screen.findByRole("option", { name: "Copy" }));
@@ -864,6 +946,84 @@ describe("App", () => {
     });
   });
 
+  it("shows and saves the macOS thumb wheel trackpad beta toggle for MX Master devices", async () => {
+    const { user } = renderApp();
+    await user.click(await screen.findByRole("button", { name: "Tune" }));
+
+    const betaSwitch = await screen.findByRole("switch", {
+      name: /Simulate trackpad swipe from thumb wheel/i,
+    });
+    expect(betaSwitch).toBeInTheDocument();
+
+    await user.click(betaSwitch);
+
+    await waitFor(() => {
+      expect(apiMocks.devicesUpdateSettings).toHaveBeenCalled();
+      const calls = apiMocks.devicesUpdateSettings.mock.calls;
+      const lastCall = calls[calls.length - 1];
+      expect(lastCall?.[0]).toBe("mx_master_3s");
+      expect(lastCall?.[1]).toEqual(
+        expect.objectContaining({
+          macosThumbWheelSimulateTrackpad: true,
+        }),
+      );
+    });
+  });
+
+  it("shows and saves the thumb wheel swipe hold timeout when the beta toggle is enabled", async () => {
+    const { user } = renderApp();
+    await user.click(await screen.findByRole("button", { name: "Tune" }));
+
+    await user.click(
+      await screen.findByRole("switch", {
+        name: /Simulate trackpad swipe from thumb wheel/i,
+      }),
+    );
+
+    const timeoutInput = await screen.findByLabelText(
+      /Thumb wheel swipe hold \(ms\)/i,
+    );
+    await user.clear(timeoutInput);
+    await user.type(timeoutInput, "900");
+
+    await waitFor(() => {
+      expect(apiMocks.devicesUpdateSettings).toHaveBeenCalled();
+      const calls = apiMocks.devicesUpdateSettings.mock.calls;
+      const lastCall = calls[calls.length - 1];
+      expect(lastCall?.[0]).toBe("mx_master_3s");
+      expect(lastCall?.[1]).toEqual(
+        expect.objectContaining({
+          macosThumbWheelTrackpadHoldTimeoutMs: 900,
+        }),
+      );
+    });
+  });
+
+  it("hides the beta toggle when the active device is not an MX Master family mouse", async () => {
+    currentBootstrap = makeGenericMouseBootstrap();
+
+    const { user } = renderApp();
+    await user.click(await screen.findByRole("button", { name: "Tune" }));
+
+    expect(
+      screen.queryByRole("switch", {
+        name: /Simulate trackpad swipe from thumb wheel/i,
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the beta toggle on non-macOS platforms", async () => {
+    currentBootstrap = makeWindowsBootstrap();
+
+    const { user } = renderApp();
+    await user.click(await screen.findByRole("button", { name: "Tune" }));
+
+    expect(
+      screen.queryByRole("switch", {
+        name: /Simulate trackpad swipe from thumb wheel/i,
+      }),
+    ).not.toBeInTheDocument();
+  });
   it("hydrates the UI from the legacy importer flow", async () => {
     const { user } = renderApp();
     await user.click(await screen.findByTestId("device-layout-card"));
@@ -872,7 +1032,9 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Profiles" }));
 
     await waitFor(() =>
-      expect(screen.getByTestId("profile-label-display")).toHaveTextContent("VS Code"),
+      expect(screen.getByTestId("profile-label-display")).toHaveTextContent(
+        "VS Code",
+      ),
     );
   });
 
@@ -902,7 +1064,9 @@ describe("App", () => {
 
   it("opens app settings in a global dialog", async () => {
     const { user } = renderApp();
-    await user.click(await screen.findByRole("button", { name: "App settings" }));
+    await user.click(
+      await screen.findByRole("button", { name: "App settings" }),
+    );
     expect(await screen.findByText("App Settings")).toBeInTheDocument();
     await user.click(screen.getByText("Start at login"));
 
@@ -949,6 +1113,8 @@ describe("App", () => {
     renderApp();
 
     expect(await screen.findByText("MX Master 3S")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "App settings" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "App settings" }),
+    ).toBeInTheDocument();
   });
 });

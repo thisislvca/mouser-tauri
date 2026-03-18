@@ -127,8 +127,7 @@ fn import_settings(
                     })
                     .unwrap_or_default();
                 if overrides.len() == 1 {
-                    device_defaults.manual_layout_override =
-                        overrides.values().next().cloned();
+                    device_defaults.manual_layout_override = overrides.values().next().cloned();
                 } else if !overrides.is_empty() {
                     warnings.push(
                         "Imported multiple legacy layout overrides; add the device first, then re-apply any per-device layout overrides in Mouser Tauri.".to_string(),

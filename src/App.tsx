@@ -146,6 +146,8 @@ const DEFAULT_DEVICE_SETTINGS: NonNullable<AppConfig["deviceDefaults"]> = {
   dpi: 1000,
   invertHorizontalScroll: false,
   invertVerticalScroll: false,
+  macosThumbWheelSimulateTrackpad: false,
+  macosThumbWheelTrackpadHoldTimeoutMs: 500,
   gestureThreshold: 50,
   gestureDeadzone: 40,
   gestureTimeoutMs: 3000,
@@ -170,6 +172,10 @@ function samePhysicalDevice(left: DeviceInfo, right: DeviceInfo) {
   return left.modelKey === right.modelKey;
 }
 
+function isMxMasterFamilyDevice(device: DeviceInfo | null | undefined) {
+  return device?.modelKey.startsWith("mx_master") ?? false;
+}
+
 function normalizeDeviceSettings(
   settings:
     | AppConfig["deviceDefaults"]
@@ -185,6 +191,12 @@ function normalizeDeviceSettings(
     invertVerticalScroll:
       settings?.invertVerticalScroll ??
       DEFAULT_DEVICE_SETTINGS.invertVerticalScroll,
+    macosThumbWheelSimulateTrackpad:
+      settings?.macosThumbWheelSimulateTrackpad ??
+      DEFAULT_DEVICE_SETTINGS.macosThumbWheelSimulateTrackpad,
+    macosThumbWheelTrackpadHoldTimeoutMs:
+      settings?.macosThumbWheelTrackpadHoldTimeoutMs ??
+      DEFAULT_DEVICE_SETTINGS.macosThumbWheelTrackpadHoldTimeoutMs,
     gestureThreshold:
       settings?.gestureThreshold ?? DEFAULT_DEVICE_SETTINGS.gestureThreshold,
     gestureDeadzone:
@@ -331,7 +343,9 @@ function findManagedDevice(
     return null;
   }
 
-  return config.managedDevices?.find((device) => device.id === deviceKey) ?? null;
+  return (
+    config.managedDevices?.find((device) => device.id === deviceKey) ?? null
+  );
 }
 
 function selectedDeviceSettings(
@@ -540,8 +554,8 @@ function App() {
     const liveDevice =
       activeDevice == null
         ? null
-        : (engineSnapshot.detectedDevices.find(
-            (device) => samePhysicalDevice(device, activeDevice),
+        : (engineSnapshot.detectedDevices.find((device) =>
+            samePhysicalDevice(device, activeDevice),
           ) ?? null);
 
     console.debug("[mouser:dpi]", {
@@ -645,7 +659,9 @@ function App() {
     updateProfileMutation.mutate(nextProfile);
   };
 
-  const saveAppSettings = (mutateSettings: (nextSettings: AppConfig["settings"]) => void) => {
+  const saveAppSettings = (
+    mutateSettings: (nextSettings: AppConfig["settings"]) => void,
+  ) => {
     const nextSettings = {
       ...config.settings,
     };
@@ -654,7 +670,9 @@ function App() {
   };
 
   const saveDeviceDefaults = (
-    mutateSettings: (nextSettings: NonNullable<AppConfig["deviceDefaults"]>) => void,
+    mutateSettings: (
+      nextSettings: NonNullable<AppConfig["deviceDefaults"]>,
+    ) => void,
   ) => {
     const nextSettings = normalizeDeviceSettings(config.deviceDefaults);
     mutateSettings(nextSettings);
@@ -876,6 +894,7 @@ function App() {
                 activeLayout={activeLayout}
                 config={config}
                 layoutChoices={bootstrap.manualLayoutChoices}
+                platformCapabilities={platformCapabilities}
                 profiles={config.profiles}
                 setSelectedProfileId={setSelectedProfileId}
                 updateDeviceNickname={(deviceKey, nickname) =>
@@ -1726,6 +1745,7 @@ function DeviceDetailView(props: {
   activeManagedDevice: NonNullable<AppConfig["managedDevices"]>[number] | null;
   activeLayout: DeviceLayout;
   layoutChoices: BootstrapPayload["manualLayoutChoices"];
+  platformCapabilities: BootstrapPayload["platformCapabilities"];
   profiles: Profile[];
   setSelectedProfileId: (profileId: string | null) => void;
   updateDeviceSettings: (
@@ -1739,6 +1759,9 @@ function DeviceDetailView(props: {
   const deviceSettings = normalizeDeviceSettings(
     props.activeManagedDevice?.settings ?? props.config.deviceDefaults,
   );
+  const showThumbWheelTrackpadToggle =
+    props.platformCapabilities.platform === "macos" &&
+    isMxMasterFamilyDevice(activeDevice);
   const dpiMin = activeDevice?.dpiMin ?? 200;
   const dpiMax = activeDevice?.dpiMax ?? 8000;
   const configuredDpi = snapDpi(deviceSettings.dpi, dpiMin, dpiMax);
@@ -1771,7 +1794,9 @@ function DeviceDetailView(props: {
     ),
   ];
   const updateManagedDeviceSettings = (
-    mutateSettings: (settings: NonNullable<AppConfig["deviceDefaults"]>) => void,
+    mutateSettings: (
+      settings: NonNullable<AppConfig["deviceDefaults"]>,
+    ) => void,
   ) => {
     if (!props.activeManagedDevice) {
       return;
@@ -1913,7 +1938,9 @@ function DeviceDetailView(props: {
                 placeholder={activeDevice.displayName}
                 value={nicknameDraft}
                 onBlur={commitNickname}
-                onChange={(event) => setNicknameDraft(event.currentTarget.value)}
+                onChange={(event) =>
+                  setNicknameDraft(event.currentTarget.value)
+                }
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
@@ -2039,6 +2066,45 @@ function DeviceDetailView(props: {
                 })
               }
             />
+            {showThumbWheelTrackpadToggle ? (
+              <SwitchRow
+                checked={
+                  deviceSettings.macosThumbWheelSimulateTrackpad ?? false
+                }
+                description="Beta: converts the MX Master thumb wheel into macOS-style trackpad horizontal swipe events for apps that need them."
+                label={
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span>Simulate trackpad swipe from thumb wheel</span>
+                    <Badge variant="secondary">Beta</Badge>
+                  </span>
+                }
+                onChange={(value) =>
+                  updateManagedDeviceSettings((settings) => {
+                    settings.macosThumbWheelSimulateTrackpad = value;
+                  })
+                }
+              />
+            ) : null}
+            {showThumbWheelTrackpadToggle &&
+            deviceSettings.macosThumbWheelSimulateTrackpad ? (
+              <Field label="Thumb wheel swipe hold (ms)">
+                <Input
+                  aria-label="Thumb wheel swipe hold (ms)"
+                  max={5000}
+                  min={0}
+                  step={50}
+                  type="number"
+                  value={deviceSettings.macosThumbWheelTrackpadHoldTimeoutMs}
+                  onChange={(event) =>
+                    updateManagedDeviceSettings((settings) => {
+                      settings.macosThumbWheelTrackpadHoldTimeoutMs = Number(
+                        event.currentTarget.value,
+                      );
+                    })
+                  }
+                />
+              </Field>
+            ) : null}
             <Field label="Gesture threshold">
               <Input
                 type="number"
@@ -2142,9 +2208,13 @@ function AppSettingsDialog(props: {
   open: boolean;
   onClose: () => void;
   platformCapabilities: BootstrapPayload["platformCapabilities"];
-  saveAppSettings: (mutateSettings: (nextSettings: AppConfig["settings"]) => void) => void;
+  saveAppSettings: (
+    mutateSettings: (nextSettings: AppConfig["settings"]) => void,
+  ) => void;
   saveDeviceDefaults: (
-    mutateSettings: (nextSettings: NonNullable<AppConfig["deviceDefaults"]>) => void,
+    mutateSettings: (
+      nextSettings: NonNullable<AppConfig["deviceDefaults"]>,
+    ) => void,
   ) => void;
 }) {
   const appearanceOptions = [
@@ -2154,7 +2224,9 @@ function AppSettingsDialog(props: {
   ] satisfies AppSelectOption[];
   const defaultSettings = normalizeDeviceSettings(props.config.deviceDefaults);
   const [defaultDpiDraft, setDefaultDpiDraft] = useState(defaultSettings.dpi);
-  const [pendingDefaultDpi, setPendingDefaultDpi] = useState<number | null>(null);
+  const [pendingDefaultDpi, setPendingDefaultDpi] = useState<number | null>(
+    null,
+  );
   const saveDeviceDefaultsRef = useRef(props.saveDeviceDefaults);
   const defaultLayoutOptions = props.layoutChoices.map(
     (choice) =>
@@ -2169,7 +2241,10 @@ function AppSettingsDialog(props: {
   }, [props.saveDeviceDefaults]);
 
   useEffect(() => {
-    if (pendingDefaultDpi != null && defaultSettings.dpi !== pendingDefaultDpi) {
+    if (
+      pendingDefaultDpi != null &&
+      defaultSettings.dpi !== pendingDefaultDpi
+    ) {
       return;
     }
 
@@ -2271,7 +2346,8 @@ function AppSettingsDialog(props: {
                             Pointer speed for new devices
                           </p>
                           <p className="text-xs text-[var(--muted-foreground)]">
-                            Drag to choose a default, then pause briefly to save it.
+                            Drag to choose a default, then pause briefly to save
+                            it.
                           </p>
                         </div>
                         <div className="rounded-full bg-white px-3 py-1.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border)]">
@@ -2476,7 +2552,9 @@ function DebugView(props: {
   importSourcePath: string;
   importWarnings: string[];
   isClearing: boolean;
-  saveAppSettings: (mutateSettings: (nextSettings: AppConfig["settings"]) => void) => void;
+  saveAppSettings: (
+    mutateSettings: (nextSettings: AppConfig["settings"]) => void,
+  ) => void;
   clearDebugLog: () => void;
   onImport: () => void;
   setImportDraft: (value: string) => void;
@@ -2716,21 +2794,30 @@ function AppSelect(props: {
 }
 
 function SwitchRow(props: {
-  label: string;
+  label: ReactNode;
   checked: boolean;
+  description?: ReactNode;
   onChange: (value: boolean) => void;
 }) {
   const switchId = useId();
 
   return (
-    <div className="flex items-center justify-between rounded-[24px] bg-[var(--card-muted)] px-4 py-4 text-sm ring-1 ring-[var(--border)]">
-      <Label
-        className="font-medium text-[var(--foreground)]"
-        htmlFor={switchId}
-      >
-        {props.label}
-      </Label>
+    <div className="flex items-start justify-between gap-4 rounded-[24px] bg-[var(--card-muted)] px-4 py-4 text-sm ring-1 ring-[var(--border)]">
+      <div className="space-y-1.5">
+        <Label
+          className="font-medium text-[var(--foreground)]"
+          htmlFor={switchId}
+        >
+          {props.label}
+        </Label>
+        {props.description ? (
+          <p className="max-w-md text-xs leading-5 text-[var(--muted-foreground)]">
+            {props.description}
+          </p>
+        ) : null}
+      </div>
       <Switch
+        className="mt-0.5 shrink-0"
         checked={props.checked}
         id={switchId}
         onCheckedChange={props.onChange}

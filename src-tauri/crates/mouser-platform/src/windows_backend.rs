@@ -186,7 +186,7 @@ impl WindowsHookShared {
             .cloned()
             .unwrap_or_else(|| config.profiles[0].clone());
         let hook_settings =
-            HookBackendSettings::from_app_and_device(&config.settings, &config.device_defaults);
+            HookBackendSettings::from_app_and_device(&config.settings, &config.device_defaults, None);
 
         Self {
             config: RwLock::new(Arc::new(WindowsHookConfig::from_runtime(
@@ -1210,8 +1210,7 @@ fn device_key_matches(
         dpi,
         fingerprint,
     )
-    .key
-        == device_key
+    .key == device_key
 }
 
 #[cfg(target_os = "windows")]
