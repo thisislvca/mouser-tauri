@@ -148,6 +148,7 @@ struct GestureTrackingState {
     active: bool,
     tracking: bool,
     triggered: bool,
+    pending_control: Option<LogicalControl>,
     started_at: Option<Instant>,
     last_move_at: Option<Instant>,
     delta_x: f64,
@@ -287,6 +288,7 @@ impl WindowsHookShared {
 
         state.active = true;
         state.triggered = false;
+        state.pending_control = None;
         if config.gesture_direction_enabled() && !cooldown_active(&state) {
             self.push_gesture_debug("Gesture button down");
             start_gesture_tracking(&mut state);
@@ -297,23 +299,30 @@ impl WindowsHookShared {
 
     fn hid_gesture_up(&self) {
         let config = self.current_config();
-        let mut state = self.gesture_state.lock().unwrap();
-        if !state.active {
-            return;
-        }
+        let (should_click, pending_control) = {
+            let mut state = self.gesture_state.lock().unwrap();
+            if !state.active {
+                return;
+            }
 
-        let should_click = !state.triggered && config.handles_control(LogicalControl::GesturePress);
-        state.active = false;
-        finish_gesture_tracking(&mut state);
-        state.triggered = false;
+            let should_click =
+                !state.triggered && config.handles_control(LogicalControl::GesturePress);
+            let pending_control = state.pending_control.take();
+            state.active = false;
+            finish_gesture_tracking(&mut state);
+            state.triggered = false;
+            (should_click, pending_control)
+        };
+
         self.push_gesture_debug(format!(
             "Gesture button up click_candidate={}",
             should_click
         ));
-        drop(state);
 
         if should_click {
             self.dispatch_control_action(&config, LogicalControl::GesturePress);
+        } else if let Some(control) = pending_control {
+            self.dispatch_control_action(&config, control);
         }
     }
 
@@ -385,6 +394,7 @@ impl WindowsHookShared {
             f64::from(config.gesture_deadzone),
         ) {
             state.triggered = true;
+            state.pending_control = Some(control);
             self.push_gesture_debug(format!(
                 "Gesture detected {} source={} dx={} dy={}",
                 control.label(),
@@ -392,7 +402,6 @@ impl WindowsHookShared {
                 state.delta_x as i32,
                 state.delta_y as i32,
             ));
-            self.dispatch_control_action(config, control);
             state.cooldown_until =
                 Some(Instant::now() + Duration::from_millis(u64::from(config.gesture_cooldown_ms)));
             finish_gesture_tracking(state);

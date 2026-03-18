@@ -58,8 +58,12 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
-use core_foundation::runloop::CFRunLoop;
+use core_foundation::{
+    base::TCFType,
+    string::{CFString, CFStringRef},
+};
 #[cfg(target_os = "macos")]
+use core_foundation::runloop::CFRunLoop;
 use core_graphics::{
     event::{
         CallbackResult, CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions,
@@ -115,6 +119,24 @@ const NX_MUTE: isize = 7;
 const NX_VOL_UP: isize = 0;
 #[cfg(target_os = "macos")]
 const NX_VOL_DOWN: isize = 1;
+#[cfg(target_os = "macos")]
+const SYMBOLIC_HOTKEY_SPACE_LEFT: u32 = 79;
+#[cfg(target_os = "macos")]
+const SYMBOLIC_HOTKEY_SPACE_RIGHT: u32 = 81;
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn CoreDockSendNotification(notification_name: CFStringRef, unknown: i32) -> i32;
+    fn CGSGetSymbolicHotKeyValue(
+        hotkey: u32,
+        key_equivalent: *mut u16,
+        virtual_key: *mut u16,
+        modifiers: *mut u32,
+    ) -> i32;
+    fn CGSIsSymbolicHotKeyEnabled(hotkey: u32) -> bool;
+    fn CGSSetSymbolicHotKeyEnabled(hotkey: u32, enabled: bool) -> i32;
+}
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -235,6 +257,7 @@ struct GestureTrackingState {
     active: bool,
     tracking: bool,
     triggered: bool,
+    pending_control: Option<LogicalControl>,
     started_at: Option<Instant>,
     last_move_at: Option<Instant>,
     delta_x: f64,
@@ -450,6 +473,7 @@ impl MacOsHookShared {
 
         state.active = true;
         state.triggered = false;
+        state.pending_control = None;
         self.push_gesture_debug("Gesture button down");
 
         if config.gesture_direction_enabled() && !cooldown_active(&state) {
@@ -462,17 +486,18 @@ impl MacOsHookShared {
 
     fn hid_gesture_up(&self) {
         let config = self.current_config();
-        let should_click = {
+        let (should_click, pending_control) = {
             let mut state = self.gesture_state.lock().unwrap();
             if !state.active {
                 return;
             }
 
             let should_click = !state.triggered;
+            let pending_control = state.pending_control.take();
             state.active = false;
             finish_gesture_tracking(&mut state);
             state.triggered = false;
-            should_click
+            (should_click, pending_control)
         };
 
         self.push_gesture_debug(format!(
@@ -482,6 +507,8 @@ impl MacOsHookShared {
 
         if should_click {
             self.dispatch_control_action(&config, LogicalControl::GesturePress);
+        } else if let Some(control) = pending_control {
+            self.dispatch_control_action(&config, control);
         }
     }
 
@@ -582,6 +609,7 @@ impl MacOsHookShared {
             f64::from(config.gesture_deadzone),
         ) {
             state.triggered = true;
+            state.pending_control = Some(control);
             self.push_gesture_debug(format!(
                 "Gesture detected {} source={} dx={} dy={}",
                 control.label(),
@@ -589,7 +617,6 @@ impl MacOsHookShared {
                 state.delta_x as i32,
                 state.delta_y as i32,
             ));
-            self.dispatch_control_action(config, control);
             state.cooldown_until =
                 Some(Instant::now() + Duration::from_millis(u64::from(config.gesture_cooldown_ms)));
             finish_gesture_tracking(state);
@@ -1377,6 +1404,10 @@ fn copy_scroll_axis(source: &CGEvent, target: &CGEvent, field: u32, invert: bool
 
 #[cfg(target_os = "macos")]
 fn execute_action(action_id: &str) -> Result<(), PlatformError> {
+    if execute_private_macos_action(action_id)? {
+        return Ok(());
+    }
+
     match action_id {
         "none" => Ok(()),
         "alt_tab" => send_key_combo(&[KeyCode::COMMAND, KeyCode::TAB]),
@@ -1408,6 +1439,19 @@ fn execute_action(action_id: &str) -> Result<(), PlatformError> {
         unsupported => Err(PlatformError::Message(format!(
             "unsupported action `{unsupported}`"
         ))),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn execute_private_macos_action(action_id: &str) -> Result<bool, PlatformError> {
+    match action_id {
+        "mission_control" => send_dock_notification("com.apple.expose.awake"),
+        "app_expose" => send_dock_notification("com.apple.expose.front.awake"),
+        "show_desktop" => send_dock_notification("com.apple.showdesktop.awake"),
+        "launchpad" => send_dock_notification("com.apple.launchpad.toggle"),
+        "space_left" => post_symbolic_hotkey(SYMBOLIC_HOTKEY_SPACE_LEFT),
+        "space_right" => post_symbolic_hotkey(SYMBOLIC_HOTKEY_SPACE_RIGHT),
+        _ => Ok(false),
     }
 }
 
@@ -1460,6 +1504,62 @@ fn modifier_flags(keys: &[u16]) -> CGEventFlags {
         }
     }
     flags
+}
+
+#[cfg(target_os = "macos")]
+fn send_dock_notification(notification_name: &str) -> Result<bool, PlatformError> {
+    let notification = CFString::new(notification_name);
+    let result = unsafe { CoreDockSendNotification(notification.as_concrete_TypeRef(), 0) };
+    Ok(result == 0)
+}
+
+#[cfg(target_os = "macos")]
+fn post_symbolic_hotkey(hotkey: u32) -> Result<bool, PlatformError> {
+    let mut key_equivalent = 0u16;
+    let mut virtual_key = 0u16;
+    let mut modifiers = 0u32;
+    let result = unsafe {
+        CGSGetSymbolicHotKeyValue(
+            hotkey,
+            &mut key_equivalent,
+            &mut virtual_key,
+            &mut modifiers,
+        )
+    };
+    if result != 0 {
+        return Ok(false);
+    }
+
+    let was_enabled = unsafe { CGSIsSymbolicHotKeyEnabled(hotkey) };
+    if !was_enabled {
+        unsafe {
+            CGSSetSymbolicHotKeyEnabled(hotkey, true);
+        }
+    }
+
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .map_err(|_| PlatformError::Message("failed to create CGEventSource".to_string()))?;
+    let flags = CGEventFlags::from_bits_truncate(u64::from(modifiers));
+
+    let key_down = CGEvent::new_keyboard_event(source.clone(), virtual_key, true)
+        .map_err(|_| PlatformError::Message("failed to create key-down event".to_string()))?;
+    key_down.set_flags(flags);
+    key_down.post(CGEventTapLocation::Session);
+
+    let key_up = CGEvent::new_keyboard_event(source, virtual_key, false)
+        .map_err(|_| PlatformError::Message("failed to create key-up event".to_string()))?;
+    key_up.set_flags(flags);
+    key_up.post(CGEventTapLocation::Session);
+
+    thread::sleep(Duration::from_millis(50));
+
+    if !was_enabled {
+        unsafe {
+            CGSSetSymbolicHotKeyEnabled(hotkey, false);
+        }
+    }
+
+    Ok(true)
 }
 
 #[cfg(target_os = "macos")]
