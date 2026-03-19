@@ -187,6 +187,14 @@ fn app_discovery_refresh(
 
 #[tauri::command]
 #[specta::specta]
+fn app_icon_load(source_path: String) -> CommandResult<Option<String>> {
+    Ok(mouser_platform::load_native_app_icon(&source_path)
+        .ok()
+        .flatten())
+}
+
+#[tauri::command]
+#[specta::specta]
 fn devices_update_settings(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -547,6 +555,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             app_settings_update,
             device_defaults_update,
             app_discovery_refresh,
+            app_icon_load,
             profiles_create,
             profiles_update,
             profiles_delete,

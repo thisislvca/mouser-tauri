@@ -135,6 +135,7 @@ const apiMocks = vi.hoisted(() => ({
   appSettingsUpdate: vi.fn(),
   deviceDefaultsUpdate: vi.fn(),
   appDiscoveryRefresh: vi.fn(),
+  appIconLoad: vi.fn(),
   profilesCreate: vi.fn(),
   profilesUpdate: vi.fn(),
   profilesDelete: vi.fn(),
@@ -160,6 +161,7 @@ vi.mock("./lib/api", () => ({
   appSettingsUpdate: apiMocks.appSettingsUpdate,
   deviceDefaultsUpdate: apiMocks.deviceDefaultsUpdate,
   appDiscoveryRefresh: apiMocks.appDiscoveryRefresh,
+  appIconLoad: apiMocks.appIconLoad,
   profilesCreate: apiMocks.profilesCreate,
   profilesUpdate: apiMocks.profilesUpdate,
   profilesDelete: apiMocks.profilesDelete,
@@ -342,7 +344,7 @@ function makeBootstrap(): BootstrapPayload {
       {
         executable: "Code.exe",
         label: "VS Code",
-        iconAsset: "/assets/apps/vscode.png",
+        iconAsset: null,
       },
       {
         executable: "msedge.exe",
@@ -357,9 +359,9 @@ function makeBootstrap(): BootstrapPayload {
           label: "VS Code",
           description: "Code.exe",
           matchers: [{ kind: "executable", value: "Code.exe" }],
-          iconAsset: "/assets/apps/vscode.png",
+          iconAsset: null,
           sourceKinds: ["catalog"],
-          sourcePath: null,
+          sourcePath: "/Applications/Visual Studio Code.app",
           suggested: true,
         },
       ],
@@ -369,9 +371,9 @@ function makeBootstrap(): BootstrapPayload {
           label: "VS Code",
           description: "Code.exe",
           matchers: [{ kind: "executable", value: "Code.exe" }],
-          iconAsset: "/assets/apps/vscode.png",
+          iconAsset: null,
           sourceKinds: ["catalog"],
-          sourcePath: null,
+          sourcePath: "/Applications/Visual Studio Code.app",
           suggested: true,
         },
         {
@@ -381,7 +383,7 @@ function makeBootstrap(): BootstrapPayload {
           matchers: [{ kind: "executable", value: "msedge.exe" }],
           iconAsset: null,
           sourceKinds: ["catalog"],
-          sourcePath: null,
+          sourcePath: "/Applications/Microsoft Edge.app",
           suggested: true,
         },
       ],
@@ -576,6 +578,7 @@ describe("App", () => {
     apiMocks.appSettingsUpdate.mockReset();
     apiMocks.deviceDefaultsUpdate.mockReset();
     apiMocks.appDiscoveryRefresh.mockReset();
+    apiMocks.appIconLoad.mockReset();
     apiMocks.profilesCreate.mockReset();
     apiMocks.profilesUpdate.mockReset();
     apiMocks.profilesDelete.mockReset();
@@ -634,6 +637,7 @@ describe("App", () => {
       },
     );
     apiMocks.appDiscoveryRefresh.mockImplementation(async () => currentBootstrap);
+    apiMocks.appIconLoad.mockResolvedValue(null);
     apiMocks.profilesUpdate.mockImplementation(
       async (updatedProfile: AppConfig["profiles"][number]) => {
         currentBootstrap = {
@@ -1011,6 +1015,37 @@ describe("App", () => {
       expect(apiMocks.devicesUpdateProfile).toHaveBeenCalledWith(
         "mx_master_3s",
         "vscode",
+      );
+    });
+  });
+
+  it("loads native icons for discovered apps when bundled assets are missing", async () => {
+    const bootstrap = makeBootstrap();
+    currentBootstrap = {
+      ...bootstrap,
+      config: {
+        ...bootstrap.config,
+        profiles: [
+          ...bootstrap.config.profiles,
+          {
+            id: "edge",
+            label: "Microsoft Edge",
+            appMatchers: [{ kind: "executable", value: "msedge.exe" }],
+            bindings: bootstrap.config.profiles[0].bindings.map((binding) => ({
+              ...binding,
+            })),
+          },
+        ],
+      },
+    };
+
+    const { user } = renderApp();
+    await user.click(await screen.findByTestId("device-layout-card"));
+    await user.click(await screen.findByRole("button", { name: "Profiles" }));
+
+    await waitFor(() => {
+      expect(apiMocks.appIconLoad).toHaveBeenCalledWith(
+        "/Applications/Microsoft Edge.app",
       );
     });
   });

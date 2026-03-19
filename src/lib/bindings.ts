@@ -54,6 +54,14 @@ async appDiscoveryRefresh() : Promise<Result<BootstrapPayload, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async appIconLoad(sourcePath: string) : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("app_icon_load", { sourcePath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async profilesCreate(profile: Profile) : Promise<Result<BootstrapPayload, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("profiles_create", { profile }) };

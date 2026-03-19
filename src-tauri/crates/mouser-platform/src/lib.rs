@@ -4,9 +4,11 @@ use std::{
     fs::{self, File},
     io::Write,
     path::PathBuf,
+    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 #[cfg(target_os = "macos")]
 use mouser_core::build_connected_device_info;
 use mouser_core::{
@@ -143,6 +145,25 @@ pub trait DeviceCatalog: Send + Sync {
 pub trait ConfigStore: Send + Sync {
     fn load(&self) -> Result<AppConfig, PlatformError>;
     fn save(&self, config: &AppConfig) -> Result<(), PlatformError>;
+}
+
+pub fn load_native_app_icon(source_path: &str) -> Result<Option<String>, PlatformError> {
+    #[cfg(target_os = "macos")]
+    {
+        return macos::load_native_app_icon(source_path);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = source_path;
+        return Ok(None);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = source_path;
+        Ok(None)
+    }
 }
 
 pub(crate) fn horizontal_scroll_control(delta: i32) -> Option<LogicalControl> {
@@ -595,6 +616,20 @@ pub mod macos {
     pub struct MacOsAppFocusBackend;
     pub struct MacOsAppDiscoveryBackend;
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn load_native_app_icon(source_path: &str) -> Result<Option<String>, PlatformError> {
+        let bundle_path = Path::new(source_path);
+        if !bundle_path.exists() {
+            return Ok(None);
+        }
+
+        let Some(icon_path) = resolve_bundle_icon_path(bundle_path)? else {
+            return Ok(None);
+        };
+
+        encode_icon_as_data_url(&icon_path)
+    }
+
     impl HidBackend for MacOsHidBackend {
         fn backend_id(&self) -> &'static str {
             if cfg!(target_os = "macos") {
@@ -904,6 +939,146 @@ pub mod macos {
             source_kinds: vec![AppDiscoverySource::ApplicationBundle],
             source_path: Some(path.to_string_lossy().to_string()),
         })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn resolve_bundle_icon_path(bundle_path: &Path) -> Result<Option<PathBuf>, PlatformError> {
+        let plist_path = bundle_path.join("Contents").join("Info.plist");
+        let plist = PlistValue::from_file(&plist_path).map_err(|error| PlatformError::Io {
+            path: plist_path.display().to_string(),
+            message: error.to_string(),
+        })?;
+        let Some(dict) = plist.as_dictionary() else {
+            return Ok(None);
+        };
+
+        let resources_dir = bundle_path.join("Contents").join("Resources");
+        if !resources_dir.exists() {
+            return Ok(None);
+        }
+
+        for candidate in bundle_icon_name_candidates(dict) {
+            if let Some(icon_path) = resolve_icon_candidate(&resources_dir, &candidate) {
+                return Ok(Some(icon_path));
+            }
+        }
+
+        let mut fallback_icons = fs::read_dir(&resources_dir)
+            .map_err(|error| PlatformError::Io {
+                path: resources_dir.display().to_string(),
+                message: error.to_string(),
+            })?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("icns"))
+            })
+            .collect::<Vec<_>>();
+        fallback_icons.sort();
+
+        Ok(fallback_icons.into_iter().next())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn bundle_icon_name_candidates(dict: &plist::Dictionary) -> Vec<String> {
+        let mut candidates = Vec::new();
+
+        if let Some(icon_file) = dict
+            .get("CFBundleIconFile")
+            .and_then(PlistValue::as_string)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            candidates.push(icon_file.to_string());
+        }
+
+        if let Some(icon_name) = dict
+            .get("CFBundleIconName")
+            .and_then(PlistValue::as_string)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            candidates.push(icon_name.to_string());
+        }
+
+        if let Some(icon_files) = dict
+            .get("CFBundleIcons")
+            .and_then(PlistValue::as_dictionary)
+            .and_then(|icons| icons.get("CFBundlePrimaryIcon"))
+            .and_then(PlistValue::as_dictionary)
+            .and_then(|primary| primary.get("CFBundleIconFiles"))
+            .and_then(PlistValue::as_array)
+        {
+            for icon_file in icon_files
+                .iter()
+                .filter_map(PlistValue::as_string)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                candidates.push(icon_file.to_string());
+            }
+        }
+
+        candidates.dedup();
+        candidates
+    }
+
+    #[cfg(target_os = "macos")]
+    fn resolve_icon_candidate(resources_dir: &Path, candidate: &str) -> Option<PathBuf> {
+        let base_name = candidate.trim_end_matches(".icns");
+        let paths = [
+            resources_dir.join(candidate),
+            resources_dir.join(format!("{candidate}.icns")),
+            resources_dir.join(format!("{base_name}.icns")),
+        ];
+
+        paths.into_iter().find(|path| path.exists())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn encode_icon_as_data_url(icon_path: &Path) -> Result<Option<String>, PlatformError> {
+        let output_path = std::env::temp_dir().join(format!(
+            "mouser-app-icon-{}-{}.png",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+
+        let output = Command::new("/usr/bin/sips")
+            .arg("-s")
+            .arg("format")
+            .arg("png")
+            .arg(icon_path)
+            .arg("--out")
+            .arg(&output_path)
+            .output()
+            .map_err(|error| PlatformError::Io {
+                path: icon_path.display().to_string(),
+                message: error.to_string(),
+            })?;
+
+        if !output.status.success() || !output_path.exists() {
+            return Ok(None);
+        }
+
+        let bytes = fs::read(&output_path).map_err(|error| PlatformError::Io {
+            path: output_path.display().to_string(),
+            message: error.to_string(),
+        })?;
+        let _ = fs::remove_file(&output_path);
+
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(format!(
+            "data:image/png;base64,{}",
+            BASE64_STANDARD.encode(bytes)
+        )))
     }
 
     #[cfg(target_os = "macos")]

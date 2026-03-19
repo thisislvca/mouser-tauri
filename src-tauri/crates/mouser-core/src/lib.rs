@@ -873,7 +873,7 @@ pub fn default_app_catalog() -> Vec<CatalogApp> {
         catalog_app(
             "google_chrome",
             "Google Chrome",
-            Some("/assets/apps/chrome.png"),
+            None,
             &[
                 (AppMatcherKind::Executable, "chrome.exe"),
                 (AppMatcherKind::Executable, "Google Chrome"),
@@ -892,7 +892,7 @@ pub fn default_app_catalog() -> Vec<CatalogApp> {
         catalog_app(
             "vscode",
             "Visual Studio Code",
-            Some("/assets/apps/vscode.png"),
+            None,
             &[
                 (AppMatcherKind::Executable, "Code.exe"),
                 (AppMatcherKind::Executable, "Code"),
@@ -902,7 +902,7 @@ pub fn default_app_catalog() -> Vec<CatalogApp> {
         catalog_app(
             "vlc",
             "VLC Media Player",
-            Some("/assets/apps/vlc.png"),
+            None,
             &[
                 (AppMatcherKind::Executable, "vlc.exe"),
                 (AppMatcherKind::Executable, "VLC"),
@@ -912,7 +912,7 @@ pub fn default_app_catalog() -> Vec<CatalogApp> {
         catalog_app(
             "windows_media_player",
             "Windows Media Player",
-            Some("/assets/apps/media-player.webp"),
+            None,
             &[
                 (AppMatcherKind::Executable, "Microsoft.Media.Player.exe"),
                 (AppMatcherKind::Executable, "wmplayer.exe"),

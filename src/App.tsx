@@ -52,6 +52,7 @@ import { Slider } from "./components/ui/slider";
 import { Switch } from "./components/ui/switch";
 import { Textarea } from "./components/ui/textarea";
 import {
+  appIconLoad,
   appDiscoveryRefresh,
   appSettingsUpdate,
   bootstrapLoad,
@@ -333,6 +334,78 @@ function formatDiscoverySource(
     default:
       return "Installed";
   }
+}
+
+function AppIcon(props: {
+  label: string;
+  iconAsset?: string | null;
+  sourcePath?: string | null;
+  className: string;
+  fallbackClassName: string;
+  defer?: boolean;
+}) {
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const [shouldLoad, setShouldLoad] = useState(
+    !props.defer || typeof IntersectionObserver === "undefined",
+  );
+
+  useEffect(() => {
+    if (shouldLoad || !props.defer) {
+      return;
+    }
+
+    if (typeof IntersectionObserver === "undefined") {
+      setShouldLoad(true);
+      return;
+    }
+
+    const node = sentinelRef.current;
+    if (!node) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setShouldLoad(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "160px" },
+    );
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, [props.defer, shouldLoad]);
+
+  const iconQuery = useQuery({
+    queryKey: ["app-icon", props.sourcePath],
+    queryFn: () => appIconLoad(props.sourcePath ?? ""),
+    enabled: !!props.sourcePath && shouldLoad,
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: Number.POSITIVE_INFINITY,
+  });
+
+  const src = iconQuery.data ?? props.iconAsset ?? null;
+  if (src) {
+    return (
+      <img
+        alt={props.label}
+        className={props.className}
+        loading={props.defer ? "lazy" : undefined}
+        src={src}
+      />
+    );
+  }
+
+  return (
+    <div
+      className={props.fallbackClassName}
+      ref={props.defer ? sentinelRef : undefined}
+    >
+      {props.label.charAt(0).toUpperCase()}
+    </div>
+  );
 }
 
 function findManagedDevice(
@@ -877,17 +950,13 @@ function App() {
                     title={profile.label}
                     type="button"
                   >
-                    {app?.iconAsset ? (
-                      <img
-                        alt={profile.label}
-                        className="h-6 w-6 rounded-lg object-cover"
-                        src={app.iconAsset}
-                      />
-                    ) : (
-                      <span className="text-xs font-bold text-[var(--foreground)]">
-                        {profile.label.charAt(0).toUpperCase()}
-                      </span>
-                    )}
+                    <AppIcon
+                      className="h-6 w-6 rounded-lg object-cover"
+                      fallbackClassName="flex h-6 w-6 items-center justify-center text-xs font-bold text-[var(--foreground)]"
+                      iconAsset={app?.iconAsset}
+                      label={profile.label}
+                      sourcePath={app && "sourcePath" in app ? app.sourcePath : null}
+                    />
                   </button>
                 );
               })}
@@ -1016,7 +1085,7 @@ function App() {
             {isAppSidebarOpen ? (
               <motion.aside
                 animate={{ opacity: 1, x: 0 }}
-                className="fixed right-0 top-0 z-40 flex h-full w-full max-w-[420px] flex-col border-l border-black/[0.06] bg-white/95 shadow-[-24px_0_64px_rgba(15,23,42,0.12)] backdrop-blur-xl"
+                className="fixed right-0 top-0 z-40 flex h-full min-h-0 w-full max-w-[420px] flex-col overflow-hidden border-l border-[var(--border-soft)] bg-[var(--surface)] text-[var(--foreground)] shadow-[-24px_0_64px_rgba(15,23,42,0.12)] backdrop-blur-xl"
                 exit={{ opacity: 0, x: 32 }}
                 initial={{ opacity: 0, x: 32 }}
                 transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
@@ -1502,7 +1571,7 @@ function AppDiscoverySheet(props: {
           </p>
         </div>
         <button
-          className="flex h-10 w-10 items-center justify-center rounded-2xl text-[var(--muted-foreground)] transition hover:bg-black/5 hover:text-[var(--foreground)]"
+          className="flex h-10 w-10 items-center justify-center rounded-2xl text-[var(--muted-foreground)] transition hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
           onClick={props.onClose}
           type="button"
         >
@@ -1528,7 +1597,7 @@ function AppDiscoverySheet(props: {
         </div>
       </div>
 
-      <ScrollArea className="flex-1">
+      <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-8 px-6 py-6">
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-3">
@@ -1593,17 +1662,14 @@ function AppDiscoveryRow(props: {
       onClick={props.onSelect}
       type="button"
     >
-      {props.app.iconAsset ? (
-        <img
-          alt={props.app.label}
-          className="h-12 w-12 rounded-2xl border border-[var(--border)] bg-white object-cover"
-          src={props.app.iconAsset}
-        />
-      ) : (
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-white text-sm font-semibold text-[var(--foreground)]">
-          {props.app.label.charAt(0).toUpperCase()}
-        </div>
-      )}
+      <AppIcon
+        className="h-12 w-12 rounded-[18px] object-contain drop-shadow-[0_10px_18px_rgba(0,0,0,0.28)]"
+        defer
+        fallbackClassName="flex h-12 w-12 items-center justify-center rounded-[18px] bg-[var(--card)] text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border-soft)]"
+        iconAsset={props.app.iconAsset}
+        label={props.app.label}
+        sourcePath={props.app.sourcePath}
+      />
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
@@ -1714,11 +1780,15 @@ function ProfilesView(props: {
                         "All applications"}
                     </p>
                   </div>
-                  {profileApp?.iconAsset ? (
-                    <img
-                      alt={profileApp.label}
-                      className="h-11 w-11 rounded-2xl border border-[var(--border)] bg-white object-cover"
-                      src={profileApp.iconAsset}
+                  {profileApp ? (
+                    <AppIcon
+                      className="h-11 w-11 rounded-[16px] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.24)]"
+                      fallbackClassName="flex h-11 w-11 items-center justify-center rounded-[16px] bg-[var(--card)] text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border-soft)]"
+                      iconAsset={profileApp.iconAsset}
+                      label={profileApp.label}
+                      sourcePath={
+                        "sourcePath" in profileApp ? profileApp.sourcePath : null
+                      }
                     />
                   ) : (
                     <StatusPill tone="neutral" value={profile.id} />

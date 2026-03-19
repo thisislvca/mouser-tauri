@@ -43,6 +43,10 @@ export async function appDiscoveryRefresh() {
   return unwrap(await commands.appDiscoveryRefresh());
 }
 
+export async function appIconLoad(sourcePath: string) {
+  return unwrap(await commands.appIconLoad(sourcePath));
+}
+
 export async function profilesCreate(profile: Profile) {
   return unwrap(await commands.profilesCreate(profile));
 }
