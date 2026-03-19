@@ -4,19 +4,23 @@ use std::{
     fs::{self, File},
     io::Write,
     path::PathBuf,
-    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(target_os = "macos")]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 #[cfg(target_os = "macos")]
 use mouser_core::build_connected_device_info;
+#[cfg(any(target_os = "macos", test))]
+use mouser_core::AppDiscoverySource;
 use mouser_core::{
     clamp_dpi, default_config, default_device_settings, default_known_apps_ref,
-    default_layouts_ref, known_device_specs_ref, AppConfig, AppDiscoverySource, AppIdentity,
-    DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp,
-    KnownApp, LogicalControl, Profile, Settings,
+    default_layouts_ref, known_device_specs_ref, AppConfig, AppIdentity, DebugEventKind,
+    DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp, KnownApp,
+    LogicalControl, Profile, Settings,
 };
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use thiserror::Error;
 
 mod gesture;
@@ -154,8 +158,7 @@ pub fn load_native_app_icon(source_path: &str) -> Result<Option<String>, Platfor
 
     #[cfg(target_os = "windows")]
     {
-        let _ = source_path;
-        return Ok(None);
+        return windows_backend::load_native_app_icon(source_path);
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -191,23 +194,29 @@ pub(crate) fn push_bounded_hook_event(
 pub(crate) fn dedupe_installed_apps(
     apps: Vec<InstalledApp>,
 ) -> Result<Vec<InstalledApp>, PlatformError> {
-    let mut deduped = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut merged = std::collections::BTreeMap::<String, InstalledApp>::new();
 
-    for mut app in apps {
-        let stable_id = app.identity.stable_id();
-        if !seen.insert(stable_id) {
-            continue;
-        }
-
+    for app in apps {
         if app.identity.preferred_matchers().is_empty() {
             continue;
         }
 
-        app.source_kinds.sort();
-        app.source_kinds.dedup();
-        deduped.push(app);
+        let stable_id = app.identity.stable_id();
+        if let Some(existing) = merged.get_mut(&stable_id) {
+            merge_installed_app(existing, app);
+        } else {
+            merged.insert(stable_id, app);
+        }
     }
+
+    let mut deduped = merged
+        .into_values()
+        .map(|mut app| {
+            app.source_kinds.sort();
+            app.source_kinds.dedup();
+            app
+        })
+        .collect::<Vec<_>>();
 
     deduped.sort_by(|left, right| {
         left.identity
@@ -217,6 +226,99 @@ pub(crate) fn dedupe_installed_apps(
     });
 
     Ok(deduped)
+}
+
+fn merge_installed_app(existing: &mut InstalledApp, incoming: InstalledApp) {
+    merge_identity(&mut existing.identity, incoming.identity);
+    existing.source_kinds.extend(incoming.source_kinds);
+
+    if should_replace_source_path(
+        existing.source_path.as_deref(),
+        incoming.source_path.as_deref(),
+    ) {
+        existing.source_path = incoming.source_path;
+    }
+}
+
+fn merge_identity(existing: &mut AppIdentity, incoming: AppIdentity) {
+    if preferred_text(existing.label.as_deref(), incoming.label.as_deref()) {
+        existing.label = incoming.label;
+    }
+
+    if existing.executable.is_none() {
+        existing.executable = incoming.executable;
+    }
+    if existing.executable_path.is_none() {
+        existing.executable_path = incoming.executable_path;
+    }
+    if existing.bundle_id.is_none() {
+        existing.bundle_id = incoming.bundle_id;
+    }
+    if existing.package_family_name.is_none() {
+        existing.package_family_name = incoming.package_family_name;
+    }
+}
+
+fn preferred_text(current: Option<&str>, candidate: Option<&str>) -> bool {
+    let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let Some(current) = current.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+
+    label_quality(candidate) > label_quality(current)
+}
+
+fn label_quality(value: &str) -> usize {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+
+    let mut score = trimmed.len();
+    if trimmed.contains(' ') {
+        score += 8;
+    }
+    if !trimmed.to_ascii_lowercase().ends_with(".exe") {
+        score += 8;
+    }
+    score
+}
+
+fn should_replace_source_path(current: Option<&str>, candidate: Option<&str>) -> bool {
+    let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let Some(current) = current.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+
+    source_path_priority(candidate) > source_path_priority(current)
+}
+
+fn source_path_priority(path: &str) -> usize {
+    let lower = path.trim().to_ascii_lowercase();
+    if lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".bmp")
+        || lower.ends_with(".svg")
+        || lower.ends_with(".ico")
+    {
+        return 5;
+    }
+    if lower.ends_with(".exe") {
+        return 4;
+    }
+    if lower.ends_with(".lnk") {
+        return 3;
+    }
+    if lower.starts_with("shell:appsfolder\\") {
+        return 2;
+    }
+    1
 }
 
 #[derive(Clone, Default)]
@@ -1470,5 +1572,47 @@ mod tests {
         );
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn dedupe_installed_apps_merges_sources_and_prefers_richer_metadata() {
+        let apps = vec![
+            InstalledApp {
+                identity: AppIdentity {
+                    label: Some("Code".to_string()),
+                    executable: Some("Code.exe".to_string()),
+                    executable_path: Some("C:\\Apps\\Code.exe".to_string()),
+                    bundle_id: None,
+                    package_family_name: None,
+                },
+                source_kinds: vec![AppDiscoverySource::StartMenuShortcut],
+                source_path: Some("C:\\Users\\luca\\Start Menu\\Code.lnk".to_string()),
+            },
+            InstalledApp {
+                identity: AppIdentity {
+                    label: Some("Visual Studio Code".to_string()),
+                    executable: Some("Code.exe".to_string()),
+                    executable_path: Some("C:\\Apps\\Code.exe".to_string()),
+                    bundle_id: None,
+                    package_family_name: None,
+                },
+                source_kinds: vec![AppDiscoverySource::Registry],
+                source_path: Some("C:\\Apps\\Code.exe".to_string()),
+            },
+        ];
+
+        let deduped = dedupe_installed_apps(apps).expect("expected dedupe to succeed");
+
+        assert_eq!(deduped.len(), 1);
+        let app = &deduped[0];
+        assert_eq!(app.identity.label.as_deref(), Some("Visual Studio Code"));
+        assert_eq!(
+            app.source_kinds,
+            vec![
+                AppDiscoverySource::StartMenuShortcut,
+                AppDiscoverySource::Registry,
+            ]
+        );
+        assert_eq!(app.source_path.as_deref(), Some("C:\\Apps\\Code.exe"));
     }
 }

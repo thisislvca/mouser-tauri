@@ -4,6 +4,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc, Arc, Mutex, OnceLock, RwLock,
@@ -12,15 +13,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use mouser_core::{
     build_connected_device_info, default_config, hydrate_identity_key, AppDiscoverySource,
     AppIdentity, DebugEventKind, DeviceFingerprint, DeviceInfo, InstalledApp, LogicalControl,
     Profile,
 };
+use serde_json::Value as JsonValue;
 
 use crate::{
     dedupe_installed_apps, gesture,
-    hidpp::{self, HidppIo, HidppMessage, BT_DEV_IDX},
+    hidpp::{self, HidppIo, BT_DEV_IDX},
     horizontal_scroll_control, push_bounded_hook_event, AppDiscoveryBackend, AppFocusBackend,
     HidBackend, HidCapabilities, HookBackend, HookBackendEvent, HookBackendSettings,
     HookCapabilities, PlatformError,
@@ -34,10 +37,16 @@ use lnk::encoding::WINDOWS_1252;
 use lnk::ShellLink;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{
+        CloseHandle, APPMODEL_ERROR_NO_PACKAGE, BOOL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
+        WPARAM,
+    },
+    Storage::Packaging::Appx::{GetPackageFamilyName, PACKAGE_FAMILY_NAME_MAX_LENGTH},
     System::{LibraryLoader::GetModuleHandleW, Threading::*},
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
+#[cfg(target_os = "windows")]
+use winreg::{enums::*, RegKey};
 
 const LOGI_VID: u16 = 0x046D;
 const FEAT_REPROG_V4: u16 = 0x1B04;
@@ -47,6 +56,14 @@ const GESTURE_DIVERT_FLAGS: u8 = 0x01;
 const GESTURE_RAWXY_FLAGS: u8 = 0x05;
 const GESTURE_UNDIVERT_FLAGS: u8 = 0x00;
 const GESTURE_UNDIVERT_RAWXY_FLAGS: u8 = 0x04;
+#[cfg(target_os = "windows")]
+const EXPLORER_CLASSES: &[&str] = &[
+    "CabinetWClass",
+    "Shell_TrayWnd",
+    "Shell_SecondaryTrayWnd",
+    "Progman",
+    "WorkerW",
+];
 
 pub struct WindowsHookBackend {
     #[cfg(target_os = "windows")]
@@ -134,6 +151,11 @@ impl WindowsHookConfig {
                     .is_some_and(|action_id| action_id != "none")
             })
     }
+}
+
+#[cfg(target_os = "windows")]
+fn map_hid_error(error: hidapi::HidError) -> PlatformError {
+    PlatformError::Message(error.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -689,7 +711,7 @@ impl AppFocusBackend for WindowsAppFocusBackend {
                 return Ok(None);
             }
 
-            foreground_app_identity(hwnd).map(Some)
+            foreground_app_identity(hwnd)
         }
     }
 }
@@ -698,7 +720,7 @@ impl AppDiscoveryBackend for WindowsAppDiscoveryBackend {
     fn backend_id(&self) -> &'static str {
         #[cfg(target_os = "windows")]
         {
-            "windows-start-menu"
+            "windows-hybrid"
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -721,6 +743,10 @@ impl AppDiscoveryBackend for WindowsAppDiscoveryBackend {
             for root in windows_start_menu_roots() {
                 collect_shortcut_apps(&root, &mut apps)?;
             }
+            collect_app_path_apps(&mut apps)?;
+            collect_uninstall_registry_apps(&mut apps)?;
+            collect_package_apps(&mut apps)?;
+            collect_running_process_apps(&mut apps)?;
             dedupe_installed_apps(apps)
         }
     }
@@ -1357,48 +1383,539 @@ fn collect_shortcut_apps(root: &Path, apps: &mut Vec<InstalledApp>) -> Result<()
 fn read_shortcut_app(path: &Path) -> Option<InstalledApp> {
     let shortcut = ShellLink::open(path, WINDOWS_1252).ok()?;
     let target_path = shortcut.link_target()?;
+    let label = shortcut_display_label(path, &shortcut)?;
+    let icon_source = shortcut
+        .string_data()
+        .icon_location()
+        .as_deref()
+        .and_then(parse_windows_icon_location);
+
+    if let Some(package_family_name) = shortcut_package_family_name(
+        &target_path,
+        shortcut.string_data().command_line_arguments().as_deref(),
+    ) {
+        return Some(InstalledApp {
+            identity: AppIdentity {
+                label: Some(label),
+                executable: None,
+                executable_path: None,
+                bundle_id: None,
+                package_family_name: Some(package_family_name),
+            },
+            source_kinds: vec![
+                AppDiscoverySource::Package,
+                AppDiscoverySource::StartMenuShortcut,
+            ],
+            source_path: icon_source.or_else(|| Some(path.to_string_lossy().to_string())),
+        });
+    }
+
     let target = PathBuf::from(&target_path);
     let executable = target.file_name()?.to_string_lossy().to_string();
     if !executable.to_ascii_lowercase().ends_with(".exe") {
         return None;
     }
 
-    let label = path
-        .file_stem()
-        .map(|value| value.to_string_lossy().trim().to_string())
-        .filter(|value| {
-            let lower = value.to_ascii_lowercase();
-            !value.is_empty() && !lower.contains("uninstall") && !lower.contains("help")
-        })?;
-
     Some(InstalledApp {
         identity: AppIdentity {
             label: Some(label),
             executable: Some(executable),
-            executable_path: Some(target_path),
+            executable_path: Some(target_path.clone()),
             bundle_id: None,
             package_family_name: None,
         },
         source_kinds: vec![AppDiscoverySource::StartMenuShortcut],
-        source_path: Some(path.to_string_lossy().to_string()),
+        source_path: icon_source.or(Some(target_path)),
     })
 }
 
 #[cfg(target_os = "windows")]
-unsafe fn foreground_app_identity(hwnd: HWND) -> Result<AppIdentity, PlatformError> {
+fn shortcut_display_label(path: &Path, shortcut: &ShellLink) -> Option<String> {
+    shortcut
+        .string_data()
+        .name_string()
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            path.file_stem()
+                .map(|value| value.to_string_lossy().trim().to_string())
+        })
+        .filter(|value| {
+            let lower = value.to_ascii_lowercase();
+            !value.is_empty()
+                && !lower.contains("uninstall")
+                && !lower.contains("help")
+                && !lower.contains("readme")
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn parse_windows_icon_location(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let candidate = trimmed.split(',').next()?.trim().trim_matches('"');
+    if candidate.is_empty() {
+        return None;
+    }
+
+    if candidate.starts_with("shell:") {
+        return Some(candidate.to_string());
+    }
+
+    Some(candidate.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn shortcut_package_family_name(target_path: &str, arguments: Option<&str>) -> Option<String> {
+    let target_name = Path::new(target_path)
+        .file_name()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase());
+    if target_name.as_deref() != Some("explorer.exe") {
+        return None;
+    }
+
+    arguments.and_then(shell_apps_package_family_name)
+}
+
+#[cfg(target_os = "windows")]
+fn shell_apps_package_family_name(value: &str) -> Option<String> {
+    let normalized = value.trim().trim_matches('"').replace('/', "\\");
+    let marker = "shell:AppsFolder\\";
+    let suffix = normalized.get(normalized.find(marker)? + marker.len()..)?;
+    let (family, _) = suffix.split_once('!')?;
+    let trimmed = family.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn collect_app_path_apps(apps: &mut Vec<InstalledApp>) -> Result<(), PlatformError> {
+    let roots = [
+        (HKEY_CURRENT_USER, KEY_READ | KEY_WOW64_64KEY),
+        (HKEY_CURRENT_USER, KEY_READ | KEY_WOW64_32KEY),
+        (HKEY_LOCAL_MACHINE, KEY_READ | KEY_WOW64_64KEY),
+        (HKEY_LOCAL_MACHINE, KEY_READ | KEY_WOW64_32KEY),
+    ];
+
+    for (hive, flags) in roots {
+        let root = RegKey::predef(hive);
+        let Ok(app_paths) = root.open_subkey_with_flags(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+            flags,
+        ) else {
+            continue;
+        };
+
+        for subkey_name in app_paths.enum_keys().flatten() {
+            let Ok(subkey) = app_paths.open_subkey_with_flags(&subkey_name, flags) else {
+                continue;
+            };
+            let raw_path = read_registry_string(&subkey, "").or_else(|| {
+                read_registry_string(&subkey, "Path").map(|dir| format!("{dir}\\{subkey_name}"))
+            });
+            let Some(executable_path) = raw_path
+                .as_deref()
+                .and_then(normalize_registry_executable_path)
+            else {
+                continue;
+            };
+            let executable = Path::new(&executable_path)
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string());
+            let label = Path::new(&executable_path)
+                .file_stem()
+                .map(|value| value.to_string_lossy().to_string());
+            apps.push(InstalledApp {
+                identity: AppIdentity {
+                    label,
+                    executable,
+                    executable_path: Some(executable_path.clone()),
+                    bundle_id: None,
+                    package_family_name: None,
+                },
+                source_kinds: vec![AppDiscoverySource::Registry],
+                source_path: Some(executable_path),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn collect_uninstall_registry_apps(apps: &mut Vec<InstalledApp>) -> Result<(), PlatformError> {
+    let roots = [
+        (HKEY_CURRENT_USER, KEY_READ | KEY_WOW64_64KEY),
+        (HKEY_CURRENT_USER, KEY_READ | KEY_WOW64_32KEY),
+        (HKEY_LOCAL_MACHINE, KEY_READ | KEY_WOW64_64KEY),
+        (HKEY_LOCAL_MACHINE, KEY_READ | KEY_WOW64_32KEY),
+    ];
+
+    for (hive, flags) in roots {
+        let root = RegKey::predef(hive);
+        let Ok(uninstall) = root.open_subkey_with_flags(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+            flags,
+        ) else {
+            continue;
+        };
+
+        for subkey_name in uninstall.enum_keys().flatten() {
+            let Ok(subkey) = uninstall.open_subkey_with_flags(&subkey_name, flags) else {
+                continue;
+            };
+            if read_registry_u32(&subkey, "SystemComponent").unwrap_or_default() == 1 {
+                continue;
+            }
+
+            let Some(label) = read_registry_string(&subkey, "DisplayName")
+                .map(|value| value.trim().to_string())
+                .filter(|value| is_user_facing_app_label(value))
+            else {
+                continue;
+            };
+
+            let executable_path = read_registry_string(&subkey, "DisplayIcon")
+                .as_deref()
+                .and_then(normalize_registry_executable_path)
+                .or_else(|| {
+                    read_registry_string(&subkey, "InstallLocation")
+                        .as_deref()
+                        .and_then(first_executable_in_directory)
+                });
+            let Some(executable_path) = executable_path else {
+                continue;
+            };
+
+            let executable = Path::new(&executable_path)
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string());
+            apps.push(InstalledApp {
+                identity: AppIdentity {
+                    label: Some(label),
+                    executable,
+                    executable_path: Some(executable_path.clone()),
+                    bundle_id: None,
+                    package_family_name: None,
+                },
+                source_kinds: vec![AppDiscoverySource::Registry],
+                source_path: Some(executable_path),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn collect_package_apps(apps: &mut Vec<InstalledApp>) -> Result<(), PlatformError> {
+    let Some(json) = powershell_json(include_str!("windows_appx_discovery.ps1"))? else {
+        return Ok(());
+    };
+
+    for entry in json_items(&json) {
+        let Some(package_family_name) = json_string(entry, "packageFamilyName") else {
+            continue;
+        };
+
+        let label = json_string(entry, "label");
+        let executable = json_string(entry, "executable");
+        let executable_path = json_string(entry, "executablePath");
+        let source_path = json_string(entry, "sourcePath")
+            .or_else(|| executable_path.clone())
+            .or_else(|| {
+                json_string(entry, "appId").map(|app_id| format!("shell:AppsFolder\\{app_id}"))
+            });
+
+        apps.push(InstalledApp {
+            identity: AppIdentity {
+                label,
+                executable,
+                executable_path,
+                bundle_id: None,
+                package_family_name: Some(package_family_name),
+            },
+            source_kinds: vec![AppDiscoverySource::Package],
+            source_path,
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn collect_running_process_apps(apps: &mut Vec<InstalledApp>) -> Result<(), PlatformError> {
+    let Some(json) = powershell_json(include_str!("windows_running_apps.ps1"))? else {
+        return Ok(());
+    };
+
+    for entry in json_items(&json) {
+        let Some(executable_path) = json_string(entry, "executablePath") else {
+            continue;
+        };
+        let executable = json_string(entry, "executable").or_else(|| {
+            Path::new(&executable_path)
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+        });
+        let label = json_string(entry, "label");
+        apps.push(InstalledApp {
+            identity: AppIdentity {
+                label,
+                executable,
+                executable_path: Some(executable_path.clone()),
+                bundle_id: None,
+                package_family_name: None,
+            },
+            source_kinds: vec![AppDiscoverySource::RunningProcess],
+            source_path: Some(executable_path),
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn load_native_app_icon(source_path: &str) -> Result<Option<String>, PlatformError> {
+    let trimmed = source_path.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some(data_url) = image_file_data_url(trimmed)? {
+        return Ok(Some(data_url));
+    }
+
+    if trimmed.starts_with("shell:AppsFolder\\") {
+        return Ok(None);
+    }
+
+    extract_windows_icon_as_data_url(trimmed)
+}
+
+#[cfg(target_os = "windows")]
+fn image_file_data_url(source_path: &str) -> Result<Option<String>, PlatformError> {
+    let path = Path::new(source_path);
+    let Some(extension) = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+    else {
+        return Ok(None);
+    };
+
+    let mime = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        _ => return Ok(None),
+    };
+
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(format!(
+        "data:{mime};base64,{}",
+        BASE64_STANDARD.encode(bytes)
+    )))
+}
+
+#[cfg(target_os = "windows")]
+fn extract_windows_icon_as_data_url(source_path: &str) -> Result<Option<String>, PlatformError> {
+    let stdout = powershell_stdout(include_str!("windows_icon_extract.ps1"), &[source_path])?;
+    let encoded = stdout.trim();
+    if encoded.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!("data:image/png;base64,{encoded}")))
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_json(script: &str) -> Result<Option<JsonValue>, PlatformError> {
+    let stdout = powershell_stdout(script, &[])?;
+    if stdout.trim().is_empty() {
+        return Ok(None);
+    }
+
+    serde_json::from_str(stdout.trim())
+        .map(Some)
+        .map_err(|error| {
+            PlatformError::Message(format!("failed to parse PowerShell JSON: {error}"))
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_stdout(script: &str, args: &[&str]) -> Result<String, PlatformError> {
+    let mut command = Command::new("powershell.exe");
+    command
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(script);
+    for arg in args {
+        command.arg(arg);
+    }
+
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(_) => return Ok(String::new()),
+    };
+
+    if !output.status.success() {
+        return Ok(String::new());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn json_items(value: &JsonValue) -> Vec<&JsonValue> {
+    match value {
+        JsonValue::Array(items) => items.iter().collect(),
+        JsonValue::Object(_) => vec![value],
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn json_string(value: &JsonValue, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(target_os = "windows")]
+fn read_registry_string(key: &RegKey, name: &str) -> Option<String> {
+    key.get_value::<String, _>(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "windows")]
+fn read_registry_u32(key: &RegKey, name: &str) -> Option<u32> {
+    key.get_value::<u32, _>(name).ok()
+}
+
+#[cfg(target_os = "windows")]
+fn normalize_registry_executable_path(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let comma_trimmed = trimmed.split(',').next()?.trim().trim_matches('"');
+    let lower = comma_trimmed.to_ascii_lowercase();
+    for extension in [".exe", ".ico", ".png"] {
+        if let Some(index) = lower.find(extension) {
+            let end = index + extension.len();
+            return Some(comma_trimmed[..end].to_string());
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn first_executable_in_directory(value: &str) -> Option<String> {
+    let path = Path::new(value.trim().trim_matches('"'));
+    if !path.is_dir() {
+        return None;
+    }
+
+    let mut candidates = fs::read_dir(path)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|entry| {
+            entry
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates
+        .into_iter()
+        .next()
+        .map(|candidate| candidate.to_string_lossy().to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn is_user_facing_app_label(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    !lower.is_empty()
+        && !lower.contains("uninstall")
+        && !lower.contains("helper")
+        && !lower.contains("setup")
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn foreground_app_identity(hwnd: HWND) -> Result<Option<AppIdentity>, PlatformError> {
+    let Some(identity) = process_identity_for_window(hwnd)? else {
+        return Ok(None);
+    };
+
+    let executable = identity
+        .executable
+        .as_deref()
+        .map(|value| value.to_ascii_lowercase());
+    if executable.as_deref() == Some("applicationframehost.exe") {
+        return resolve_uwp_child_identity(hwnd);
+    }
+
+    if executable.as_deref() == Some("explorer.exe") {
+        let class_name = window_class(hwnd).unwrap_or_default();
+        if !EXPLORER_CLASSES
+            .iter()
+            .any(|explorer_class| *explorer_class == class_name)
+        {
+            if let Some(resolved) = resolve_uwp_child_identity(hwnd)? {
+                return Ok(Some(resolved));
+            }
+            return find_uwp_app_global_identity();
+        }
+    }
+
+    Ok(Some(identity))
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn process_identity_for_window(hwnd: HWND) -> Result<Option<AppIdentity>, PlatformError> {
     let mut process_id = 0;
     GetWindowThreadProcessId(hwnd, &mut process_id);
+    process_identity_for_pid(process_id, Some(hwnd))
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn process_identity_for_pid(
+    process_id: u32,
+    label_hwnd: Option<HWND>,
+) -> Result<Option<AppIdentity>, PlatformError> {
     if process_id == 0 {
-        return Err(PlatformError::Message(
-            "failed to resolve foreground process".to_string(),
-        ));
+        return Ok(None);
     }
 
     let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id);
     if process.is_null() {
-        return Err(PlatformError::Message(format!(
-            "failed to open process {process_id}"
-        )));
+        return Ok(None);
     }
 
     let result = (|| {
@@ -1406,17 +1923,137 @@ unsafe fn foreground_app_identity(hwnd: HWND) -> Result<AppIdentity, PlatformErr
         let executable = Path::new(&executable_path)
             .file_name()
             .map(|value| value.to_string_lossy().to_string());
-        Ok(AppIdentity {
-            label: window_title(hwnd).or_else(|| executable.clone()),
+        let label = label_hwnd
+            .and_then(|hwnd| unsafe { window_title(hwnd) })
+            .or_else(|| {
+                Path::new(&executable_path)
+                    .file_stem()
+                    .map(|value| value.to_string_lossy().to_string())
+            })
+            .or_else(|| executable.clone());
+
+        Ok(Some(AppIdentity {
+            label,
             executable,
             executable_path: Some(executable_path),
             bundle_id: None,
-            package_family_name: None,
-        })
+            package_family_name: package_family_name_for_process(process),
+        }))
     })();
 
     CloseHandle(process as HANDLE);
     result
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn package_family_name_for_process(process: HANDLE) -> Option<String> {
+    let mut length = PACKAGE_FAMILY_NAME_MAX_LENGTH + 1;
+    loop {
+        let mut buffer = vec![0u16; length as usize];
+        let status = GetPackageFamilyName(process, &mut length, buffer.as_mut_ptr());
+        if status == APPMODEL_ERROR_NO_PACKAGE {
+            return None;
+        }
+        if status == 0 {
+            let end = buffer
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(buffer.len());
+            return Some(String::from_utf16_lossy(&buffer[..end]));
+        }
+        if status != 122 || length == 0 {
+            return None;
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct UwpChildSearch {
+    host_pid: u32,
+    resolved: Option<AppIdentity>,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_uwp_child_windows(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let search = &mut *(lparam as *mut UwpChildSearch);
+    let mut child_pid = 0;
+    GetWindowThreadProcessId(hwnd, &mut child_pid);
+    if child_pid == 0 || child_pid == search.host_pid {
+        return 1;
+    }
+
+    if let Ok(Some(identity)) = process_identity_for_pid(child_pid, Some(hwnd)) {
+        if !identity
+            .executable
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("applicationframehost.exe"))
+        {
+            search.resolved = Some(identity);
+            return 0;
+        }
+    }
+
+    1
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn resolve_uwp_child_identity(hwnd: HWND) -> Result<Option<AppIdentity>, PlatformError> {
+    let mut host_pid = 0;
+    GetWindowThreadProcessId(hwnd, &mut host_pid);
+    if host_pid == 0 {
+        return Ok(None);
+    }
+
+    let mut search = UwpChildSearch {
+        host_pid,
+        resolved: None,
+    };
+    EnumChildWindows(
+        hwnd,
+        Some(enum_uwp_child_windows),
+        &mut search as *mut UwpChildSearch as LPARAM,
+    );
+    Ok(search.resolved)
+}
+
+#[cfg(target_os = "windows")]
+struct GlobalUwpSearch {
+    resolved: Option<AppIdentity>,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_visible_top_level_windows(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+
+    let search = &mut *(lparam as *mut GlobalUwpSearch);
+    let Ok(Some(identity)) = process_identity_for_window(hwnd) else {
+        return 1;
+    };
+
+    if identity
+        .executable
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("applicationframehost.exe"))
+    {
+        if let Ok(Some(resolved)) = resolve_uwp_child_identity(hwnd) {
+            search.resolved = Some(resolved);
+            return 0;
+        }
+    }
+
+    1
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn find_uwp_app_global_identity() -> Result<Option<AppIdentity>, PlatformError> {
+    let mut search = GlobalUwpSearch { resolved: None };
+    EnumWindows(
+        Some(enum_visible_top_level_windows),
+        &mut search as *mut GlobalUwpSearch as LPARAM,
+    );
+    Ok(search.resolved)
 }
 
 #[cfg(target_os = "windows")]
@@ -1438,28 +2075,14 @@ unsafe fn window_title(hwnd: HWND) -> Option<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn foreground_process_name(process_id: u32) -> Result<String, PlatformError> {
-    unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id);
-        if process.is_null() {
-            return Err(PlatformError::Message(format!(
-                "failed to open process {process_id}"
-            )));
-        }
-
-        let result = process_image_name(process);
-        CloseHandle(process as HANDLE);
-        result
+unsafe fn window_class(hwnd: HWND) -> Option<String> {
+    let mut buffer = vec![0u16; 256];
+    let written = GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
+    if written <= 0 {
+        return None;
     }
-}
 
-#[cfg(target_os = "windows")]
-unsafe fn process_image_name(process: HANDLE) -> Result<String, PlatformError> {
-    let path = process_image_path(process)?;
-    Ok(Path::new(&path)
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or(path))
+    Some(String::from_utf16_lossy(&buffer[..written as usize]))
 }
 
 #[cfg(target_os = "windows")]
