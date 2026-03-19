@@ -3047,10 +3047,10 @@ function ButtonsWorkbench(props: {
                   aria-label={hotspot.label}
                   aria-pressed={isSelected}
                   className={cn(
-                    "absolute z-20 rounded-2xl px-4 py-3 text-left transition",
+                    "absolute z-20 rounded-2xl border px-4 py-3 text-left transition-colors transition-shadow",
                     isSelected
-                      ? "bg-white shadow-[0_8px_24px_rgba(0,0,0,0.12)]"
-                      : "bg-white/95 shadow-[0_4px_16px_rgba(0,0,0,0.06)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.10)]",
+                      ? "border-[var(--border-strong)] bg-[var(--card)] shadow-[0_12px_28px_rgba(15,23,42,0.18)]"
+                      : "border-[var(--border)] bg-[var(--card-muted)] shadow-[0_8px_22px_rgba(15,23,42,0.12)] hover:border-[var(--border-strong)] hover:bg-[var(--card)] hover:shadow-[0_12px_28px_rgba(15,23,42,0.16)]",
                   )}
                   data-testid={`hotspot-card-${hotspot.control}`}
                   onClick={() => props.onSelectControl(hotspot.control)}
