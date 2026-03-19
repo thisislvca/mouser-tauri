@@ -5,8 +5,8 @@ use std::{
 };
 
 use mouser_core::{
-    build_managed_device_info, clamp_dpi, default_action_catalog, default_config,
-    default_app_discovery_snapshot, default_device_catalog, default_known_apps, default_layouts,
+    build_managed_device_info, clamp_dpi, default_action_catalog, default_app_discovery_snapshot,
+    default_config, default_device_catalog, default_known_apps, default_layouts,
     effective_layout_key, manual_layout_choices, AppConfig, AppIdentity, BootstrapPayload,
     DebugEvent, DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings,
     EngineSnapshot, EngineStatus, KnownApp, ManagedDevice, PlatformCapabilities, Profile,
@@ -195,10 +195,7 @@ impl MockRuntime {
         let selected_profile_id = self
             .selected_managed_device()
             .and_then(|device| device.profile_id);
-        config.sync_active_profile(
-            selected_profile_id.as_deref(),
-            self.frontmost_app.as_ref(),
-        );
+        config.sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_ref());
         self.save_config(config);
     }
 
@@ -208,10 +205,7 @@ impl MockRuntime {
         let selected_profile_id = self
             .selected_managed_device()
             .and_then(|device| device.profile_id);
-        config.sync_active_profile(
-            selected_profile_id.as_deref(),
-            self.frontmost_app.as_ref(),
-        );
+        config.sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_ref());
         self.save_config(config);
     }
 
@@ -221,10 +215,7 @@ impl MockRuntime {
         let selected_profile_id = self
             .selected_managed_device()
             .and_then(|device| device.profile_id);
-        config.sync_active_profile(
-            selected_profile_id.as_deref(),
-            self.frontmost_app.as_ref(),
-        );
+        config.sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_ref());
         self.save_config(config);
     }
 
@@ -275,10 +266,8 @@ impl MockRuntime {
                 let manual_layout_override = self
                     .selected_managed_device()
                     .and_then(|managed| managed.settings.manual_layout_override);
-                let layout_key = effective_layout_key(
-                    manual_layout_override.as_deref(),
-                    &device.ui_layout,
-                );
+                let layout_key =
+                    effective_layout_key(manual_layout_override.as_deref(), &device.ui_layout);
                 device.ui_layout = layout_key.clone();
                 if let Some(layout) = self
                     .catalog
@@ -360,10 +349,8 @@ impl MockRuntime {
             .selected_managed_device()
             .and_then(|device| device.profile_id);
         let config = self.config();
-        let next_profile_id = config.resolved_profile_id(
-            selected_profile_id.as_deref(),
-            self.frontmost_app.as_ref(),
-        );
+        let next_profile_id =
+            config.resolved_profile_id(selected_profile_id.as_deref(), self.frontmost_app.as_ref());
         if self.resolved_profile_id != next_profile_id {
             self.resolved_profile_id = next_profile_id;
             return true;

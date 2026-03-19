@@ -8,18 +8,18 @@ use std::{
 use mouser_core::{
     build_managed_device_info, clamp_dpi, default_action_catalog, default_app_catalog,
     default_app_discovery_snapshot, effective_layout_key, known_device_spec_by_key,
-    known_device_specs, manual_layout_choices, normalize_app_match_value,
-    AppConfig, AppDiscoverySnapshot, AppIdentity, AppMatcher, AppMatcherKind, BootstrapPayload,
-    CatalogApp, DebugEvent, DebugEventKind, DeviceInfo, DeviceSettings, DiscoveredApp,
-    EngineSnapshot, EngineStatus, InstalledApp, ManagedDevice, PlatformCapabilities, Profile,
+    known_device_specs, manual_layout_choices, normalize_app_match_value, AppConfig,
+    AppDiscoverySnapshot, AppIdentity, AppMatcher, AppMatcherKind, BootstrapPayload, CatalogApp,
+    DebugEvent, DebugEventKind, DeviceInfo, DeviceSettings, DiscoveredApp, EngineSnapshot,
+    EngineStatus, InstalledApp, ManagedDevice, PlatformCapabilities, Profile,
 };
 use mouser_platform::{
     macos::{MacOsAppDiscoveryBackend, MacOsAppFocusBackend, MacOsHidBackend, MacOsHookBackend},
     windows::{
         WindowsAppDiscoveryBackend, WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend,
     },
-    AppDiscoveryBackend, AppFocusBackend, ConfigStore, HidBackend, HookBackend,
-    HookBackendEvent, HookBackendSettings, JsonConfigStore, PlatformError, StaticDeviceCatalog,
+    AppDiscoveryBackend, AppFocusBackend, ConfigStore, HidBackend, HookBackend, HookBackendEvent,
+    HookBackendSettings, JsonConfigStore, PlatformError, StaticDeviceCatalog,
 };
 
 pub struct AppRuntime {
@@ -682,10 +682,9 @@ impl AppRuntime {
         let selected_profile_id = self
             .selected_managed_device()
             .and_then(|device| device.profile_id.clone());
-        let next_profile_id = self.config.resolved_profile_id(
-            selected_profile_id.as_deref(),
-            self.frontmost_app.as_ref(),
-        );
+        let next_profile_id = self
+            .config
+            .resolved_profile_id(selected_profile_id.as_deref(), self.frontmost_app.as_ref());
         if self.resolved_profile_id != next_profile_id {
             self.resolved_profile_id = next_profile_id;
             self.push_debug(

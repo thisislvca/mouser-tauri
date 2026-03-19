@@ -284,7 +284,6 @@ struct GestureTrackingState {
     active: bool,
     tracking: bool,
     triggered: bool,
-    pending_control: Option<LogicalControl>,
     started_at: Option<Instant>,
     last_move_at: Option<Instant>,
     delta_x: f64,
@@ -693,7 +692,6 @@ impl MacOsHookShared {
 
         state.active = true;
         state.triggered = false;
-        state.pending_control = None;
         self.push_gesture_debug("Gesture button down");
 
         if config.gesture_direction_enabled() && !cooldown_active(&state) {
@@ -706,18 +704,17 @@ impl MacOsHookShared {
 
     fn hid_gesture_up(&self) {
         let config = self.current_config();
-        let (should_click, pending_control) = {
+        let should_click = {
             let mut state = self.gesture_state.lock().unwrap();
             if !state.active {
                 return;
             }
 
             let should_click = !state.triggered;
-            let pending_control = state.pending_control.take();
             state.active = false;
             finish_gesture_tracking(&mut state);
             state.triggered = false;
-            (should_click, pending_control)
+            should_click
         };
 
         self.push_gesture_debug(format!(
@@ -727,8 +724,6 @@ impl MacOsHookShared {
 
         if should_click {
             self.dispatch_control_action(&config, LogicalControl::GesturePress);
-        } else if let Some(control) = pending_control {
-            self.dispatch_control_action(&config, control);
         }
     }
 
@@ -827,7 +822,6 @@ impl MacOsHookShared {
             f64::from(config.gesture_deadzone),
         ) {
             state.triggered = true;
-            state.pending_control = Some(control);
             self.push_gesture_debug(format!(
                 "Gesture detected {} source={} dx={} dy={}",
                 control.label(),
@@ -835,6 +829,7 @@ impl MacOsHookShared {
                 state.delta_x as i32,
                 state.delta_y as i32,
             ));
+            self.dispatch_control_action(config, control);
             state.cooldown_until =
                 Some(Instant::now() + Duration::from_millis(u64::from(config.gesture_cooldown_ms)));
             finish_gesture_tracking(state);

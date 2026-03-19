@@ -89,9 +89,8 @@ pub struct HookBackendEvent {
 }
 
 fn supports_macos_thumb_wheel_trackpad_model(model_key: Option<&str>) -> bool {
-    model_key.is_some_and(|model_key| {
-        model_key == "mx_master" || model_key.starts_with("mx_master_")
-    })
+    model_key
+        .is_some_and(|model_key| model_key == "mx_master" || model_key.starts_with("mx_master_"))
 }
 
 pub(crate) const HOOK_EVENT_BUFFER_LIMIT: usize = 128;
@@ -189,7 +188,9 @@ pub(crate) fn push_bounded_hook_event(
     }
 }
 
-pub(crate) fn dedupe_installed_apps(apps: Vec<InstalledApp>) -> Result<Vec<InstalledApp>, PlatformError> {
+pub(crate) fn dedupe_installed_apps(
+    apps: Vec<InstalledApp>,
+) -> Result<Vec<InstalledApp>, PlatformError> {
     let mut deduped = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
 
@@ -389,8 +390,7 @@ fn migrate_app_config_value(value: &mut serde_json::Value) {
                     })
                     .cloned();
                 if let Some(override_value) = override_value {
-                    device_settings_map
-                        .insert("manualLayoutOverride".to_string(), override_value);
+                    device_settings_map.insert("manualLayoutOverride".to_string(), override_value);
                     applied_layout_override = true;
                 }
             }
@@ -412,7 +412,12 @@ fn migrate_app_config_value(value: &mut serde_json::Value) {
 
     config.insert("deviceDefaults".to_string(), device_defaults);
 
-    if config.get("version").and_then(|value| value.as_u64()).unwrap_or(0) < 3 {
+    if config
+        .get("version")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
+        < 3
+    {
         config.insert("version".to_string(), serde_json::Value::from(3u64));
     }
 }
@@ -805,7 +810,9 @@ pub mod macos {
                     label: app.localizedName().map(|name| name.to_string()),
                     executable,
                     executable_path,
-                    bundle_id: app.bundleIdentifier().map(|bundle_id| bundle_id.to_string()),
+                    bundle_id: app
+                        .bundleIdentifier()
+                        .map(|bundle_id| bundle_id.to_string()),
                     package_family_name: None,
                 }))
             }

@@ -93,13 +93,11 @@ impl AppIdentity {
             .clone()
             .or_else(|| self.executable.clone())
             .or_else(|| {
-                self.executable_path
-                    .as_deref()
-                    .and_then(|path| {
-                        Path::new(path)
-                            .file_name()
-                            .map(|value| value.to_string_lossy().to_string())
-                    })
+                self.executable_path.as_deref().and_then(|path| {
+                    Path::new(path)
+                        .file_name()
+                        .map(|value| value.to_string_lossy().to_string())
+                })
             })
             .or_else(|| self.bundle_id.clone())
             .or_else(|| self.package_family_name.clone())
@@ -153,10 +151,7 @@ impl AppIdentity {
         if let Some(package_family_name) = self.package_family_name.as_deref() {
             return format!(
                 "package:{}",
-                normalize_app_match_value(
-                    AppMatcherKind::PackageFamilyName,
-                    package_family_name,
-                )
+                normalize_app_match_value(AppMatcherKind::PackageFamilyName, package_family_name,)
             );
         }
 
@@ -338,8 +333,8 @@ impl AppConfig {
                     .any(|matcher| app.matches(matcher))
             })
         })
-            .map(|profile| profile.id.clone())
-            .unwrap_or_else(|| "default".to_string())
+        .map(|profile| profile.id.clone())
+        .unwrap_or_else(|| "default".to_string())
     }
 
     pub fn resolved_profile_id(
@@ -947,9 +942,10 @@ fn build_default_known_apps() -> Vec<KnownApp> {
                 continue;
             }
 
-            if apps.iter().any(|app: &KnownApp| {
-                app.executable.eq_ignore_ascii_case(&matcher.value)
-            }) {
+            if apps
+                .iter()
+                .any(|app: &KnownApp| app.executable.eq_ignore_ascii_case(&matcher.value))
+            {
                 continue;
             }
 
@@ -1790,10 +1786,7 @@ mod tests {
             last_seen_transport: None,
         });
 
-        assert!(!config.sync_active_profile(
-            Some("default"),
-            Some(&test_app_identity("Code.exe")),
-        ));
+        assert!(!config.sync_active_profile(Some("default"), Some(&test_app_identity("Code.exe")),));
         assert_eq!(config.active_profile_id, "default");
     }
 
