@@ -15,9 +15,10 @@ use mouser_core::build_connected_device_info;
 use mouser_core::AppDiscoverySource;
 use mouser_core::{
     clamp_dpi, default_config, default_device_settings, default_known_apps_ref,
-    default_layouts_ref, known_device_specs_ref, AppConfig, AppIdentity, DebugEventKind,
-    DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp, KnownApp,
-    LogicalControl, Profile, Settings,
+    default_layouts_ref, default_profile_bindings, known_device_specs_ref,
+    legacy_default_profile_bindings_v3, normalize_bindings, AppConfig, AppIdentity, Binding,
+    DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp,
+    KnownApp, LogicalControl, Profile, Settings,
 };
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -540,13 +541,43 @@ fn migrate_app_config_value(value: &mut serde_json::Value) {
 
     config.insert("deviceDefaults".to_string(), device_defaults);
 
-    if config
+    let version = config
         .get("version")
         .and_then(|value| value.as_u64())
-        .unwrap_or(0)
-        < 3
-    {
-        config.insert("version".to_string(), serde_json::Value::from(3u64));
+        .unwrap_or(0);
+    if version < 4 {
+        migrate_legacy_default_profile_bindings(config);
+        config.insert("version".to_string(), serde_json::Value::from(4u64));
+    }
+}
+
+fn migrate_legacy_default_profile_bindings(config: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(profiles) = config
+        .get_mut("profiles")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+
+    let Some(default_profile) = profiles.iter_mut().find_map(|profile| {
+        let profile_object = profile.as_object_mut()?;
+        let profile_id = profile_object.get("id")?.as_str()?;
+        (profile_id == "default").then_some(profile_object)
+    }) else {
+        return;
+    };
+
+    let Some(bindings_value) = default_profile.get_mut("bindings") else {
+        return;
+    };
+
+    let Ok(bindings) = serde_json::from_value::<Vec<Binding>>(bindings_value.clone()) else {
+        return;
+    };
+
+    if normalize_bindings(bindings) == legacy_default_profile_bindings_v3() {
+        *bindings_value = serde_json::to_value(default_profile_bindings())
+            .expect("default profile bindings should serialize");
     }
 }
 
@@ -1965,7 +1996,7 @@ mod tests {
         let store = JsonConfigStore::new(path.clone());
         let config = store.load().unwrap();
 
-        assert_eq!(config.version, 3);
+        assert_eq!(config.version, 4);
         assert_eq!(config.settings.debug_mode, true);
         assert_eq!(config.device_defaults.dpi, 1600);
         let managed = config
@@ -2000,6 +2031,57 @@ mod tests {
         );
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn deserialize_migrates_legacy_default_profile_button_bindings() {
+        let config = deserialize_app_config(
+            &serde_json::json!({
+                "version": 3,
+                "activeProfileId": "default",
+                "profiles": [{
+                    "id": "default",
+                    "label": "Default (All Apps)",
+                    "appMatchers": [],
+                    "bindings": [
+                        { "control": "back", "actionId": "alt_tab" },
+                        { "control": "forward", "actionId": "alt_tab" },
+                        { "control": "hscroll_left", "actionId": "browser_back" },
+                        { "control": "hscroll_right", "actionId": "browser_forward" }
+                    ],
+                }],
+                "managedDevices": [],
+                "settings": {
+                    "startMinimized": true,
+                    "startAtLogin": false,
+                    "appearanceMode": "system",
+                    "debugMode": false
+                },
+                "deviceDefaults": default_device_settings()
+            })
+            .to_string(),
+        )
+        .expect("expected config to deserialize");
+
+        let default_profile = config
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "default")
+            .expect("expected default profile");
+
+        assert_eq!(config.version, 4);
+        assert_eq!(
+            default_profile
+                .binding_for(LogicalControl::Back)
+                .map(|binding| binding.action_id.as_str()),
+            Some("browser_back")
+        );
+        assert_eq!(
+            default_profile
+                .binding_for(LogicalControl::Forward)
+                .map(|binding| binding.action_id.as_str()),
+            Some("browser_forward")
+        );
     }
 
     #[test]

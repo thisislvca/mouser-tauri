@@ -385,6 +385,15 @@ impl AppConfig {
             }
         }
 
+        if self.version < 4 {
+            if let Some(default_profile) = self.profiles.iter_mut().find(|profile| profile.id == "default")
+            {
+                if default_profile.bindings == legacy_default_profile_bindings_v3() {
+                    default_profile.bindings = default_profile_bindings();
+                }
+            }
+        }
+
         if !self
             .profiles
             .iter()
@@ -446,7 +455,7 @@ impl AppConfig {
             normalize_device_settings(Some(&device.model_key), &mut device.settings);
         }
 
-        self.version = self.version.max(3);
+        self.version = self.version.max(4);
     }
 }
 
@@ -754,6 +763,27 @@ pub fn default_profile_bindings() -> Vec<Binding> {
     normalize_bindings(vec![
         Binding {
             control: LogicalControl::Back,
+            action_id: "browser_back".to_string(),
+        },
+        Binding {
+            control: LogicalControl::Forward,
+            action_id: "browser_forward".to_string(),
+        },
+        Binding {
+            control: LogicalControl::HscrollLeft,
+            action_id: "browser_back".to_string(),
+        },
+        Binding {
+            control: LogicalControl::HscrollRight,
+            action_id: "browser_forward".to_string(),
+        },
+    ])
+}
+
+pub fn legacy_default_profile_bindings_v3() -> Vec<Binding> {
+    normalize_bindings(vec![
+        Binding {
+            control: LogicalControl::Back,
             action_id: "alt_tab".to_string(),
         },
         Binding {
@@ -782,7 +812,7 @@ pub fn default_profile() -> Profile {
 
 pub fn default_config() -> AppConfig {
     AppConfig {
-        version: 3,
+        version: 4,
         active_profile_id: "default".to_string(),
         profiles: vec![default_profile()],
         managed_devices: Vec::new(),
@@ -1699,7 +1729,30 @@ mod tests {
     fn binding_lookup_uses_control_identity() {
         let profile = default_profile();
         let binding = profile.binding_for(LogicalControl::Back).unwrap();
-        assert_eq!(binding.action_id, "alt_tab");
+        assert_eq!(binding.action_id, "browser_back");
+    }
+
+    #[test]
+    fn ensure_invariants_migrates_legacy_default_profile_bindings_once() {
+        let mut config = default_config();
+        config.version = 3;
+        config.profiles[0].bindings = legacy_default_profile_bindings_v3();
+
+        config.ensure_invariants();
+
+        assert_eq!(config.version, 4);
+        assert_eq!(
+            config.profiles[0]
+                .binding_for(LogicalControl::Back)
+                .map(|binding| binding.action_id.as_str()),
+            Some("browser_back")
+        );
+        assert_eq!(
+            config.profiles[0]
+                .binding_for(LogicalControl::Forward)
+                .map(|binding| binding.action_id.as_str()),
+            Some("browser_forward")
+        );
     }
 
     #[test]

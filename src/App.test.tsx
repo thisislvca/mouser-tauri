@@ -203,10 +203,15 @@ function makeBootstrap(): BootstrapPayload {
           "forward",
           "hscroll_left",
           "hscroll_right",
-        ].map((control, index) => ({
+        ].map((control) => ({
           control:
             control as AppConfig["profiles"][number]["bindings"][number]["control"],
-          actionId: index < 2 ? "alt_tab" : "none",
+          actionId:
+            control === "back"
+              ? "browser_back"
+              : control === "forward"
+                ? "browser_forward"
+                : "none",
         })),
       },
     ],
@@ -337,6 +342,12 @@ function makeBootstrap(): BootstrapPayload {
     config,
     availableActions: [
       { id: "alt_tab", label: "Alt + Tab", category: "Navigation" },
+      { id: "browser_back", label: "Browser Back", category: "Browser" },
+      {
+        id: "browser_forward",
+        label: "Browser Forward",
+        category: "Browser",
+      },
       { id: "copy", label: "Copy", category: "Editing" },
       { id: "none", label: "Do Nothing", category: "Other" },
     ],
