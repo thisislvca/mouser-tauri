@@ -1,13 +1,13 @@
 #![cfg_attr(not(target_os = "windows"), allow(dead_code, unused_imports))]
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        mpsc, Arc, Mutex, OnceLock, RwLock,
+        mpsc, Arc, Condvar, Mutex, OnceLock, RwLock,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -43,7 +43,7 @@ use windows_sys::Win32::{
     },
     Storage::Packaging::Appx::{GetPackageFamilyName, PACKAGE_FAMILY_NAME_MAX_LENGTH},
     System::{LibraryLoader::GetModuleHandleW, Threading::*},
-    UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
+    UI::{Accessibility::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 #[cfg(target_os = "windows")]
 use winreg::{enums::*, RegKey};
@@ -56,6 +56,8 @@ const GESTURE_DIVERT_FLAGS: u8 = 0x01;
 const GESTURE_RAWXY_FLAGS: u8 = 0x05;
 const GESTURE_UNDIVERT_FLAGS: u8 = 0x00;
 const GESTURE_UNDIVERT_RAWXY_FLAGS: u8 = 0x04;
+const BATTERY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const DPI_VERIFY_DELAY: Duration = Duration::from_secs(1);
 #[cfg(target_os = "windows")]
 const EXPLORER_CLASSES: &[&str] = &[
     "CabinetWClass",
@@ -78,9 +80,42 @@ pub struct WindowsHookBackend {
     gesture_worker: Mutex<Option<JoinHandle<()>>>,
 }
 
-pub struct WindowsHidBackend;
+pub struct WindowsHidBackend {
+    #[cfg(target_os = "windows")]
+    telemetry_cache: Mutex<BTreeMap<String, DeviceTelemetryCacheEntry>>,
+}
 pub struct WindowsAppFocusBackend;
+pub struct WindowsAppFocusMonitor {
+    #[cfg(target_os = "windows")]
+    stop: Arc<AtomicBool>,
+    #[cfg(target_os = "windows")]
+    thread_id: Arc<AtomicU32>,
+    #[cfg(target_os = "windows")]
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
 pub struct WindowsAppDiscoveryBackend;
+
+#[derive(Debug, Clone)]
+struct DeviceTelemetryCacheEntry {
+    current_dpi: Option<u16>,
+    battery_level: Option<u8>,
+    last_battery_probe_at: Instant,
+    verify_after: Option<Instant>,
+    connected: bool,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceTelemetrySnapshot {
+    current_dpi: Option<u16>,
+    battery_level: Option<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct TelemetryProbePlan {
+    probe_dpi: bool,
+    probe_battery: bool,
+    cached: DeviceTelemetrySnapshot,
+}
 
 #[derive(Clone, PartialEq, Eq)]
 struct WindowsHookConfig {
@@ -188,6 +223,7 @@ struct WindowsHookShared {
     config: RwLock<Arc<WindowsHookConfig>>,
     events: Mutex<Vec<HookBackendEvent>>,
     gesture_state: Mutex<GestureTrackingState>,
+    gesture_cv: Condvar,
     hook_running: AtomicBool,
     gesture_connected: AtomicBool,
 }
@@ -213,6 +249,7 @@ impl WindowsHookShared {
             ))),
             events: Mutex::new(Vec::new()),
             gesture_state: Mutex::new(GestureTrackingState::default()),
+            gesture_cv: Condvar::new(),
             hook_running: AtomicBool::new(false),
             gesture_connected: AtomicBool::new(false),
         }
@@ -238,6 +275,8 @@ impl WindowsHookShared {
         if !gesture_capture_requested {
             self.reset_gesture_state();
         }
+
+        self.gesture_cv.notify_all();
 
         if changed && next.debug_mode {
             self.push_event(
@@ -327,6 +366,8 @@ impl WindowsHookShared {
         } else {
             finish_gesture_tracking(&mut state);
         }
+
+        self.gesture_cv.notify_all();
     }
 
     fn hid_gesture_up(&self) {
@@ -344,6 +385,8 @@ impl WindowsHookShared {
             state.triggered = false;
             should_click
         };
+
+        self.gesture_cv.notify_all();
 
         self.push_gesture_debug(format!(
             "Gesture button up click_candidate={}",
@@ -365,11 +408,13 @@ impl WindowsHookShared {
             f64::from(delta_y),
             GestureInputSource::HidRawxy,
         );
+        self.gesture_cv.notify_all();
     }
 
     fn reset_gesture_state(&self) {
         let mut state = self.gesture_state.lock().unwrap();
         *state = GestureTrackingState::default();
+        self.gesture_cv.notify_all();
     }
 
     fn accumulate_gesture_delta(
@@ -432,6 +477,200 @@ impl WindowsHookShared {
             state.cooldown_until =
                 Some(Instant::now() + Duration::from_millis(u64::from(config.gesture_cooldown_ms)));
             finish_gesture_tracking(state);
+        }
+    }
+}
+
+impl WindowsHidBackend {
+    pub fn new() -> Self {
+        Self {
+            #[cfg(target_os = "windows")]
+            telemetry_cache: Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl Default for WindowsHidBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "windows")]
+type AppFocusCallback = dyn Fn(Option<AppIdentity>) + Send + Sync + 'static;
+
+#[cfg(target_os = "windows")]
+impl WindowsAppFocusMonitor {
+    pub fn new<F>(notify: F) -> Result<Self, PlatformError>
+    where
+        F: Fn(Option<AppIdentity>) + Send + Sync + 'static,
+    {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_id = Arc::new(AtomicU32::new(0));
+        let callback: Arc<AppFocusCallback> = Arc::new(notify);
+        let (startup_tx, startup_rx) = mpsc::channel::<Result<(), String>>();
+        let worker_stop = Arc::clone(&stop);
+        let worker_thread_id = Arc::clone(&thread_id);
+
+        let worker = thread::spawn(move || {
+            run_app_focus_monitor_worker(callback, worker_stop, worker_thread_id, startup_tx);
+        });
+
+        match startup_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(Ok(())) => Ok(Self {
+                stop,
+                thread_id,
+                worker: Mutex::new(Some(worker)),
+            }),
+            Ok(Err(error)) => {
+                stop.store(true, Ordering::SeqCst);
+                let _ = worker.join();
+                Err(PlatformError::Message(error))
+            }
+            Err(_) => {
+                stop.store(true, Ordering::SeqCst);
+                let _ = worker.join();
+                Err(PlatformError::Message(
+                    "Windows app-focus monitor startup timed out".to_string(),
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl WindowsAppFocusMonitor {
+    pub fn new<F>(_notify: F) -> Result<Self, PlatformError>
+    where
+        F: Fn(Option<AppIdentity>) + Send + Sync + 'static,
+    {
+        Err(PlatformError::Unsupported(
+            "live Windows app focus monitoring is only available on Windows",
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsAppFocusMonitor {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let thread_id = self.thread_id.swap(0, Ordering::SeqCst);
+        if thread_id != 0 {
+            unsafe {
+                PostThreadMessageW(thread_id, WM_QUIT, 0, 0);
+            }
+        }
+
+        if let Some(worker) = self.worker.lock().unwrap().take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl WindowsHidBackend {
+    fn telemetry_plan(&self, cache_key: &str, now: Instant) -> TelemetryProbePlan {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (cache_key, now);
+            TelemetryProbePlan {
+                probe_dpi: true,
+                probe_battery: true,
+                cached: DeviceTelemetrySnapshot {
+                    current_dpi: None,
+                    battery_level: None,
+                },
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let cache = self.telemetry_cache.lock().unwrap();
+            let entry = cache.get(cache_key);
+            TelemetryProbePlan {
+                probe_dpi: should_probe_dpi(entry, now),
+                probe_battery: should_probe_battery(entry, now),
+                cached: DeviceTelemetrySnapshot {
+                    current_dpi: entry.and_then(|entry| entry.current_dpi),
+                    battery_level: entry.and_then(|entry| entry.battery_level),
+                },
+            }
+        }
+    }
+
+    fn remember_device_telemetry(
+        &self,
+        cache_key: String,
+        telemetry: DeviceTelemetrySnapshot,
+        plan: &TelemetryProbePlan,
+        now: Instant,
+    ) {
+        #[cfg(target_os = "windows")]
+        {
+            let mut cache = self.telemetry_cache.lock().unwrap();
+            let entry = cache.entry(cache_key).or_insert(DeviceTelemetryCacheEntry {
+                current_dpi: None,
+                battery_level: None,
+                last_battery_probe_at: now,
+                verify_after: None,
+                connected: true,
+            });
+
+            entry.connected = true;
+
+            if telemetry.current_dpi.is_some() {
+                entry.current_dpi = telemetry.current_dpi;
+            }
+
+            if plan.probe_dpi {
+                entry.verify_after = None;
+            }
+
+            if plan.probe_battery {
+                entry.battery_level = telemetry.battery_level;
+                entry.last_battery_probe_at = now;
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (cache_key, telemetry, plan, now);
+        }
+    }
+
+    fn note_connected_devices(&self, connected_cache_keys: &BTreeSet<String>) {
+        #[cfg(target_os = "windows")]
+        {
+            let mut cache = self.telemetry_cache.lock().unwrap();
+            for (cache_key, entry) in cache.iter_mut() {
+                entry.connected = connected_cache_keys.contains(cache_key);
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = connected_cache_keys;
+        }
+    }
+
+    fn note_dpi_write(&self, cache_key: String, dpi: u16, now: Instant) {
+        #[cfg(target_os = "windows")]
+        {
+            let mut cache = self.telemetry_cache.lock().unwrap();
+            let entry = cache.entry(cache_key).or_insert(DeviceTelemetryCacheEntry {
+                current_dpi: None,
+                battery_level: None,
+                last_battery_probe_at: now,
+                verify_after: None,
+                connected: true,
+            });
+            entry.current_dpi = Some(dpi);
+            entry.verify_after = Some(now + DPI_VERIFY_DELAY);
+            entry.connected = true;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (cache_key, dpi, now);
         }
     }
 }
@@ -564,6 +803,7 @@ impl HookBackend for WindowsHookBackend {
 impl Drop for WindowsHookBackend {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        self.shared.gesture_cv.notify_all();
         let thread_id = self.thread_id.swap(0, Ordering::SeqCst);
         if thread_id != 0 {
             unsafe {
@@ -631,16 +871,50 @@ impl HidBackend for WindowsHidBackend {
         {
             let api = HidApi::new().map_err(map_hid_error)?;
             let mut devices = Vec::new();
+            let mut connected_cache_keys = BTreeSet::new();
+            let now = Instant::now();
 
             for info in vendor_hid_infos(&api) {
-                let Ok(device) = info.open_device(&api) else {
-                    continue;
+                let fingerprint = fingerprint_from_hid_info(info);
+                let transport = transport_label(info.bus_type());
+                let cache_key =
+                    telemetry_cache_key(Some(info.product_id()), Some(transport), &fingerprint);
+                connected_cache_keys.insert(cache_key.clone());
+                let plan = self.telemetry_plan(&cache_key, now);
+
+                let telemetry = if plan.probe_dpi || plan.probe_battery {
+                    match info.open_device(&api) {
+                        Ok(device) => {
+                            let telemetry = probe_device_telemetry(&device, &plan);
+                            self.remember_device_telemetry(
+                                cache_key.clone(),
+                                telemetry.clone(),
+                                &plan,
+                                now,
+                            );
+                            telemetry
+                        }
+                        Err(_) => plan.cached.clone(),
+                    }
+                } else {
+                    plan.cached.clone()
                 };
-                if let Some(device_info) = probe_hidapi_device(&device, info) {
-                    push_unique_device(&mut devices, device_info);
-                }
+
+                push_unique_device(
+                    &mut devices,
+                    build_connected_device_info(
+                        Some(info.product_id()),
+                        info.product_string(),
+                        Some(transport),
+                        Some("hidapi"),
+                        telemetry.battery_level,
+                        telemetry.current_dpi.unwrap_or(1000),
+                        fingerprint,
+                    ),
+                );
             }
 
+            self.note_connected_devices(&connected_cache_keys);
             Ok(devices)
         }
     }
@@ -657,21 +931,29 @@ impl HidBackend for WindowsHidBackend {
         #[cfg(target_os = "windows")]
         {
             let api = HidApi::new().map_err(map_hid_error)?;
+            let now = Instant::now();
             for info in vendor_hid_infos(&api) {
                 let Ok(device) = info.open_device(&api) else {
                     continue;
                 };
+                let fingerprint = fingerprint_from_hid_info(info);
+                let transport = transport_label(info.bus_type());
 
                 if device_key_matches(
                     device_key,
                     Some(info.product_id()),
                     info.product_string(),
-                    Some(transport_label(info.bus_type())),
+                    Some(transport),
                     "hidapi",
-                    fingerprint_from_hid_info(info),
+                    fingerprint.clone(),
                     dpi,
                 ) && set_hidpp_dpi(&device, dpi)?
                 {
+                    self.note_dpi_write(
+                        telemetry_cache_key(Some(info.product_id()), Some(transport), &fingerprint),
+                        dpi,
+                        now,
+                    );
                     return Ok(());
                 }
             }
@@ -756,6 +1038,86 @@ impl AppDiscoveryBackend for WindowsAppDiscoveryBackend {
 fn global_hook_shared() -> &'static Mutex<Option<Arc<WindowsHookShared>>> {
     static SHARED: OnceLock<Mutex<Option<Arc<WindowsHookShared>>>> = OnceLock::new();
     SHARED.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn global_app_focus_callbacks() -> &'static Mutex<HashMap<isize, Arc<AppFocusCallback>>> {
+    static CALLBACKS: OnceLock<Mutex<HashMap<isize, Arc<AppFocusCallback>>>> = OnceLock::new();
+    CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(target_os = "windows")]
+fn run_app_focus_monitor_worker(
+    callback: Arc<AppFocusCallback>,
+    stop: Arc<AtomicBool>,
+    thread_id: Arc<AtomicU32>,
+    startup_tx: mpsc::Sender<Result<(), String>>,
+) {
+    unsafe {
+        thread_id.store(GetCurrentThreadId(), Ordering::SeqCst);
+        let hook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            std::ptr::null_mut(),
+            Some(app_focus_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        );
+
+        if hook.is_null() {
+            let _ = startup_tx.send(Err("failed to install Windows foreground hook".to_string()));
+            return;
+        }
+
+        global_app_focus_callbacks()
+            .lock()
+            .unwrap()
+            .insert(hook as isize, callback);
+        let _ = startup_tx.send(Ok(()));
+
+        let mut message = std::mem::zeroed::<MSG>();
+        while !stop.load(Ordering::SeqCst) {
+            let result = GetMessageW(&mut message, std::ptr::null_mut(), 0, 0);
+            if result == -1 || result == 0 {
+                break;
+            }
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+
+        global_app_focus_callbacks()
+            .lock()
+            .unwrap()
+            .remove(&(hook as isize));
+        UnhookWinEvent(hook);
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn app_focus_event_proc(
+    hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    if event != EVENT_SYSTEM_FOREGROUND || hwnd.is_null() {
+        return;
+    }
+
+    let callback = {
+        let callbacks = global_app_focus_callbacks().lock().unwrap();
+        callbacks.get(&(hook as isize)).cloned()
+    };
+    let Some(callback) = callback else {
+        return;
+    };
+
+    let frontmost_app = foreground_app_identity(hwnd).ok().flatten();
+    callback(frontmost_app);
 }
 
 #[cfg(target_os = "windows")]
@@ -902,7 +1264,10 @@ fn run_gesture_worker(shared: Arc<WindowsHookShared>, stop: Arc<AtomicBool>) {
                 active_session.shutdown();
                 shared.mark_gesture_connected(false, Some("Gesture listener parked".to_string()));
             }
-            thread::sleep(Duration::from_millis(180));
+            let mut guard = shared.gesture_state.lock().unwrap();
+            while !stop.load(Ordering::SeqCst) && !shared.gesture_capture_requested() {
+                guard = shared.gesture_cv.wait(guard).unwrap();
+            }
             continue;
         }
 
@@ -924,7 +1289,11 @@ fn run_gesture_worker(shared: Arc<WindowsHookShared>, stop: Arc<AtomicBool>) {
                         false,
                         Some(format!("Gesture listener unavailable: {error}")),
                     );
-                    thread::sleep(Duration::from_millis(900));
+                    let guard = shared.gesture_state.lock().unwrap();
+                    let _ = shared
+                        .gesture_cv
+                        .wait_timeout(guard, Duration::from_millis(900))
+                        .unwrap();
                     continue;
                 }
             }
@@ -952,7 +1321,11 @@ fn run_gesture_worker(shared: Arc<WindowsHookShared>, stop: Arc<AtomicBool>) {
                     false,
                     Some("Gesture listener disconnected".to_string()),
                 );
-                thread::sleep(Duration::from_millis(500));
+                let guard = shared.gesture_state.lock().unwrap();
+                let _ = shared
+                    .gesture_cv
+                    .wait_timeout(guard, Duration::from_millis(500))
+                    .unwrap();
             }
         }
     }
@@ -1158,22 +1531,28 @@ fn vendor_hid_infos(api: &HidApi) -> Vec<&HidDeviceInfo> {
 }
 
 #[cfg(target_os = "windows")]
-fn probe_hidapi_device(device: &HidDevice, info: &HidDeviceInfo) -> Option<DeviceInfo> {
-    let current_dpi = read_hidpp_current_dpi(device)
-        .ok()
-        .flatten()
-        .unwrap_or(1000);
-    let battery_level = read_hidpp_battery(device).ok().flatten();
-    let fingerprint = fingerprint_from_hid_info(info);
-    Some(build_connected_device_info(
-        Some(info.product_id()),
-        info.product_string(),
-        Some(transport_label(info.bus_type())),
-        Some("hidapi"),
-        battery_level,
-        current_dpi,
-        fingerprint,
-    ))
+fn probe_device_telemetry(
+    device: &HidDevice,
+    plan: &TelemetryProbePlan,
+) -> DeviceTelemetrySnapshot {
+    DeviceTelemetrySnapshot {
+        current_dpi: if plan.probe_dpi {
+            read_hidpp_current_dpi(device)
+                .ok()
+                .flatten()
+                .or(plan.cached.current_dpi)
+        } else {
+            plan.cached.current_dpi
+        },
+        battery_level: if plan.probe_battery {
+            read_hidpp_battery(device)
+                .ok()
+                .flatten()
+                .or(plan.cached.battery_level)
+        } else {
+            plan.cached.battery_level
+        },
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1189,6 +1568,64 @@ fn fingerprint_from_hid_info(info: &HidDeviceInfo) -> DeviceFingerprint {
     };
     hydrate_identity_key(Some(info.product_id()), &mut fingerprint);
     fingerprint
+}
+
+fn should_probe_dpi(entry: Option<&DeviceTelemetryCacheEntry>, now: Instant) -> bool {
+    let Some(entry) = entry else {
+        return true;
+    };
+
+    !entry.connected
+        || entry.current_dpi.is_none()
+        || entry
+            .verify_after
+            .is_some_and(|verify_after| now >= verify_after)
+}
+
+fn should_probe_battery(entry: Option<&DeviceTelemetryCacheEntry>, now: Instant) -> bool {
+    let Some(entry) = entry else {
+        return true;
+    };
+
+    !entry.connected || now.duration_since(entry.last_battery_probe_at) >= BATTERY_CACHE_TTL
+}
+
+fn telemetry_cache_key(
+    product_id: Option<u16>,
+    transport: Option<&str>,
+    fingerprint: &DeviceFingerprint,
+) -> String {
+    if let Some(identity_key) = fingerprint
+        .identity_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("identity:{identity_key}");
+    }
+
+    if let Some(serial_number) = fingerprint
+        .serial_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!(
+            "serial:{:04x}:{serial_number}",
+            product_id.unwrap_or_default()
+        );
+    }
+
+    format!(
+        "tuple:{:04x}:{}:{}:{}:{}:{}:{}",
+        product_id.unwrap_or_default(),
+        transport.unwrap_or_default(),
+        fingerprint.location_id.unwrap_or_default(),
+        fingerprint.interface_number.unwrap_or_default(),
+        fingerprint.usage_page.unwrap_or_default(),
+        fingerprint.usage.unwrap_or_default(),
+        fingerprint.hid_path.as_deref().unwrap_or_default(),
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -2208,4 +2645,70 @@ fn is_extended_key(vk: u16) -> bool {
         VK_TAB as u16,
     ]
     .contains(&vk)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn telemetry_cache_key_prefers_identity_then_serial() {
+        let fingerprint = DeviceFingerprint {
+            identity_key: Some("mx-master-3s".to_string()),
+            serial_number: Some("abc123".to_string()),
+            hid_path: Some("hid#path".to_string()),
+            interface_number: Some(1),
+            usage_page: Some(0xFF00),
+            usage: Some(1),
+            location_id: None,
+        };
+
+        assert_eq!(
+            telemetry_cache_key(Some(0xB034), Some("USB"), &fingerprint),
+            "identity:mx-master-3s"
+        );
+
+        let mut serial_only = fingerprint.clone();
+        serial_only.identity_key = None;
+        assert_eq!(
+            telemetry_cache_key(Some(0xB034), Some("USB"), &serial_only),
+            "serial:b034:abc123"
+        );
+    }
+
+    #[test]
+    fn telemetry_probe_policy_handles_ttl_reconnect_and_verify() {
+        let now = Instant::now();
+        let fresh = DeviceTelemetryCacheEntry {
+            current_dpi: Some(1200),
+            battery_level: Some(70),
+            last_battery_probe_at: now,
+            verify_after: None,
+            connected: true,
+        };
+
+        assert!(!should_probe_dpi(Some(&fresh), now));
+        assert!(!should_probe_battery(Some(&fresh), now));
+
+        let disconnected = DeviceTelemetryCacheEntry {
+            connected: false,
+            ..fresh.clone()
+        };
+        assert!(should_probe_dpi(Some(&disconnected), now));
+        assert!(should_probe_battery(Some(&disconnected), now));
+
+        let stale_battery = DeviceTelemetryCacheEntry {
+            last_battery_probe_at: now - BATTERY_CACHE_TTL,
+            ..fresh.clone()
+        };
+        assert!(!should_probe_dpi(Some(&stale_battery), now));
+        assert!(should_probe_battery(Some(&stale_battery), now));
+
+        let verify_due = DeviceTelemetryCacheEntry {
+            verify_after: Some(now),
+            ..fresh
+        };
+        assert!(should_probe_dpi(Some(&verify_due), now));
+        assert!(!should_probe_battery(Some(&verify_due), now));
+    }
 }

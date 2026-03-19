@@ -12,6 +12,8 @@ use mouser_core::{
 use mouser_import::{import_legacy_config as import_legacy_payload, ImportSource};
 #[cfg(target_os = "macos")]
 use mouser_platform::macos::{MacOsAppFocusMonitor, MacOsDeviceMonitor};
+#[cfg(target_os = "windows")]
+use mouser_platform::windows::WindowsAppFocusMonitor;
 use runtime::AppRuntime;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -33,7 +35,7 @@ struct AppState {
     runtime: Mutex<AppRuntime>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone)]
 enum RuntimeSignal {
     DevicesChanged,
@@ -431,7 +433,7 @@ fn push_runtime_debug_event(app: &AppHandle, kind: DebugEventKind, message: impl
     let _ = emit_runtime_events(app, &payload, debug_event);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn spawn_periodic_runtime_signal(
     tx: mpsc::Sender<RuntimeSignal>,
     signal: RuntimeSignal,
@@ -445,7 +447,7 @@ fn spawn_periodic_runtime_signal(
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn spawn_focus_fallback(app: AppHandle, tx: mpsc::Sender<RuntimeSignal>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
@@ -466,7 +468,7 @@ fn spawn_focus_fallback(app: AppHandle, tx: mpsc::Sender<RuntimeSignal>) {
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_runtime_monitor(app: AppHandle, rx: mpsc::Receiver<RuntimeSignal>) {
     while let Ok(signal) = rx.recv() {
         let (devices, frontmost_app, hook_events) = match signal {
@@ -476,7 +478,11 @@ fn run_runtime_monitor(app: AppHandle, rx: mpsc::Receiver<RuntimeSignal>) {
                 else {
                     break;
                 };
-                (Some(hid_backend.list_devices()), None, hook_backend.drain_events())
+                (
+                    Some(hid_backend.list_devices()),
+                    None,
+                    hook_backend.drain_events(),
+                )
             }
             RuntimeSignal::FrontmostAppChanged(frontmost_app) => {
                 let Ok((_hid_backend, _app_focus_backend, hook_backend)) =
@@ -539,8 +545,16 @@ fn spawn_runtime_monitor(app: AppHandle) {
     let monitor_app = app.clone();
     std::thread::spawn(move || run_runtime_monitor(monitor_app, rx));
 
-    spawn_periodic_runtime_signal(tx.clone(), RuntimeSignal::HookDrain, Duration::from_millis(500));
-    spawn_periodic_runtime_signal(tx.clone(), RuntimeSignal::SafetyResync, Duration::from_secs(30));
+    spawn_periodic_runtime_signal(
+        tx.clone(),
+        RuntimeSignal::HookDrain,
+        Duration::from_millis(500),
+    );
+    spawn_periodic_runtime_signal(
+        tx.clone(),
+        RuntimeSignal::SafetyResync,
+        Duration::from_secs(30),
+    );
 
     let device_signal_tx = tx.clone();
     match MacOsDeviceMonitor::new(move || {
@@ -574,6 +588,44 @@ fn spawn_runtime_monitor(app: AppHandle) {
             );
             spawn_focus_fallback(app, tx);
             return;
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_runtime_monitor(app: AppHandle) {
+    let (tx, rx) = mpsc::channel::<RuntimeSignal>();
+    let monitor_app = app.clone();
+    std::thread::spawn(move || run_runtime_monitor(monitor_app, rx));
+
+    spawn_periodic_runtime_signal(
+        tx.clone(),
+        RuntimeSignal::HookDrain,
+        Duration::from_millis(500),
+    );
+    spawn_periodic_runtime_signal(
+        tx.clone(),
+        RuntimeSignal::SafetyResync,
+        Duration::from_secs(30),
+    );
+    spawn_periodic_runtime_signal(
+        tx.clone(),
+        RuntimeSignal::DevicesChanged,
+        Duration::from_secs(5),
+    );
+
+    let focus_signal_tx = tx.clone();
+    match WindowsAppFocusMonitor::new(move |frontmost_app| {
+        let _ = focus_signal_tx.send(RuntimeSignal::FrontmostAppChanged(frontmost_app));
+    }) {
+        Ok(monitor) => std::mem::forget(monitor),
+        Err(error) => {
+            push_runtime_debug_event(
+                &app,
+                DebugEventKind::Warning,
+                format!("Windows app-focus monitor unavailable: {error}"),
+            );
+            spawn_focus_fallback(app, tx);
         }
     }
 }
@@ -677,7 +729,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn spawn_runtime_poller(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(900));
@@ -792,9 +844,9 @@ pub fn run() {
         .setup(move |app| {
             setup_tray(app)?;
             specta_builder.mount_events(app);
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             spawn_runtime_monitor(app.handle().clone());
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             spawn_runtime_poller(app.handle().clone());
             Ok(())
         })

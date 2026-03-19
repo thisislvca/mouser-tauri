@@ -664,10 +664,7 @@ impl MacOsHookShared {
         self.thumb_wheel_cv.notify_all();
     }
 
-    fn thumb_wheel_worker_state(
-        &self,
-        now: Instant,
-    ) -> ThumbWheelWorkerState {
+    fn thumb_wheel_worker_state(&self, now: Instant) -> ThumbWheelWorkerState {
         let hold_timeout = Duration::from_millis(u64::from(
             self.current_config()
                 .macos_thumb_wheel_trackpad_hold_timeout_ms,

@@ -981,8 +981,7 @@ pub mod macos {
                                 info,
                                 now,
                                 &mut connected_cache_keys,
-                            )
-                            {
+                            ) {
                                 push_unique_device(&mut devices, device_info);
                             }
                         }
@@ -1408,8 +1407,7 @@ pub mod macos {
         ) -> Option<DeviceInfo> {
             let transport = Some(transport_label(info.bus_type()));
             let fingerprint = fingerprint_from_hid_info(info);
-            let cache_key =
-                telemetry_cache_key(Some(info.product_id()), transport, &fingerprint);
+            let cache_key = telemetry_cache_key(Some(info.product_id()), transport, &fingerprint);
 
             let device_info = if connected_cache_keys.contains(&cache_key) {
                 let plan = self.telemetry_plan(&cache_key, now);
@@ -1566,7 +1564,9 @@ pub mod macos {
             label: app.localizedName().map(|name| name.to_string()),
             executable,
             executable_path,
-            bundle_id: app.bundleIdentifier().map(|bundle_id| bundle_id.to_string()),
+            bundle_id: app
+                .bundleIdentifier()
+                .map(|bundle_id| bundle_id.to_string()),
             package_family_name: None,
         }))
     }
@@ -1613,7 +1613,9 @@ pub mod macos {
         !entry.connected
             || entry.current_dpi.is_none()
             || now.duration_since(entry.last_battery_probe_at) >= BATTERY_CACHE_TTL
-            || entry.verify_after.is_some_and(|verify_after| now >= verify_after)
+            || entry
+                .verify_after
+                .is_some_and(|verify_after| now >= verify_after)
     }
 
     #[cfg(target_os = "macos")]
@@ -1637,7 +1639,10 @@ pub mod macos {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            return format!("serial:{:04x}:{serial_number}", product_id.unwrap_or_default());
+            return format!(
+                "serial:{:04x}:{serial_number}",
+                product_id.unwrap_or_default()
+            );
         }
 
         format!(
@@ -1808,7 +1813,8 @@ pub mod macos {
 
 pub mod windows {
     pub use crate::windows_backend::{
-        WindowsAppDiscoveryBackend, WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend,
+        WindowsAppDiscoveryBackend, WindowsAppFocusBackend, WindowsAppFocusMonitor,
+        WindowsHidBackend, WindowsHookBackend,
     };
 }
 

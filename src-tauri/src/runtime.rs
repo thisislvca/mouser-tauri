@@ -1252,7 +1252,7 @@ fn current_hid_backend() -> Arc<dyn HidBackend> {
     if cfg!(target_os = "macos") {
         Arc::new(MacOsHidBackend::new())
     } else {
-        Arc::new(WindowsHidBackend)
+        Arc::new(WindowsHidBackend::new())
     }
 }
 
