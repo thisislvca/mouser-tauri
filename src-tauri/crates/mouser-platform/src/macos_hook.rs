@@ -64,7 +64,7 @@ use std::{
     panic::{self, AssertUnwindSafe},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex, RwLock,
+        mpsc, Arc, Condvar, Mutex, RwLock,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -347,10 +347,84 @@ struct ThumbWheelGestureState {
 }
 
 #[cfg(target_os = "macos")]
+enum ThumbWheelWorkerState {
+    Action(
+        CGPoint,
+        CGEventFlags,
+        ThumbWheelTrackpadPhase,
+        ScrollAxisDeltas,
+    ),
+    Wait,
+    WaitTimeout(Duration),
+}
+
+#[cfg(target_os = "macos")]
+fn thumb_wheel_worker_state_for_state(
+    state: &mut ThumbWheelGestureState,
+    hold_timeout: Duration,
+    now: Instant,
+) -> ThumbWheelWorkerState {
+    if !state.active {
+        return ThumbWheelWorkerState::Wait;
+    }
+
+    let location = state.last_location;
+    let flags = state.last_flags;
+    if let Some(step) = next_thumb_wheel_point_step(state.pending_point_delta) {
+        state.pending_point_delta -= step as f64;
+        if state.pending_point_delta.abs() < 0.5 {
+            state.pending_point_delta = 0.0;
+        }
+        let phase = if state.emitted_motion {
+            ThumbWheelTrackpadPhase::Changed
+        } else {
+            state.emitted_motion = true;
+            ThumbWheelTrackpadPhase::Began
+        };
+        return ThumbWheelWorkerState::Action(
+            location,
+            flags,
+            phase,
+            ScrollAxisDeltas {
+                line: 0,
+                fixed: step,
+                point: step,
+            },
+        );
+    }
+
+    let should_end = state.end_requested
+        || state
+            .last_wheel_at
+            .is_some_and(|last_wheel_at| now.duration_since(last_wheel_at) >= hold_timeout);
+    if !should_end {
+        return state
+            .last_wheel_at
+            .and_then(|last_wheel_at| hold_timeout.checked_sub(now.duration_since(last_wheel_at)))
+            .map(ThumbWheelWorkerState::WaitTimeout)
+            .unwrap_or(ThumbWheelWorkerState::Wait);
+    }
+
+    let emitted_motion = state.emitted_motion;
+    *state = ThumbWheelGestureState::default();
+    if !emitted_motion {
+        return ThumbWheelWorkerState::Wait;
+    }
+
+    ThumbWheelWorkerState::Action(
+        location,
+        flags,
+        ThumbWheelTrackpadPhase::Ended,
+        ScrollAxisDeltas::default(),
+    )
+}
+
+#[cfg(target_os = "macos")]
 struct MacOsHookShared {
     config: RwLock<Arc<MacOsHookConfig>>,
     gesture_state: Mutex<GestureTrackingState>,
     thumb_wheel_state: Mutex<ThumbWheelGestureState>,
+    thumb_wheel_cv: Condvar,
     events: Mutex<Vec<HookBackendEvent>>,
     intercepting: AtomicBool,
     gesture_connected: AtomicBool,
@@ -363,6 +437,7 @@ impl MacOsHookShared {
             config: RwLock::new(Arc::new(MacOsHookConfig::default())),
             gesture_state: Mutex::new(GestureTrackingState::default()),
             thumb_wheel_state: Mutex::new(ThumbWheelGestureState::default()),
+            thumb_wheel_cv: Condvar::new(),
             events: Mutex::new(Vec::new()),
             intercepting: AtomicBool::new(false),
             gesture_connected: AtomicBool::new(false),
@@ -416,6 +491,7 @@ impl MacOsHookShared {
         }
         if !next.macos_thumb_wheel_simulate_trackpad {
             self.reset_thumb_wheel_state();
+            self.thumb_wheel_cv.notify_all();
         }
     }
 
@@ -555,6 +631,8 @@ impl MacOsHookShared {
             started
         };
 
+        self.thumb_wheel_cv.notify_all();
+
         if started {
             self.push_debug("Thumb wheel trackpad swipe started");
         }
@@ -565,6 +643,7 @@ impl MacOsHookShared {
     fn reset_thumb_wheel_state(&self) {
         let mut state = self.thumb_wheel_state.lock().unwrap();
         *state = ThumbWheelGestureState::default();
+        self.thumb_wheel_cv.notify_all();
     }
 
     fn note_thumb_wheel_pointer_move(&self, event: &CGEvent) {
@@ -582,69 +661,19 @@ impl MacOsHookShared {
         state.end_requested = true;
         state.last_location = event.location();
         state.last_flags = event.get_flags();
+        self.thumb_wheel_cv.notify_all();
     }
 
-    fn take_thumb_wheel_worker_action(
+    fn thumb_wheel_worker_state(
         &self,
-    ) -> Option<(
-        CGPoint,
-        CGEventFlags,
-        ThumbWheelTrackpadPhase,
-        ScrollAxisDeltas,
-    )> {
-        let hold_timeout_ms = self
-            .current_config()
-            .macos_thumb_wheel_trackpad_hold_timeout_ms;
+        now: Instant,
+    ) -> ThumbWheelWorkerState {
+        let hold_timeout = Duration::from_millis(u64::from(
+            self.current_config()
+                .macos_thumb_wheel_trackpad_hold_timeout_ms,
+        ));
         let mut state = self.thumb_wheel_state.lock().unwrap();
-        if !state.active {
-            return None;
-        }
-
-        let location = state.last_location;
-        let flags = state.last_flags;
-        if let Some(step) = next_thumb_wheel_point_step(state.pending_point_delta) {
-            state.pending_point_delta -= step as f64;
-            if state.pending_point_delta.abs() < 0.5 {
-                state.pending_point_delta = 0.0;
-            }
-            let phase = if state.emitted_motion {
-                ThumbWheelTrackpadPhase::Changed
-            } else {
-                state.emitted_motion = true;
-                ThumbWheelTrackpadPhase::Began
-            };
-            return Some((
-                location,
-                flags,
-                phase,
-                ScrollAxisDeltas {
-                    line: 0,
-                    fixed: step,
-                    point: step,
-                },
-            ));
-        }
-
-        let should_end = state.end_requested
-            || state.last_wheel_at.is_some_and(|last_wheel_at| {
-                last_wheel_at.elapsed().as_millis() >= u128::from(hold_timeout_ms)
-            });
-        if !should_end {
-            return None;
-        }
-
-        let emitted_motion = state.emitted_motion;
-        *state = ThumbWheelGestureState::default();
-        if !emitted_motion {
-            return None;
-        }
-
-        Some((
-            location,
-            flags,
-            ThumbWheelTrackpadPhase::Ended,
-            ScrollAxisDeltas::default(),
-        ))
+        thumb_wheel_worker_state_for_state(&mut state, hold_timeout, now)
     }
 
     fn handle_motion_event(&self, event: &CGEvent) -> CallbackResult {
@@ -990,6 +1019,7 @@ impl Drop for MacOsHookBackend {
         }
 
         self.thumb_wheel_stop.store(true, Ordering::SeqCst);
+        self.shared.thumb_wheel_cv.notify_all();
         if let Some(handle) = self.thumb_wheel_worker.lock().unwrap().take() {
             let _ = handle.join();
         }
@@ -1197,20 +1227,33 @@ fn run_gesture_worker(shared: Arc<MacOsHookShared>, stop: Arc<AtomicBool>) {
 #[cfg(target_os = "macos")]
 fn run_thumb_wheel_worker(shared: Arc<MacOsHookShared>, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::SeqCst) {
-        if let Some((location, flags, phase, deltas)) = shared.take_thumb_wheel_worker_action() {
-            if let Err(error) = post_thumb_wheel_trackpad_event(location, flags, phase, deltas) {
-                shared.push_event(
-                    DebugEventKind::Warning,
-                    format!("Thumb wheel trackpad swipe delivery failed: {error}"),
-                );
-            } else if matches!(phase, ThumbWheelTrackpadPhase::Ended) {
-                shared.push_debug("Thumb wheel trackpad swipe ended");
+        match shared.thumb_wheel_worker_state(Instant::now()) {
+            ThumbWheelWorkerState::Action(location, flags, phase, deltas) => {
+                if let Err(error) = post_thumb_wheel_trackpad_event(location, flags, phase, deltas)
+                {
+                    shared.push_event(
+                        DebugEventKind::Warning,
+                        format!("Thumb wheel trackpad swipe delivery failed: {error}"),
+                    );
+                } else if matches!(phase, ThumbWheelTrackpadPhase::Ended) {
+                    shared.push_debug("Thumb wheel trackpad swipe ended");
+                }
+
+                if !matches!(phase, ThumbWheelTrackpadPhase::Ended) {
+                    thread::sleep(Duration::from_millis(
+                        SCROLL_WHEEL_TRACKPAD_POLL_INTERVAL_MS,
+                    ));
+                }
+            }
+            ThumbWheelWorkerState::Wait => {
+                let guard = shared.thumb_wheel_state.lock().unwrap();
+                let _guard = shared.thumb_wheel_cv.wait(guard).unwrap();
+            }
+            ThumbWheelWorkerState::WaitTimeout(duration) => {
+                let guard = shared.thumb_wheel_state.lock().unwrap();
+                let _ = shared.thumb_wheel_cv.wait_timeout(guard, duration).unwrap();
             }
         }
-
-        thread::sleep(Duration::from_millis(
-            SCROLL_WHEEL_TRACKPAD_POLL_INTERVAL_MS,
-        ));
     }
 }
 
@@ -1904,4 +1947,64 @@ fn send_media_key(key_id: isize) -> Result<(), PlatformError> {
     ObjcCGEvent::post(ObjcCGEventTapLocation::HIDEventTap, Some(&down_cg));
     ObjcCGEvent::post(ObjcCGEventTapLocation::HIDEventTap, Some(&up_cg));
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thumb_wheel_worker_blocks_while_idle() {
+        let mut state = ThumbWheelGestureState::default();
+        assert!(matches!(
+            thumb_wheel_worker_state_for_state(
+                &mut state,
+                Duration::from_millis(500),
+                Instant::now(),
+            ),
+            ThumbWheelWorkerState::Wait
+        ));
+    }
+
+    #[test]
+    fn thumb_wheel_worker_emits_motion_when_pending_delta_exists() {
+        let now = Instant::now();
+        let mut state = ThumbWheelGestureState {
+            active: true,
+            pending_point_delta: 6.0,
+            last_wheel_at: Some(now),
+            last_location: CGPoint { x: 10.0, y: 20.0 },
+            last_flags: CGEventFlags::empty(),
+            ..ThumbWheelGestureState::default()
+        };
+
+        match thumb_wheel_worker_state_for_state(&mut state, Duration::from_millis(500), now) {
+            ThumbWheelWorkerState::Action(_, _, ThumbWheelTrackpadPhase::Began, deltas) => {
+                assert!(deltas.point > 0);
+                assert!(state.emitted_motion);
+            }
+            _ => panic!("expected thumb-wheel worker to emit a began action"),
+        }
+    }
+
+    #[test]
+    fn thumb_wheel_worker_ends_after_hold_timeout() {
+        let now = Instant::now();
+        let mut state = ThumbWheelGestureState {
+            active: true,
+            emitted_motion: true,
+            last_wheel_at: Some(now - Duration::from_millis(600)),
+            last_location: CGPoint { x: 0.0, y: 0.0 },
+            last_flags: CGEventFlags::empty(),
+            ..ThumbWheelGestureState::default()
+        };
+
+        match thumb_wheel_worker_state_for_state(&mut state, Duration::from_millis(500), now) {
+            ThumbWheelWorkerState::Action(_, _, ThumbWheelTrackpadPhase::Ended, deltas) => {
+                assert!(deltas.is_zero());
+                assert!(!state.active);
+            }
+            _ => panic!("expected thumb-wheel worker to end the simulated swipe"),
+        }
+    }
 }

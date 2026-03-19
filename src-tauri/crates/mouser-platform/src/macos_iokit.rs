@@ -3,7 +3,12 @@ use std::{
     ffi::c_void,
     os::raw::{c_int, c_long},
     ptr,
-    sync::mpsc::{self, Receiver, Sender, TryRecvError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender, TryRecvError},
+        Arc, Mutex,
+    },
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
@@ -30,6 +35,13 @@ type IOHIDManagerRef = *mut c_void;
 type IOHIDDeviceRef = *mut c_void;
 #[cfg(target_os = "macos")]
 type IOHIDReportType = c_int;
+#[cfg(target_os = "macos")]
+type IOHIDDeviceCallback = unsafe extern "C" fn(
+    context: *mut c_void,
+    result: IOReturn,
+    sender: *mut c_void,
+    device: IOHIDDeviceRef,
+);
 
 #[cfg(target_os = "macos")]
 const LOGI_VID: u16 = 0x046D;
@@ -54,6 +66,27 @@ unsafe extern "C" {
     fn IOHIDManagerSetDeviceMatching(manager: IOHIDManagerRef, matching: *const c_void);
     fn IOHIDManagerOpen(manager: IOHIDManagerRef, options: IOOptionBits) -> IOReturn;
     fn IOHIDManagerCopyDevices(manager: IOHIDManagerRef) -> CFSetRef;
+    fn IOHIDManagerClose(manager: IOHIDManagerRef, options: IOOptionBits) -> IOReturn;
+    fn IOHIDManagerScheduleWithRunLoop(
+        manager: IOHIDManagerRef,
+        run_loop: *mut c_void,
+        run_loop_mode: *const c_void,
+    );
+    fn IOHIDManagerUnscheduleFromRunLoop(
+        manager: IOHIDManagerRef,
+        run_loop: *mut c_void,
+        run_loop_mode: *const c_void,
+    );
+    fn IOHIDManagerRegisterDeviceMatchingCallback(
+        manager: IOHIDManagerRef,
+        callback: IOHIDDeviceCallback,
+        context: *mut c_void,
+    );
+    fn IOHIDManagerRegisterDeviceRemovalCallback(
+        manager: IOHIDManagerRef,
+        callback: IOHIDDeviceCallback,
+        context: *mut c_void,
+    );
 
     fn IOHIDDeviceOpen(device: IOHIDDeviceRef, options: IOOptionBits) -> IOReturn;
     fn IOHIDDeviceClose(device: IOHIDDeviceRef, options: IOOptionBits) -> IOReturn;
@@ -163,6 +196,160 @@ pub fn enumerate_iokit_infos() -> Result<Vec<MacOsIoKitInfo>, PlatformError> {
     unsafe { CFRelease(manager as CFTypeRef) };
 
     Ok(infos)
+}
+
+#[cfg(target_os = "macos")]
+struct DeviceMonitorContext {
+    notify: Box<dyn Fn() + Send + Sync>,
+    stopped: Arc<AtomicBool>,
+}
+
+#[cfg(target_os = "macos")]
+pub struct MacOsDeviceMonitor {
+    run_loop: Arc<Mutex<Option<CFRunLoop>>>,
+    stopped: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+#[cfg(target_os = "macos")]
+impl MacOsDeviceMonitor {
+    pub fn new<F>(notify: F) -> Result<Self, PlatformError>
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        let run_loop = Arc::new(Mutex::new(None));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (startup_tx, startup_rx) = mpsc::channel();
+
+        let worker_run_loop = Arc::clone(&run_loop);
+        let worker_stopped = Arc::clone(&stopped);
+        let worker = thread::Builder::new()
+            .name("mouser-macos-device-monitor".to_string())
+            .spawn(move || {
+                let manager = unsafe { IOHIDManagerCreate(ptr::null(), 0) };
+                if manager.is_null() {
+                    let _ = startup_tx.send(Err(PlatformError::Message(
+                        "IOHIDManagerCreate failed".to_string(),
+                    )));
+                    return;
+                }
+
+                let matching = vendor_matching_dictionary(LOGI_VID);
+                let context = Box::into_raw(Box::new(DeviceMonitorContext {
+                    notify: Box::new(notify),
+                    stopped: Arc::clone(&worker_stopped),
+                }));
+
+                unsafe {
+                    IOHIDManagerSetDeviceMatching(
+                        manager,
+                        matching.as_concrete_TypeRef() as *const c_void,
+                    );
+                    IOHIDManagerRegisterDeviceMatchingCallback(
+                        manager,
+                        device_monitor_callback,
+                        context as *mut c_void,
+                    );
+                    IOHIDManagerRegisterDeviceRemovalCallback(
+                        manager,
+                        device_monitor_callback,
+                        context as *mut c_void,
+                    );
+                }
+
+                let current_run_loop = CFRunLoop::get_current();
+                *worker_run_loop.lock().unwrap() = Some(current_run_loop.clone());
+
+                unsafe {
+                    IOHIDManagerScheduleWithRunLoop(
+                        manager,
+                        current_run_loop.as_concrete_TypeRef() as *mut c_void,
+                        kCFRunLoopDefaultMode as *const c_void,
+                    );
+                }
+
+                let open_status = unsafe { IOHIDManagerOpen(manager, 0) };
+                if open_status != 0 {
+                    unsafe {
+                        IOHIDManagerUnscheduleFromRunLoop(
+                            manager,
+                            current_run_loop.as_concrete_TypeRef() as *mut c_void,
+                            kCFRunLoopDefaultMode as *const c_void,
+                        );
+                        CFRelease(manager as CFTypeRef);
+                        drop(Box::from_raw(context));
+                    }
+                    *worker_run_loop.lock().unwrap() = None;
+                    let _ = startup_tx.send(Err(PlatformError::Message(format!(
+                        "IOHIDManagerOpen failed: 0x{open_status:08X}"
+                    ))));
+                    return;
+                }
+
+                let _ = startup_tx.send(Ok(()));
+                CFRunLoop::run_current();
+
+                unsafe {
+                    IOHIDManagerUnscheduleFromRunLoop(
+                        manager,
+                        current_run_loop.as_concrete_TypeRef() as *mut c_void,
+                        kCFRunLoopDefaultMode as *const c_void,
+                    );
+                    let _ = IOHIDManagerClose(manager, 0);
+                    CFRelease(manager as CFTypeRef);
+                    drop(Box::from_raw(context));
+                }
+                *worker_run_loop.lock().unwrap() = None;
+            })
+            .map_err(|error| PlatformError::Message(error.to_string()))?;
+
+        match startup_rx.recv_timeout(Duration::from_millis(800)) {
+            Ok(Ok(())) => Ok(Self {
+                run_loop,
+                stopped,
+                worker: Some(worker),
+            }),
+            Ok(Err(error)) => {
+                let _ = worker.join();
+                Err(error)
+            }
+            Err(_) => Err(PlatformError::Message(
+                "Timed out while starting the macOS HID device monitor".to_string(),
+            )),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for MacOsDeviceMonitor {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        if let Some(run_loop) = self.run_loop.lock().unwrap().clone() {
+            run_loop.stop();
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn device_monitor_callback(
+    context: *mut c_void,
+    _result: IOReturn,
+    _sender: *mut c_void,
+    _device: IOHIDDeviceRef,
+) {
+    if context.is_null() {
+        return;
+    }
+
+    let context = unsafe { &*(context as *const DeviceMonitorContext) };
+    if context.stopped.load(Ordering::SeqCst) {
+        return;
+    }
+
+    (context.notify)();
 }
 
 #[cfg(target_os = "macos")]

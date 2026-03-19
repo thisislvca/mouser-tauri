@@ -1,15 +1,17 @@
 mod runtime;
 
 use std::{
-    sync::{Mutex, MutexGuard},
+    sync::{mpsc, Mutex, MutexGuard},
     time::Duration,
 };
 
 use mouser_core::{
-    AppConfig, AppDiscoverySnapshot, BootstrapPayload, DebugEvent, DeviceInfo, DeviceSettings,
-    EngineSnapshot, LegacyImportReport, Profile, Settings,
+    AppConfig, AppDiscoverySnapshot, AppIdentity, BootstrapPayload, DebugEvent, DebugEventKind,
+    DeviceInfo, DeviceSettings, EngineSnapshot, LegacyImportReport, Profile, Settings,
 };
 use mouser_import::{import_legacy_config as import_legacy_payload, ImportSource};
+#[cfg(target_os = "macos")]
+use mouser_platform::macos::{MacOsAppFocusMonitor, MacOsDeviceMonitor};
 use runtime::AppRuntime;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -29,6 +31,15 @@ const TRAY_QUIT_ID: &str = "quit";
 
 struct AppState {
     runtime: Mutex<AppRuntime>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+enum RuntimeSignal {
+    DevicesChanged,
+    FrontmostAppChanged(Option<AppIdentity>),
+    HookDrain,
+    SafetyResync,
 }
 
 type CommandResult<T> = Result<T, String>;
@@ -408,6 +419,165 @@ fn emit_runtime_events(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn push_runtime_debug_event(app: &AppHandle, kind: DebugEventKind, message: impl Into<String>) {
+    let message = message.into();
+    let Ok((payload, debug_event)) = with_manager_runtime(app, |runtime| {
+        runtime.record_debug_event(kind, message);
+        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    }) else {
+        return;
+    };
+    let _ = emit_runtime_events(app, &payload, debug_event);
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_periodic_runtime_signal(
+    tx: mpsc::Sender<RuntimeSignal>,
+    signal: RuntimeSignal,
+    interval: Duration,
+) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(interval);
+        if tx.send(signal.clone()).is_err() {
+            break;
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_focus_fallback(app: AppHandle, tx: mpsc::Sender<RuntimeSignal>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(2));
+
+        let Ok((_hid_backend, app_focus_backend, _hook_backend)) =
+            with_manager_runtime(&app, |runtime| runtime.poll_backends())
+        else {
+            break;
+        };
+
+        let frontmost_app = app_focus_backend.current_frontmost_app().ok().flatten();
+        if tx
+            .send(RuntimeSignal::FrontmostAppChanged(frontmost_app))
+            .is_err()
+        {
+            break;
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn run_runtime_monitor(app: AppHandle, rx: mpsc::Receiver<RuntimeSignal>) {
+    while let Ok(signal) = rx.recv() {
+        let (devices, frontmost_app, hook_events) = match signal {
+            RuntimeSignal::DevicesChanged => {
+                let Ok((hid_backend, _app_focus_backend, hook_backend)) =
+                    with_manager_runtime(&app, |runtime| runtime.poll_backends())
+                else {
+                    break;
+                };
+                (Some(hid_backend.list_devices()), None, hook_backend.drain_events())
+            }
+            RuntimeSignal::FrontmostAppChanged(frontmost_app) => {
+                let Ok((_hid_backend, _app_focus_backend, hook_backend)) =
+                    with_manager_runtime(&app, |runtime| runtime.poll_backends())
+                else {
+                    break;
+                };
+                (None, Some(Ok(frontmost_app)), hook_backend.drain_events())
+            }
+            RuntimeSignal::HookDrain => {
+                let Ok((_hid_backend, _app_focus_backend, hook_backend)) =
+                    with_manager_runtime(&app, |runtime| runtime.poll_backends())
+                else {
+                    break;
+                };
+                (None, None, hook_backend.drain_events())
+            }
+            RuntimeSignal::SafetyResync => {
+                let Ok((hid_backend, app_focus_backend, hook_backend)) =
+                    with_manager_runtime(&app, |runtime| runtime.poll_backends())
+                else {
+                    break;
+                };
+                (
+                    Some(hid_backend.list_devices()),
+                    Some(app_focus_backend.current_frontmost_app()),
+                    hook_backend.drain_events(),
+                )
+            }
+        };
+
+        let Ok((changed, payload, debug_event)) = with_manager_runtime(&app, |runtime| {
+            let changed = runtime.apply_runtime_updates(devices, frontmost_app, hook_events);
+            let payload = if changed {
+                Some(runtime.bootstrap_payload())
+            } else {
+                None
+            };
+            let debug_event = if changed {
+                runtime.last_debug_event()
+            } else {
+                None
+            };
+            (changed, payload, debug_event)
+        }) else {
+            break;
+        };
+
+        if changed {
+            if let Some(payload) = payload {
+                let _ = emit_runtime_events(&app, &payload, debug_event);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_runtime_monitor(app: AppHandle) {
+    let (tx, rx) = mpsc::channel::<RuntimeSignal>();
+    let monitor_app = app.clone();
+    std::thread::spawn(move || run_runtime_monitor(monitor_app, rx));
+
+    spawn_periodic_runtime_signal(tx.clone(), RuntimeSignal::HookDrain, Duration::from_millis(500));
+    spawn_periodic_runtime_signal(tx.clone(), RuntimeSignal::SafetyResync, Duration::from_secs(30));
+
+    let device_signal_tx = tx.clone();
+    match MacOsDeviceMonitor::new(move || {
+        let _ = device_signal_tx.send(RuntimeSignal::DevicesChanged);
+    }) {
+        Ok(monitor) => std::mem::forget(monitor),
+        Err(error) => {
+            push_runtime_debug_event(
+                &app,
+                DebugEventKind::Warning,
+                format!("macOS HID device monitor unavailable: {error}"),
+            );
+            spawn_periodic_runtime_signal(
+                tx.clone(),
+                RuntimeSignal::DevicesChanged,
+                Duration::from_secs(5),
+            );
+        }
+    }
+
+    let focus_signal_tx = tx.clone();
+    match MacOsAppFocusMonitor::new(move |frontmost_app| {
+        let _ = focus_signal_tx.send(RuntimeSignal::FrontmostAppChanged(frontmost_app));
+    }) {
+        Ok(monitor) => std::mem::forget(monitor),
+        Err(error) => {
+            push_runtime_debug_event(
+                &app,
+                DebugEventKind::Warning,
+                format!("macOS app-focus monitor unavailable: {error}"),
+            );
+            spawn_focus_fallback(app, tx);
+            return;
+        }
+    }
+}
+
 fn build_tray_menu<M: Manager<Wry>>(
     manager: &M,
     remapping_enabled: bool,
@@ -507,6 +677,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "macos"))]
 fn spawn_runtime_poller(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(900));
@@ -621,6 +792,9 @@ pub fn run() {
         .setup(move |app| {
             setup_tray(app)?;
             specta_builder.mount_events(app);
+            #[cfg(target_os = "macos")]
+            spawn_runtime_monitor(app.handle().clone());
+            #[cfg(not(target_os = "macos"))]
             spawn_runtime_poller(app.handle().clone());
             Ok(())
         })

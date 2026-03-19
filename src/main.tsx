@@ -11,8 +11,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <QueryClientProvider client={queryClient}>
       <Suspense
         fallback={
-          <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-8 text-[var(--foreground)]">
-            <div className="rounded-[28px] bg-[var(--card)] px-6 py-4 shadow-[0_18px_36px_rgba(15,23,42,0.08)] ring-1 ring-[var(--border)]">
+          <main className="flex min-h-screen items-center justify-center bg-app-bg px-8 text-foreground">
+            <div className="rounded-[28px] bg-card px-6 py-4 shadow-[0_18px_36px_rgba(15,23,42,0.08)] ring-1 ring-border">
               Loading Mouser...
             </div>
           </main>

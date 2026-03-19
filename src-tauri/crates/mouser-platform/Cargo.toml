@@ -11,12 +11,14 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
 core-foundation = "0.10"
 core-graphics = { version = "0.25.0", features = ["highsierra"] }
 hidapi = { version = "2.6.5", features = ["macos-shared-device"] }
+objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["NSRunningApplication", "NSWorkspace", "NSEvent", "NSGraphicsContext", "objc2-core-graphics"] }
 objc2-core-graphics = "0.3.2"
-objc2-foundation = { version = "0.3.2", features = ["NSGeometry"] }
+objc2-foundation = { version = "0.3.2", features = ["NSGeometry", "NSNotification", "NSOperation"] }
 plist = "1.8.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]

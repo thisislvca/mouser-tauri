@@ -248,10 +248,16 @@ function matchersOverlap(left: AppMatcher[], right: AppMatcher[]) {
 }
 
 function profileMatchesDiscoveredApp(profile: Profile, app: DiscoveredApp) {
-  return profile.appMatchers.length > 0 && matchersOverlap(profile.appMatchers, app.matchers);
+  return (
+    profile.appMatchers.length > 0 &&
+    matchersOverlap(profile.appMatchers, app.matchers)
+  );
 }
 
-function resolveKnownApp(profile: Profile, knownApps: BootstrapPayload["knownApps"]) {
+function resolveKnownApp(
+  profile: Profile,
+  knownApps: BootstrapPayload["knownApps"],
+) {
   const executableMatcher = profile.appMatchers.find(
     (matcher) => matcher.kind === "executable",
   );
@@ -734,7 +740,7 @@ function App() {
 
   if (bootstrapQuery.isLoading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-8 text-[var(--foreground)]">
+      <main className="flex min-h-screen items-center justify-center bg-app-bg px-8 text-foreground">
         <Card className="px-6 py-4">Loading Mouser...</Card>
       </main>
     );
@@ -742,10 +748,10 @@ function App() {
 
   if (bootstrapQuery.isError || !bootstrap) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-8 text-[var(--foreground)]">
+      <main className="flex min-h-screen items-center justify-center bg-app-bg px-8 text-foreground">
         <Card className="max-w-xl p-6">
           <p className="text-sm font-semibold">Failed to load Mouser.</p>
-          <pre className="mt-4 overflow-auto rounded-3xl border border-[var(--border)] bg-white p-4 text-xs text-[var(--muted-foreground)]">
+          <pre className="mt-4 overflow-auto rounded-3xl border border-border bg-white p-4 text-xs text-muted-foreground">
             {String(bootstrapQuery.error)}
           </pre>
         </Card>
@@ -897,7 +903,7 @@ function App() {
   const isDashboard = shellMode === "dashboard";
 
   return (
-    <main className="min-h-screen bg-[var(--app-bg)] text-[var(--foreground)] antialiased">
+    <main className="min-h-screen bg-app-bg text-foreground antialiased">
       {isDashboard ? (
         <DashboardShell
           activeDevice={activeDevice}
@@ -915,17 +921,17 @@ function App() {
           supportedDevices={bootstrap.supportedDevices}
         />
       ) : (
-        <div className="relative min-h-screen bg-[var(--app-bg)]">
-          <header className="fixed inset-x-0 top-0 z-30 flex items-center justify-between border-b border-[var(--border-soft)] bg-[var(--surface)] px-8 py-4 backdrop-blur-xl">
+        <div className="relative min-h-screen bg-app-bg">
+          <header className="fixed inset-x-0 top-0 z-30 flex items-center justify-between  bg-surface px-8 py-4 backdrop-blur-xl">
             <div className="flex items-center gap-3">
               <button
-                className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--foreground)] transition hover:bg-[var(--accent)]"
+                className="flex h-9 w-9 items-center justify-center rounded-xl text-foreground transition hover:bg-accent"
                 onClick={() => setShellMode("dashboard")}
                 type="button"
               >
                 <CaretLeft size={20} weight="bold" />
               </button>
-              <h1 className="text-[22px] font-bold tracking-[-0.04em] text-[var(--foreground)]">
+              <h1 className="text-[22px] font-bold tracking-[-0.04em] text-foreground">
                 {shellTitle}
               </h1>
             </div>
@@ -933,14 +939,18 @@ function App() {
             <div className="flex items-center gap-2">
               {isMutating && <StatusPill tone="accent" value="Applying" />}
               {config.profiles.slice(0, 5).map((profile) => {
-                const app = resolveProfileApp(profile, discoveredApps, knownApps);
+                const app = resolveProfileApp(
+                  profile,
+                  discoveredApps,
+                  knownApps,
+                );
                 return (
                   <button
                     className={cn(
                       "flex h-9 w-9 items-center justify-center rounded-xl border-2 transition",
                       profile.id === selectedProfile.id
                         ? "border-[#10b981] bg-[#10b981]/10"
-                        : "border-transparent bg-[var(--card-muted)] hover:bg-[var(--card)]",
+                        : "border-transparent bg-card-muted hover:bg-card",
                     )}
                     key={profile.id}
                     onClick={() => {
@@ -952,16 +962,18 @@ function App() {
                   >
                     <AppIcon
                       className="h-6 w-6 rounded-lg object-cover"
-                      fallbackClassName="flex h-6 w-6 items-center justify-center text-xs font-bold text-[var(--foreground)]"
+                      fallbackClassName="flex h-6 w-6 items-center justify-center text-xs font-bold text-foreground"
                       iconAsset={app?.iconAsset}
                       label={profile.label}
-                      sourcePath={app && "sourcePath" in app ? app.sourcePath : null}
+                      sourcePath={
+                        app && "sourcePath" in app ? app.sourcePath : null
+                      }
                     />
                   </button>
                 );
               })}
               <button
-                className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--muted-foreground)] transition hover:bg-black/5 hover:text-[var(--foreground)]"
+                className="flex h-9 w-9 items-center justify-center rounded-xl text-muted-foreground transition hover:bg-black/5 hover:text-foreground"
                 onClick={openAppDiscovery}
                 type="button"
               >
@@ -971,7 +983,7 @@ function App() {
           </header>
 
           <nav className="fixed left-7 top-1/2 z-20 hidden -translate-y-1/2 lg:block">
-            <div className="flex flex-col gap-0.5 rounded-[20px] bg-[var(--surface)] p-2 shadow-[0_8px_40px_rgba(0,0,0,0.16)] ring-1 ring-[var(--border-soft)] backdrop-blur-xl">
+            <div className="flex flex-col gap-0.5 rounded-[20px] bg-surface p-2 shadow-[0_8px_40px_rgba(0,0,0,0.16)] ring-1 ring-border-soft backdrop-blur-xl">
               {SECTION_ORDER.map((section) => (
                 <SectionNavButton
                   active={activeSection === section}
@@ -981,9 +993,9 @@ function App() {
                   onClick={() => setActiveSection(section)}
                 />
               ))}
-              <div className="mx-3 my-1 h-px bg-[var(--border-soft)]" />
+              <div className="mx-3 my-1 h-px bg-border-soft" />
               <button
-                className="flex items-center gap-3 rounded-2xl px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)] transition hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                className="flex items-center gap-3 rounded-2xl px-4 py-2.5 text-sm font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
                 onClick={() => setAppSettingsOpen(true)}
                 type="button"
               >
@@ -1071,7 +1083,7 @@ function App() {
 
           {activeDevice && (
             <div className="fixed bottom-6 left-8 z-20 flex items-center gap-3">
-              <span className="text-sm font-semibold text-[var(--foreground)]">
+              <span className="text-sm font-semibold text-foreground">
                 {batteryLabel}
               </span>
               <StatusPill
@@ -1085,7 +1097,7 @@ function App() {
             {isAppSidebarOpen ? (
               <motion.aside
                 animate={{ opacity: 1, x: 0 }}
-                className="fixed right-0 top-0 z-40 flex h-full min-h-0 w-full max-w-[420px] flex-col overflow-hidden border-l border-[var(--border-soft)] bg-[var(--surface)] text-[var(--foreground)] shadow-[-24px_0_64px_rgba(15,23,42,0.12)] backdrop-blur-xl"
+                className="fixed right-0 top-0 z-40 flex h-full min-h-0 w-full max-w-[420px] flex-col overflow-hidden border-l border-border-soft bg-surface text-foreground shadow-[-24px_0_64px_rgba(15,23,42,0.12)] backdrop-blur-xl"
                 exit={{ opacity: 0, x: 32 }}
                 initial={{ opacity: 0, x: 32 }}
                 transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
@@ -1173,7 +1185,7 @@ function ButtonsView(props: {
             {selectedHotspot && (
               <motion.aside
                 animate={{ opacity: 1, x: 0 }}
-                className="fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l border-[var(--border-soft)] bg-[var(--surface)] px-8 pb-8 pt-20 backdrop-blur-xl"
+                className="fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l border-border-soft bg-surface px-8 pb-8 pt-20 backdrop-blur-xl"
                 exit={{ opacity: 0, x: 24 }}
                 initial={{ opacity: 0, x: 24 }}
                 key={selectedHotspot.control}
@@ -1229,11 +1241,11 @@ function DashboardShell(props: {
     props.engineSnapshot.activeDeviceKey ?? props.activeDevice?.key ?? null;
 
   return (
-    <div className="flex min-h-screen flex-col bg-[var(--app-bg)]">
+    <div className="flex min-h-screen flex-col bg-app-bg">
       <div className="mx-auto w-full max-w-[1680px] px-6 py-8 sm:px-10 sm:py-10">
         <header className="flex flex-wrap items-start justify-between gap-6">
           <div>
-            <p className="text-[38px] font-semibold tracking-[-0.06em] text-[var(--foreground)] sm:text-[48px]">
+            <p className="text-[38px] font-semibold tracking-[-0.06em] text-foreground sm:text-[48px]">
               {currentGreeting()}
             </p>
           </div>
@@ -1295,7 +1307,7 @@ function DashboardShell(props: {
                       />
                     </div>
 
-                    <p className="mt-4 text-base font-semibold text-[var(--foreground)]">
+                    <p className="mt-4 text-base font-semibold text-foreground">
                       {device.displayName}
                     </p>
                   </button>
@@ -1332,10 +1344,10 @@ function DashboardShell(props: {
             </div>
           ) : (
             <div className="flex min-h-[420px] flex-col items-center justify-center text-center">
-              <h3 className="text-[28px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+              <h3 className="text-[28px] font-semibold tracking-[-0.05em] text-foreground">
                 No devices added
               </h3>
-              <p className="mt-3 max-w-md text-sm text-[var(--muted-foreground)]">
+              <p className="mt-3 max-w-md text-sm text-muted-foreground">
                 Build your device library first, then select a device when you
                 want to customize it.
               </p>
@@ -1351,13 +1363,13 @@ function DashboardShell(props: {
         </div>
 
         {unmanagedDetectedDevices.length > 0 && (
-          <div className="mt-8 rounded-[32px] border border-[var(--border)] bg-[var(--card-muted)] px-6 py-6">
+          <div className="mt-8 rounded-[32px] border border-border bg-card-muted px-6 py-6">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
                   Detected Now
                 </p>
-                <p className="mt-2 text-sm text-[var(--muted-foreground)]">
+                <p className="mt-2 text-sm text-muted-foreground">
                   Devices the backend can see right now but that are not yet in
                   your library.
                 </p>
@@ -1371,14 +1383,14 @@ function DashboardShell(props: {
             <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {unmanagedDetectedDevices.map((device) => (
                 <div
-                  className="flex items-center justify-between gap-3 rounded-[24px] bg-[var(--card)] px-4 py-4 ring-1 ring-[var(--border)]"
+                  className="flex items-center justify-between gap-3 rounded-[24px] bg-card px-4 py-4 ring-1 ring-border"
                   key={device.key}
                 >
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-[var(--foreground)]">
+                    <p className="text-sm font-semibold text-foreground">
                       {device.displayName}
                     </p>
-                    <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
+                    <p className="mt-1 truncate text-xs text-muted-foreground">
                       {device.transport ?? "Unknown transport"}
                     </p>
                   </div>
@@ -1468,7 +1480,7 @@ function AddDeviceModal(props: {
       onOpenChange={(nextOpen) => !nextOpen && props.onClose()}
     >
       <DialogContent className="max-w-4xl overflow-hidden p-0 sm:max-w-4xl">
-        <DialogHeader className="border-b border-[var(--border)] px-6 py-5">
+        <DialogHeader className="border-b border-border px-6 py-5">
           <DialogTitle className="text-[24px]">Add Device</DialogTitle>
           <DialogDescription>
             Add supported devices to your managed library, then connect them
@@ -1483,15 +1495,15 @@ function AddDeviceModal(props: {
               const isDetected = props.detectedModelKeys.has(device.key);
               return (
                 <div
-                  className="rounded-[28px] border border-[var(--border)] bg-[var(--card-muted)] p-5"
+                  className="rounded-[28px] border border-border bg-card-muted p-5"
                   key={device.key}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold text-[var(--foreground)]">
+                      <p className="text-sm font-semibold text-foreground">
                         {device.displayName}
                       </p>
-                      <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                      <p className="mt-1 text-xs text-muted-foreground">
                         DPI {device.dpiMin}-{device.dpiMax}
                       </p>
                     </div>
@@ -1508,7 +1520,7 @@ function AddDeviceModal(props: {
                   </div>
 
                   <div className="mt-5 flex items-center justify-between gap-3">
-                    <p className="text-xs text-[var(--muted-foreground)]">
+                    <p className="text-xs text-muted-foreground">
                       {device.aliases[0] ?? "Supported in Mouser"}
                     </p>
                     <Button
@@ -1563,15 +1575,15 @@ function AppDiscoverySheet(props: {
     <>
       <div className="flex items-center justify-between border-b border-black/[0.06] px-6 py-5">
         <div>
-          <p className="text-[24px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+          <p className="text-[24px] font-semibold tracking-[-0.05em] text-foreground">
             Add app profile
           </p>
-          <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+          <p className="mt-1 text-sm text-muted-foreground">
             Pick an installed app to create or jump to its profile.
           </p>
         </div>
         <button
-          className="flex h-10 w-10 items-center justify-center rounded-2xl text-[var(--muted-foreground)] transition hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+          className="flex h-10 w-10 items-center justify-center rounded-2xl text-muted-foreground transition hover:bg-accent hover:text-foreground"
           onClick={props.onClose}
           type="button"
         >
@@ -1584,7 +1596,9 @@ function AppDiscoverySheet(props: {
           <Input
             placeholder="Search installed apps"
             value={props.searchQuery}
-            onChange={(event) => props.setSearchQuery(event.currentTarget.value)}
+            onChange={(event) =>
+              props.setSearchQuery(event.currentTarget.value)
+            }
           />
           <Button
             disabled={props.isRefreshing}
@@ -1601,7 +1615,7 @@ function AppDiscoverySheet(props: {
         <div className="space-y-8 px-6 py-6">
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
                 Suggested For This Machine
               </p>
               <StatusPill tone="neutral" value={String(suggestedApps.length)} />
@@ -1625,7 +1639,7 @@ function AppDiscoverySheet(props: {
 
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
                 Browse Apps
               </p>
               <StatusPill tone="neutral" value={String(browseApps.length)} />
@@ -1652,20 +1666,17 @@ function AppDiscoverySheet(props: {
   );
 }
 
-function AppDiscoveryRow(props: {
-  app: DiscoveredApp;
-  onSelect: () => void;
-}) {
+function AppDiscoveryRow(props: { app: DiscoveredApp; onSelect: () => void }) {
   return (
     <button
-      className="flex w-full items-center gap-4 rounded-[24px] bg-[var(--card-muted)] px-4 py-4 text-left ring-1 ring-[var(--border)] transition hover:bg-[var(--card)]"
+      className="flex w-full items-center gap-4 rounded-[24px] bg-card-muted px-4 py-4 text-left ring-1 ring-border transition hover:bg-card"
       onClick={props.onSelect}
       type="button"
     >
       <AppIcon
         className="h-12 w-12 rounded-[18px] object-contain drop-shadow-[0_10px_18px_rgba(0,0,0,0.28)]"
         defer
-        fallbackClassName="flex h-12 w-12 items-center justify-center rounded-[18px] bg-[var(--card)] text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border-soft)]"
+        fallbackClassName="flex h-12 w-12 items-center justify-center rounded-[18px] bg-card text-sm font-semibold text-foreground ring-1 ring-border-soft"
         iconAsset={props.app.iconAsset}
         label={props.app.label}
         sourcePath={props.app.sourcePath}
@@ -1673,18 +1684,18 @@ function AppDiscoveryRow(props: {
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <p className="truncate text-sm font-semibold text-[var(--foreground)]">
+          <p className="truncate text-sm font-semibold text-foreground">
             {props.app.label}
           </p>
           {props.app.suggested ? (
             <StatusPill tone="accent" value="Suggested" />
           ) : null}
         </div>
-        <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
+        <p className="mt-1 truncate text-xs text-muted-foreground">
           {props.app.description ??
             props.app.matchers.map(formatAppMatcher).join(", ")}
         </p>
-        <p className="mt-2 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+        <p className="mt-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
           {formatDiscoverySource(props.app.sourceKinds[0])}
         </p>
       </div>
@@ -1764,18 +1775,18 @@ function ProfilesView(props: {
                   className={[
                     "flex w-full items-center justify-between gap-4 rounded-[24px] px-4 py-4 text-left transition ring-1",
                     profile.id === props.profile.id
-                      ? "bg-[var(--card)] shadow-[0_16px_34px_rgba(37,99,235,0.10)] ring-[#c3d8fb]"
-                      : "bg-[var(--card-muted)] ring-[var(--border)] hover:bg-[var(--card)]",
+                      ? "bg-card shadow-[0_16px_34px_rgba(37,99,235,0.10)] ring-[#c3d8fb]"
+                      : "bg-card-muted ring-border hover:bg-card",
                   ].join(" ")}
                   key={profile.id}
                   onClick={() => props.setSelectedProfileId(profile.id)}
                   type="button"
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-[var(--foreground)]">
+                    <p className="truncate text-sm font-semibold text-foreground">
                       {profile.label}
                     </p>
-                    <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
+                    <p className="mt-1 truncate text-xs text-muted-foreground">
                       {profile.appMatchers.map(formatAppMatcher).join(", ") ||
                         "All applications"}
                     </p>
@@ -1783,11 +1794,13 @@ function ProfilesView(props: {
                   {profileApp ? (
                     <AppIcon
                       className="h-11 w-11 rounded-[16px] object-contain drop-shadow-[0_8px_16px_rgba(0,0,0,0.24)]"
-                      fallbackClassName="flex h-11 w-11 items-center justify-center rounded-[16px] bg-[var(--card)] text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border-soft)]"
+                      fallbackClassName="flex h-11 w-11 items-center justify-center rounded-[16px] bg-card text-sm font-semibold text-foreground ring-1 ring-border-soft"
                       iconAsset={profileApp.iconAsset}
                       label={profileApp.label}
                       sourcePath={
-                        "sourcePath" in profileApp ? profileApp.sourcePath : null
+                        "sourcePath" in profileApp
+                          ? profileApp.sourcePath
+                          : null
                       }
                     />
                   ) : (
@@ -1818,9 +1831,7 @@ function ProfilesView(props: {
             <Textarea
               className="min-h-[180px] resize-y"
               rows={6}
-              value={props.profile.appMatchers
-                .map(formatAppMatcher)
-                .join("\n")}
+              value={props.profile.appMatchers.map(formatAppMatcher).join("\n")}
               onChange={(event) =>
                 props.updateSelectedProfile((nextProfile) => {
                   nextProfile.appMatchers = event.currentTarget.value
@@ -1833,13 +1844,13 @@ function ProfilesView(props: {
             />
           </Field>
 
-          <Card className="bg-[var(--card-muted)] shadow-none ring-1 ring-[var(--border)]">
+          <Card className="bg-card-muted shadow-none ring-1 ring-border">
             <CardContent className="px-4 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
                 Current selection
               </p>
               <p
-                className="mt-3 text-sm font-semibold text-[var(--foreground)]"
+                className="mt-3 text-sm font-semibold text-foreground"
                 data-testid="profile-label-display"
               >
                 {props.profile.label}
@@ -1924,7 +1935,9 @@ function DeviceDetailView(props: {
       return;
     }
 
-    const nextSettings = normalizeDeviceSettings(props.activeManagedDevice.settings);
+    const nextSettings = normalizeDeviceSettings(
+      props.activeManagedDevice.settings,
+    );
     mutateSettings(nextSettings);
     props.updateDeviceSettings(props.activeManagedDevice.id, nextSettings);
   };
@@ -1993,7 +2006,9 @@ function DeviceDetailView(props: {
     }
 
     const nextNickname = normalizeOptionalText(nicknameDraft);
-    const currentNickname = normalizeOptionalText(props.activeManagedDevice.nickname);
+    const currentNickname = normalizeOptionalText(
+      props.activeManagedDevice.nickname,
+    );
     if (nextNickname === currentNickname) {
       return;
     }
@@ -2089,29 +2104,29 @@ function DeviceDetailView(props: {
             </Field>
 
             <div className="space-y-2.5 md:col-span-2">
-              <Label className="text-sm font-medium text-[var(--foreground)]">
+              <Label className="text-sm font-medium text-foreground">
                 DPI
               </Label>
-              <div className="rounded-[24px] bg-[var(--card-muted)] p-5 ring-1 ring-[var(--border)]">
+              <div className="rounded-[24px] bg-card-muted p-5 ring-1 ring-border">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="space-y-1">
-                    <p className="text-sm font-medium text-[var(--foreground)]">
+                    <p className="text-sm font-medium text-foreground">
                       Pointer speed
                     </p>
-                    <p className="text-xs text-[var(--muted-foreground)]">
+                    <p className="text-xs text-muted-foreground">
                       Drag to choose a DPI, then pause briefly to apply it.
                       {activeDevice.connected
                         ? ` The device is currently reporting ${liveDpi} DPI.`
                         : " Changes will apply once the device reconnects."}
                     </p>
                   </div>
-                  <div className="rounded-full bg-[var(--card)] px-3 py-1.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border)]">
+                  <div className="rounded-full bg-card px-3 py-1.5 text-sm font-semibold text-foreground ring-1 ring-border">
                     {dpiDraft} DPI
                   </div>
                 </div>
 
                 <div className="mt-5 flex items-center gap-3">
-                  <span className="w-12 text-xs text-[var(--muted-foreground)]">
+                  <span className="w-12 text-xs text-muted-foreground">
                     {activeDevice.dpiMin}
                   </span>
                   <Slider
@@ -2129,7 +2144,7 @@ function DeviceDetailView(props: {
                       }
                     }}
                   />
-                  <span className="w-12 text-right text-xs text-[var(--muted-foreground)]">
+                  <span className="w-12 text-right text-xs text-muted-foreground">
                     {activeDevice.dpiMax}
                   </span>
                 </div>
@@ -2148,7 +2163,7 @@ function DeviceDetailView(props: {
                     </Button>
                   ))}
                   {pendingDpi != null ? (
-                    <span className="text-xs text-[var(--muted-foreground)]">
+                    <span className="text-xs text-muted-foreground">
                       Applying {pendingDpi} DPI...
                     </span>
                   ) : null}
@@ -2396,7 +2411,7 @@ function AppSettingsDialog(props: {
       onOpenChange={(nextOpen) => !nextOpen && props.onClose()}
     >
       <DialogContent className="max-w-4xl overflow-hidden p-0 sm:max-w-4xl">
-        <DialogHeader className="border-b border-[var(--border)] px-6 py-5">
+        <DialogHeader className="border-b border-border px-6 py-5">
           <DialogTitle className="text-[24px]">App Settings</DialogTitle>
           <DialogDescription>
             Settings here affect Mouser globally, not just the currently
@@ -2458,27 +2473,27 @@ function AppSettingsDialog(props: {
               >
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2.5 md:col-span-2">
-                    <Label className="text-sm font-medium text-[var(--foreground)]">
+                    <Label className="text-sm font-medium text-foreground">
                       Default DPI
                     </Label>
-                    <div className="rounded-[24px] bg-[var(--card-muted)] p-5 ring-1 ring-[var(--border)]">
+                    <div className="rounded-[24px] bg-card-muted p-5 ring-1 ring-border">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-[var(--foreground)]">
+                          <p className="text-sm font-medium text-foreground">
                             Pointer speed for new devices
                           </p>
-                          <p className="text-xs text-[var(--muted-foreground)]">
+                          <p className="text-xs text-muted-foreground">
                             Drag to choose a default, then pause briefly to save
                             it.
                           </p>
                         </div>
-                        <div className="rounded-full bg-[var(--card)] px-3 py-1.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border)]">
+                        <div className="rounded-full bg-card px-3 py-1.5 text-sm font-semibold text-foreground ring-1 ring-border">
                           {defaultDpiDraft} DPI
                         </div>
                       </div>
 
                       <div className="mt-5 flex items-center gap-3">
-                        <span className="w-12 text-xs text-[var(--muted-foreground)]">
+                        <span className="w-12 text-xs text-muted-foreground">
                           200
                         </span>
                         <Slider
@@ -2500,7 +2515,7 @@ function AppSettingsDialog(props: {
                             );
                           }}
                         />
-                        <span className="w-12 text-right text-xs text-[var(--muted-foreground)]">
+                        <span className="w-12 text-right text-xs text-muted-foreground">
                           8000
                         </span>
                       </div>
@@ -2525,7 +2540,7 @@ function AppSettingsDialog(props: {
                           </Button>
                         ))}
                         {pendingDefaultDpi != null ? (
-                          <span className="text-xs text-[var(--muted-foreground)]">
+                          <span className="text-xs text-muted-foreground">
                             Saving {pendingDefaultDpi} DPI...
                           </span>
                         ) : null}
@@ -2720,7 +2735,7 @@ function DebugView(props: {
           />
         </div>
 
-        <div className="mt-5 rounded-[28px] bg-[var(--card-muted)] p-3 ring-1 ring-[var(--border)]">
+        <div className="mt-5 rounded-[28px] bg-card-muted p-3 ring-1 ring-border">
           <ScrollArea className="max-h-[560px] pr-1">
             <div className="space-y-3">
               {props.debugEvents.length > 0 ? (
@@ -2813,7 +2828,7 @@ function SectionNavButton(props: {
         "flex items-center gap-3 rounded-2xl px-4 py-2.5 text-left text-sm font-semibold transition-all",
         props.active
           ? "bg-[#10b981] text-white shadow-[0_4px_12px_rgba(16,185,129,0.3)]"
-          : "text-[var(--muted-foreground)] hover:bg-black/5 hover:text-[var(--foreground)]",
+          : "text-muted-foreground hover:bg-black/5 hover:text-foreground",
       )}
       onClick={props.onClick}
       type="button"
@@ -2845,7 +2860,7 @@ function Panel(props: {
 function Field(props: { label: string; children: ReactNode }) {
   return (
     <div className="space-y-2.5">
-      <Label className="text-sm font-medium text-[var(--foreground)]">
+      <Label className="text-sm font-medium text-foreground">
         {props.label}
       </Label>
       {props.children}
@@ -2924,16 +2939,16 @@ function SwitchRow(props: {
   const switchId = useId();
 
   return (
-    <div className="flex items-start justify-between gap-4 rounded-[24px] bg-[var(--card-muted)] px-4 py-4 text-sm ring-1 ring-[var(--border)]">
+    <div className="flex items-start justify-between gap-4 rounded-[24px] bg-card-muted px-4 py-4 text-sm ring-1 ring-border">
       <div className="space-y-1.5">
         <Label
-          className="font-medium text-[var(--foreground)]"
+          className="font-medium text-foreground"
           htmlFor={switchId}
         >
           {props.label}
         </Label>
         {props.description ? (
-          <p className="max-w-md text-xs leading-5 text-[var(--muted-foreground)]">
+          <p className="max-w-md text-xs leading-5 text-muted-foreground">
             {props.description}
           </p>
         ) : null}
@@ -3034,7 +3049,7 @@ function ButtonsWorkbench(props: {
                   className={cn(
                     "absolute z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] bg-[#10131a] transition",
                     isSelected
-                      ? "border-[#d7e6ff] bg-[var(--accent)] shadow-[0_0_0_10px_rgba(37,99,235,0.14)]"
+                      ? "border-[#d7e6ff] bg-accent shadow-[0_0_0_10px_rgba(37,99,235,0.14)]"
                       : "border-white shadow-[0_10px_24px_rgba(15,23,42,0.14)]",
                   )}
                   style={{
@@ -3049,8 +3064,8 @@ function ButtonsWorkbench(props: {
                   className={cn(
                     "absolute z-20 rounded-2xl border px-4 py-3 text-left transition-colors transition-shadow",
                     isSelected
-                      ? "border-[var(--border-strong)] bg-[var(--card)] shadow-[0_12px_28px_rgba(15,23,42,0.18)]"
-                      : "border-[var(--border)] bg-[var(--card-muted)] shadow-[0_8px_22px_rgba(15,23,42,0.12)] hover:border-[var(--border-strong)] hover:bg-[var(--card)] hover:shadow-[0_12px_28px_rgba(15,23,42,0.16)]",
+                      ? "border-border-strong bg-card shadow-[0_12px_28px_rgba(15,23,42,0.18)]"
+                      : "border-border bg-card-muted shadow-[0_8px_22px_rgba(15,23,42,0.12)] hover:border-border-strong hover:bg-card hover:shadow-[0_12px_28px_rgba(15,23,42,0.16)]",
                   )}
                   data-testid={`hotspot-card-${hotspot.control}`}
                   onClick={() => props.onSelectControl(hotspot.control)}
@@ -3062,10 +3077,10 @@ function ButtonsWorkbench(props: {
                   }}
                   type="button"
                 >
-                  <p className="text-[14px] font-semibold tracking-[-0.02em] text-[var(--foreground)]">
+                  <p className="text-[14px] font-semibold tracking-[-0.02em] text-foreground">
                     {hotspot.label}
                   </p>
-                  <p className="mt-2 text-[12px] leading-5 text-[var(--muted-foreground)]">
+                  <p className="mt-2 text-[12px] leading-5 text-muted-foreground">
                     {summary}
                   </p>
                 </button>
@@ -3108,15 +3123,15 @@ function ButtonsControlSheet(props: {
     >
       <div className="flex items-start justify-between gap-4 pb-3">
         <div>
-          <h3 className="text-[34px] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+          <h3 className="text-[34px] font-semibold tracking-[-0.05em] text-foreground">
             {title}
           </h3>
           {note ? (
-            <p className="mt-3 max-w-sm text-sm leading-7 text-[var(--muted-foreground)]">
+            <p className="mt-3 max-w-sm text-sm leading-7 text-muted-foreground">
               {note}
             </p>
           ) : (
-            <p className="mt-3 text-sm leading-7 text-[var(--muted-foreground)]">
+            <p className="mt-3 text-sm leading-7 text-muted-foreground">
               {description}
             </p>
           )}
@@ -3132,9 +3147,9 @@ function ButtonsControlSheet(props: {
         </Button>
       </div>
 
-      <Card className="mt-2 bg-[var(--card-muted)] shadow-none ring-1 ring-[var(--border)]">
+      <Card className="mt-2 bg-card-muted shadow-none ring-1 ring-border">
         <CardContent className="px-5 py-4">
-          <p className="text-base leading-8 text-[var(--foreground)]">
+          <p className="text-base leading-8 text-foreground">
             {summarizeHotspot(props.profile, props.control, props.actionLookup)}
           </p>
         </CardContent>
@@ -3180,10 +3195,10 @@ function SheetActionField(props: {
   );
 
   return (
-    <Card className="bg-[var(--card)]">
+    <Card className="bg-card">
       <CardContent className="p-4">
         <div className="flex items-start justify-between gap-3">
-          <p className="text-sm font-semibold text-[var(--foreground)]">
+          <p className="text-sm font-semibold text-foreground">
             {props.label}
           </p>
           <Badge variant="default">
@@ -3239,11 +3254,11 @@ function StatusPill(props: {
 
 function CapabilityRow(props: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between rounded-[20px] bg-[var(--card-muted)] px-4 py-3 text-sm ring-1 ring-[var(--border)]">
-      <span className="font-medium text-[var(--foreground)]">
+    <div className="flex items-center justify-between rounded-[20px] bg-card-muted px-4 py-3 text-sm ring-1 ring-border">
+      <span className="font-medium text-foreground">
         {props.label}
       </span>
-      <span className="text-[var(--foreground)]">{props.value}</span>
+      <span className="text-foreground">{props.value}</span>
     </div>
   );
 }
@@ -3254,7 +3269,7 @@ function LogEntry(props: { event: DebugEventRecord }) {
       ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-100"
       : props.event.kind === "gesture"
         ? "border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/35 dark:text-sky-100"
-        : "border-[var(--border)] bg-[var(--card)] text-[var(--foreground)]";
+        : "border-border bg-card text-foreground";
 
   return (
     <article className={`rounded-[24px] border px-4 py-4 ${accent}`}>
@@ -3262,22 +3277,24 @@ function LogEntry(props: { event: DebugEventRecord }) {
         <strong className="text-[11px] font-semibold uppercase tracking-[0.22em]">
           {props.event.kind}
         </strong>
-        <span className="text-xs text-[var(--muted-foreground)]">
+        <span className="text-xs text-muted-foreground">
           {new Date(props.event.timestampMs).toLocaleTimeString()}
         </span>
       </div>
-      <p className="mt-3 text-sm leading-6 text-current">{props.event.message}</p>
+      <p className="mt-3 text-sm leading-6 text-current">
+        {props.event.message}
+      </p>
     </article>
   );
 }
 
 function EmptyState(props: { title: string; body: string }) {
   return (
-    <div className="rounded-[28px] border border-dashed border-[var(--border-strong)] bg-[var(--card-muted)] p-8 text-center">
-      <p className="text-base font-semibold text-[var(--foreground)]">
+    <div className="rounded-[28px] border border-dashed border-border-strong bg-card-muted p-8 text-center">
+      <p className="text-base font-semibold text-foreground">
         {props.title}
       </p>
-      <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[var(--muted-foreground)]">
+      <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-muted-foreground">
         {props.body}
       </p>
     </div>
@@ -3286,7 +3303,7 @@ function EmptyState(props: { title: string; body: string }) {
 
 function EmptyStage(props: { title: string; body: string }) {
   return (
-    <div className="flex min-h-[520px] items-center justify-center rounded-[32px] border border-dashed border-[var(--border-strong)] bg-[var(--card)] p-8">
+    <div className="flex min-h-[520px] items-center justify-center rounded-[32px] border border-dashed border-border-strong bg-card p-8">
       <EmptyState body={props.body} title={props.title} />
     </div>
   );

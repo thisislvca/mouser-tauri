@@ -368,6 +368,10 @@ impl AppRuntime {
         self.debug_log.clear();
     }
 
+    pub fn record_debug_event(&mut self, kind: DebugEventKind, message: impl Into<String>) {
+        self.push_debug(kind, message);
+    }
+
     pub fn refresh_app_discovery(&mut self) -> bool {
         let previous = self.app_discovery.clone();
         match self.app_discovery_backend.discover_apps() {
@@ -411,15 +415,30 @@ impl AppRuntime {
         )
     }
 
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn apply_poll_results(
         &mut self,
         devices: Result<Vec<DeviceInfo>, PlatformError>,
         frontmost_app: Result<Option<AppIdentity>, PlatformError>,
         hook_events: Vec<HookBackendEvent>,
     ) -> bool {
+        self.apply_runtime_updates(Some(devices), Some(frontmost_app), hook_events)
+    }
+
+    pub fn apply_runtime_updates(
+        &mut self,
+        devices: Option<Result<Vec<DeviceInfo>, PlatformError>>,
+        frontmost_app: Option<Result<Option<AppIdentity>, PlatformError>>,
+        hook_events: Vec<HookBackendEvent>,
+    ) -> bool {
         let before = self.engine_snapshot();
         let config_before = self.config.clone();
-        self.refresh_live_state_with_results(devices, frontmost_app);
+        if let Some(devices) = devices {
+            self.apply_device_results(devices);
+        }
+        if let Some(frontmost_app) = frontmost_app {
+            self.apply_frontmost_app_result(frontmost_app);
+        }
         self.collect_hook_events(hook_events);
         before != self.engine_snapshot() || config_before != self.config
     }
@@ -558,8 +577,11 @@ impl AppRuntime {
         devices: Result<Vec<DeviceInfo>, PlatformError>,
         frontmost_app: Result<Option<AppIdentity>, PlatformError>,
     ) {
-        let previous_frontmost_app = self.frontmost_app.clone();
+        self.apply_device_results(devices);
+        self.apply_frontmost_app_result(frontmost_app);
+    }
 
+    fn apply_device_results(&mut self, devices: Result<Vec<DeviceInfo>, PlatformError>) {
         match devices {
             Ok(devices) => self.replace_detected_devices(devices),
             Err(error) => self.push_debug(
@@ -567,6 +589,13 @@ impl AppRuntime {
                 format!("Live HID refresh failed: {error}"),
             ),
         }
+    }
+
+    fn apply_frontmost_app_result(
+        &mut self,
+        frontmost_app: Result<Option<AppIdentity>, PlatformError>,
+    ) {
+        let previous_frontmost_app = self.frontmost_app.clone();
 
         match frontmost_app {
             Ok(frontmost_app) => {
@@ -1221,7 +1250,7 @@ fn matcher_priority(kind: AppMatcherKind) -> u8 {
 
 fn current_hid_backend() -> Arc<dyn HidBackend> {
     if cfg!(target_os = "macos") {
-        Arc::new(MacOsHidBackend)
+        Arc::new(MacOsHidBackend::new())
     } else {
         Arc::new(WindowsHidBackend)
     }

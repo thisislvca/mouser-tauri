@@ -732,22 +732,93 @@ pub mod macos {
     use crate::hidpp::{self, HidppIo, BT_DEV_IDX};
     pub use crate::macos_hook::MacOsHookBackend;
     #[cfg(target_os = "macos")]
+    pub use crate::macos_iokit::MacOsDeviceMonitor;
+    #[cfg(target_os = "macos")]
     use crate::macos_iokit::{enumerate_iokit_infos, MacOsIoKitInfo, MacOsNativeHidDevice};
 
     #[cfg(target_os = "macos")]
-    use hidapi::{BusType, DeviceInfo as HidDeviceInfo, HidApi, HidDevice};
+    use block2::RcBlock;
     #[cfg(target_os = "macos")]
-    use mouser_core::hydrate_identity_key;
+    use hidapi::{BusType, DeviceInfo as HidDeviceInfo, HidApi};
+    #[cfg(target_os = "macos")]
+    use mouser_core::{hydrate_identity_key, DeviceFingerprint};
+    #[cfg(target_os = "macos")]
+    use objc2::runtime::ProtocolObject;
     #[cfg(target_os = "macos")]
     use objc2_app_kit::NSWorkspace;
     #[cfg(target_os = "macos")]
+    use objc2_app_kit::NSWorkspaceDidActivateApplicationNotification;
+    #[cfg(target_os = "macos")]
+    use objc2_foundation::{NSNotification, NSObjectProtocol};
+    #[cfg(target_os = "macos")]
     use plist::Value as PlistValue;
+    #[cfg(target_os = "macos")]
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        ptr::NonNull,
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
 
     const LOGI_VID: u16 = 0x046D;
+    #[cfg(target_os = "macos")]
+    const BATTERY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+    #[cfg(target_os = "macos")]
+    const DPI_VERIFY_DELAY: Duration = Duration::from_secs(1);
 
-    pub struct MacOsHidBackend;
+    pub struct MacOsHidBackend {
+        #[cfg(target_os = "macos")]
+        telemetry_cache: Mutex<BTreeMap<String, DeviceTelemetryCacheEntry>>,
+    }
     pub struct MacOsAppFocusBackend;
     pub struct MacOsAppDiscoveryBackend;
+
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
+    pub struct MacOsAppFocusMonitor {
+        _notification_center: objc2::rc::Retained<objc2_foundation::NSNotificationCenter>,
+        _observer: objc2::rc::Retained<ProtocolObject<dyn NSObjectProtocol>>,
+        _observer_block: RcBlock<dyn Fn(NonNull<NSNotification>)>,
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Debug, Clone)]
+    struct DeviceTelemetryCacheEntry {
+        current_dpi: Option<u16>,
+        battery_level: Option<u8>,
+        last_battery_probe_at: Instant,
+        verify_after: Option<Instant>,
+        connected: bool,
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Debug, Clone)]
+    struct DeviceTelemetrySnapshot {
+        current_dpi: Option<u16>,
+        battery_level: Option<u8>,
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Debug, Clone)]
+    struct TelemetryProbePlan {
+        should_probe: bool,
+        cached: DeviceTelemetrySnapshot,
+    }
+
+    impl MacOsHidBackend {
+        pub fn new() -> Self {
+            Self {
+                #[cfg(target_os = "macos")]
+                telemetry_cache: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+
+    impl Default for MacOsHidBackend {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
 
     #[cfg(target_os = "macos")]
     pub(crate) fn load_native_app_icon(source_path: &str) -> Result<Option<String>, PlatformError> {
@@ -761,6 +832,90 @@ pub mod macos {
         };
 
         encode_icon_as_data_url(&icon_path)
+    }
+
+    #[cfg(target_os = "macos")]
+    impl MacOsAppFocusMonitor {
+        pub fn new<F>(notify: F) -> Result<Self, PlatformError>
+        where
+            F: Fn(Option<AppIdentity>) + Send + Sync + 'static,
+        {
+            let notification_center = NSWorkspace::sharedWorkspace().notificationCenter();
+            let observer_block = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+                if let Ok(frontmost_app) = current_frontmost_app_identity() {
+                    notify(frontmost_app);
+                }
+            });
+            let observer = unsafe {
+                notification_center.addObserverForName_object_queue_usingBlock(
+                    Some(NSWorkspaceDidActivateApplicationNotification),
+                    None,
+                    None,
+                    &observer_block,
+                )
+            };
+
+            Ok(Self {
+                _notification_center: notification_center,
+                _observer: observer,
+                _observer_block: observer_block,
+            })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl MacOsHidBackend {
+        fn telemetry_plan(&self, cache_key: &str, now: Instant) -> TelemetryProbePlan {
+            let cache = self.telemetry_cache.lock().unwrap();
+            let entry = cache.get(cache_key);
+            TelemetryProbePlan {
+                should_probe: should_probe_cached_telemetry(entry, now),
+                cached: DeviceTelemetrySnapshot {
+                    current_dpi: entry.and_then(|entry| entry.current_dpi),
+                    battery_level: entry.and_then(|entry| entry.battery_level),
+                },
+            }
+        }
+
+        fn remember_device_telemetry(
+            &self,
+            cache_key: String,
+            current_dpi: u16,
+            battery_level: Option<u8>,
+            now: Instant,
+        ) {
+            self.telemetry_cache.lock().unwrap().insert(
+                cache_key,
+                DeviceTelemetryCacheEntry {
+                    current_dpi: Some(current_dpi),
+                    battery_level,
+                    last_battery_probe_at: now,
+                    verify_after: None,
+                    connected: true,
+                },
+            );
+        }
+
+        fn note_connected_devices(&self, connected_cache_keys: &BTreeSet<String>) {
+            let mut cache = self.telemetry_cache.lock().unwrap();
+            for (cache_key, entry) in cache.iter_mut() {
+                entry.connected = connected_cache_keys.contains(cache_key);
+            }
+        }
+
+        fn note_dpi_write(&self, cache_key: String, dpi: u16, now: Instant) {
+            let mut cache = self.telemetry_cache.lock().unwrap();
+            let entry = cache.entry(cache_key).or_insert(DeviceTelemetryCacheEntry {
+                current_dpi: None,
+                battery_level: None,
+                last_battery_probe_at: now,
+                verify_after: None,
+                connected: true,
+            });
+            entry.current_dpi = Some(dpi);
+            entry.verify_after = Some(now + DPI_VERIFY_DELAY);
+            entry.connected = true;
+        }
     }
 
     impl HidBackend for MacOsHidBackend {
@@ -802,11 +957,15 @@ pub mod macos {
             {
                 let mut devices = Vec::new();
                 let mut issues = Vec::new();
+                let mut connected_cache_keys = BTreeSet::new();
+                let now = Instant::now();
 
                 match enumerate_iokit_infos() {
                     Ok(infos) => {
                         for info in infos {
-                            if let Some(device_info) = probe_iokit_device(&info) {
+                            if let Some(device_info) =
+                                self.build_iokit_device_info(&info, now, &mut connected_cache_keys)
+                            {
                                 push_unique_device(&mut devices, device_info);
                             }
                         }
@@ -817,15 +976,21 @@ pub mod macos {
                 match HidApi::new() {
                     Ok(api) => {
                         for info in vendor_hid_infos(&api) {
-                            if let Ok(device) = info.open_device(&api) {
-                                if let Some(device_info) = probe_hidapi_device(&device, info) {
-                                    push_unique_device(&mut devices, device_info);
-                                }
+                            if let Some(device_info) = self.build_hidapi_device_info(
+                                &api,
+                                info,
+                                now,
+                                &mut connected_cache_keys,
+                            )
+                            {
+                                push_unique_device(&mut devices, device_info);
                             }
                         }
                     }
                     Err(error) => issues.push(format!("hidapi: {error}")),
                 }
+
+                self.note_connected_devices(&connected_cache_keys);
 
                 if devices.is_empty() && !issues.is_empty() {
                     return Err(PlatformError::Message(format!(
@@ -849,16 +1014,18 @@ pub mod macos {
 
             #[cfg(target_os = "macos")]
             {
+                let now = Instant::now();
                 if let Ok(infos) = enumerate_iokit_infos() {
                     for info in infos {
                         let transport = iokit_transport_label(info.transport.as_deref());
+                        let fingerprint = fingerprint_from_iokit_info(&info);
                         if !device_key_matches(
                             device_key,
                             Some(info.product_id),
                             info.product_string.as_deref(),
                             transport.as_deref(),
                             "iokit",
-                            fingerprint_from_iokit_info(&info),
+                            fingerprint.clone(),
                             dpi,
                         ) {
                             continue;
@@ -868,6 +1035,15 @@ pub mod macos {
                             continue;
                         };
                         if set_hidpp_dpi(&device, dpi)? {
+                            self.note_dpi_write(
+                                telemetry_cache_key(
+                                    Some(info.product_id),
+                                    transport.as_deref(),
+                                    &fingerprint,
+                                ),
+                                dpi,
+                                now,
+                            );
                             return Ok(());
                         }
                     }
@@ -878,16 +1054,26 @@ pub mod macos {
                         let Ok(device) = info.open_device(&api) else {
                             continue;
                         };
+                        let fingerprint = fingerprint_from_hid_info(info);
                         if device_key_matches(
                             device_key,
                             Some(info.product_id()),
                             info.product_string(),
                             Some(transport_label(info.bus_type())),
                             "hidapi",
-                            fingerprint_from_hid_info(info),
+                            fingerprint.clone(),
                             dpi,
                         ) && set_hidpp_dpi(&device, dpi)?
                         {
+                            self.note_dpi_write(
+                                telemetry_cache_key(
+                                    Some(info.product_id()),
+                                    Some(transport_label(info.bus_type())),
+                                    &fingerprint,
+                                ),
+                                dpi,
+                                now,
+                            );
                             return Ok(());
                         }
                     }
@@ -919,30 +1105,7 @@ pub mod macos {
 
             #[cfg(target_os = "macos")]
             {
-                let workspace = NSWorkspace::sharedWorkspace();
-                let Some(app) = workspace.frontmostApplication() else {
-                    return Ok(None);
-                };
-
-                let executable_path = app
-                    .executableURL()
-                    .and_then(|url| url.path())
-                    .map(|path| path.to_string());
-                let executable = executable_path.as_deref().and_then(|path| {
-                    Path::new(path)
-                        .file_name()
-                        .map(|name| name.to_string_lossy().to_string())
-                });
-
-                Ok(Some(AppIdentity {
-                    label: app.localizedName().map(|name| name.to_string()),
-                    executable,
-                    executable_path,
-                    bundle_id: app
-                        .bundleIdentifier()
-                        .map(|bundle_id| bundle_id.to_string()),
-                    package_family_name: None,
-                }))
+                current_frontmost_app_identity()
             }
         }
     }
@@ -1235,56 +1398,177 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    fn probe_hidapi_device(device: &HidDevice, info: &HidDeviceInfo) -> Option<DeviceInfo> {
-        probe_transport_device(
-            device,
-            Some(info.product_id()),
-            info.product_string(),
-            Some(transport_label(info.bus_type())),
-            "hidapi",
-            fingerprint_from_hid_info(info),
-        )
+    impl MacOsHidBackend {
+        fn build_hidapi_device_info(
+            &self,
+            api: &HidApi,
+            info: &HidDeviceInfo,
+            now: Instant,
+            connected_cache_keys: &mut BTreeSet<String>,
+        ) -> Option<DeviceInfo> {
+            let transport = Some(transport_label(info.bus_type()));
+            let fingerprint = fingerprint_from_hid_info(info);
+            let cache_key =
+                telemetry_cache_key(Some(info.product_id()), transport, &fingerprint);
+
+            let device_info = if connected_cache_keys.contains(&cache_key) {
+                let plan = self.telemetry_plan(&cache_key, now);
+                build_connected_device_info(
+                    Some(info.product_id()),
+                    info.product_string(),
+                    transport,
+                    Some("hidapi"),
+                    plan.cached.battery_level,
+                    plan.cached.current_dpi.unwrap_or(1000),
+                    fingerprint,
+                )
+            } else {
+                let plan = self.telemetry_plan(&cache_key, now);
+                if plan.should_probe {
+                    let device = info.open_device(api).ok()?;
+                    let (current_dpi, battery_level) = probe_device_telemetry(
+                        &device,
+                        plan.cached.current_dpi,
+                        plan.cached.battery_level,
+                    );
+                    self.remember_device_telemetry(
+                        cache_key.clone(),
+                        current_dpi,
+                        battery_level,
+                        now,
+                    );
+                    build_connected_device_info(
+                        Some(info.product_id()),
+                        info.product_string(),
+                        transport,
+                        Some("hidapi"),
+                        battery_level,
+                        current_dpi,
+                        fingerprint,
+                    )
+                } else {
+                    build_connected_device_info(
+                        Some(info.product_id()),
+                        info.product_string(),
+                        transport,
+                        Some("hidapi"),
+                        plan.cached.battery_level,
+                        plan.cached.current_dpi.unwrap_or(1000),
+                        fingerprint,
+                    )
+                }
+            };
+
+            connected_cache_keys.insert(cache_key);
+            Some(device_info)
+        }
+
+        fn build_iokit_device_info(
+            &self,
+            info: &MacOsIoKitInfo,
+            now: Instant,
+            connected_cache_keys: &mut BTreeSet<String>,
+        ) -> Option<DeviceInfo> {
+            let transport = iokit_transport_label(info.transport.as_deref());
+            let fingerprint = fingerprint_from_iokit_info(info);
+            let cache_key =
+                telemetry_cache_key(Some(info.product_id), transport.as_deref(), &fingerprint);
+
+            let device_info = if connected_cache_keys.contains(&cache_key) {
+                let plan = self.telemetry_plan(&cache_key, now);
+                build_connected_device_info(
+                    Some(info.product_id),
+                    info.product_string.as_deref(),
+                    transport.as_deref(),
+                    Some("iokit"),
+                    plan.cached.battery_level,
+                    plan.cached.current_dpi.unwrap_or(1000),
+                    fingerprint,
+                )
+            } else {
+                let plan = self.telemetry_plan(&cache_key, now);
+                if plan.should_probe {
+                    let device = open_iokit_device(info).ok()?;
+                    let (current_dpi, battery_level) = probe_device_telemetry(
+                        &device,
+                        plan.cached.current_dpi,
+                        plan.cached.battery_level,
+                    );
+                    self.remember_device_telemetry(
+                        cache_key.clone(),
+                        current_dpi,
+                        battery_level,
+                        now,
+                    );
+                    build_connected_device_info(
+                        Some(info.product_id),
+                        info.product_string.as_deref(),
+                        transport.as_deref(),
+                        Some("iokit"),
+                        battery_level,
+                        current_dpi,
+                        fingerprint,
+                    )
+                } else {
+                    build_connected_device_info(
+                        Some(info.product_id),
+                        info.product_string.as_deref(),
+                        transport.as_deref(),
+                        Some("iokit"),
+                        plan.cached.battery_level,
+                        plan.cached.current_dpi.unwrap_or(1000),
+                        fingerprint,
+                    )
+                }
+            };
+
+            connected_cache_keys.insert(cache_key);
+            Some(device_info)
+        }
     }
 
     #[cfg(target_os = "macos")]
-    fn probe_iokit_device(info: &MacOsIoKitInfo) -> Option<DeviceInfo> {
-        let transport = iokit_transport_label(info.transport.as_deref());
-        let device = open_iokit_device(info).ok()?;
-        probe_transport_device(
-            &device,
-            Some(info.product_id),
-            info.product_string.as_deref(),
-            transport.as_deref(),
-            "iokit",
-            fingerprint_from_iokit_info(info),
-        )
-    }
-
-    #[cfg(target_os = "macos")]
-    fn probe_transport_device<T: HidppIo + ?Sized>(
+    fn probe_device_telemetry<T: HidppIo + ?Sized>(
         device: &T,
-        product_id: Option<u16>,
-        product_name: Option<&str>,
-        transport: Option<&str>,
-        source: &'static str,
-        fingerprint: DeviceFingerprint,
-    ) -> Option<DeviceInfo> {
+        cached_dpi: Option<u16>,
+        cached_battery_level: Option<u8>,
+    ) -> (u16, Option<u8>) {
         let current_dpi = hidpp::read_sensor_dpi(device, BT_DEV_IDX, 1_500)
             .ok()
             .flatten()
+            .or(cached_dpi)
             .unwrap_or(1000);
         let battery_level = hidpp::read_battery_level(device, BT_DEV_IDX, 1_500)
             .ok()
-            .flatten();
-        Some(build_connected_device_info(
-            product_id,
-            product_name,
-            transport,
-            Some(source),
-            battery_level,
-            current_dpi,
-            fingerprint,
-        ))
+            .flatten()
+            .or(cached_battery_level);
+        (current_dpi, battery_level)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn current_frontmost_app_identity() -> Result<Option<AppIdentity>, PlatformError> {
+        let workspace = NSWorkspace::sharedWorkspace();
+        let Some(app) = workspace.frontmostApplication() else {
+            return Ok(None);
+        };
+
+        let executable_path = app
+            .executableURL()
+            .and_then(|url| url.path())
+            .map(|path| path.to_string());
+        let executable = executable_path.as_deref().and_then(|path| {
+            Path::new(path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        });
+
+        Ok(Some(AppIdentity {
+            label: app.localizedName().map(|name| name.to_string()),
+            executable,
+            executable_path,
+            bundle_id: app.bundleIdentifier().map(|bundle_id| bundle_id.to_string()),
+            package_family_name: None,
+        }))
     }
 
     #[cfg(target_os = "macos")]
@@ -1315,6 +1599,57 @@ pub mod macos {
         };
         hydrate_identity_key(Some(info.product_id), &mut fingerprint);
         fingerprint
+    }
+
+    #[cfg(target_os = "macos")]
+    fn should_probe_cached_telemetry(
+        entry: Option<&DeviceTelemetryCacheEntry>,
+        now: Instant,
+    ) -> bool {
+        let Some(entry) = entry else {
+            return true;
+        };
+
+        !entry.connected
+            || entry.current_dpi.is_none()
+            || now.duration_since(entry.last_battery_probe_at) >= BATTERY_CACHE_TTL
+            || entry.verify_after.is_some_and(|verify_after| now >= verify_after)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn telemetry_cache_key(
+        product_id: Option<u16>,
+        transport: Option<&str>,
+        fingerprint: &DeviceFingerprint,
+    ) -> String {
+        if let Some(identity_key) = fingerprint
+            .identity_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return format!("identity:{identity_key}");
+        }
+
+        if let Some(serial_number) = fingerprint
+            .serial_number
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return format!("serial:{:04x}:{serial_number}", product_id.unwrap_or_default());
+        }
+
+        format!(
+            "tuple:{:04x}:{}:{}:{}:{}:{}:{}",
+            product_id.unwrap_or_default(),
+            transport.unwrap_or_default(),
+            fingerprint.location_id.unwrap_or_default(),
+            fingerprint.interface_number.unwrap_or_default(),
+            fingerprint.usage_page.unwrap_or_default(),
+            fingerprint.usage.unwrap_or_default(),
+            fingerprint.hid_path.as_deref().unwrap_or_default(),
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -1407,6 +1742,67 @@ pub mod macos {
     #[cfg(target_os = "macos")]
     fn set_hidpp_dpi<T: HidppIo + ?Sized>(device: &T, dpi: u16) -> Result<bool, PlatformError> {
         hidpp::set_sensor_dpi(device, BT_DEV_IDX, dpi, 1_500)
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    mod telemetry_tests {
+        use super::*;
+
+        fn sample_fingerprint() -> DeviceFingerprint {
+            DeviceFingerprint {
+                identity_key: None,
+                serial_number: Some("ABC123".to_string()),
+                hid_path: Some("/dev/hid0".to_string()),
+                interface_number: Some(2),
+                usage_page: Some(0xFF00),
+                usage: Some(0x0001),
+                location_id: Some(0xCAFEBABE),
+            }
+        }
+
+        #[test]
+        fn telemetry_cache_key_is_stable_for_same_physical_device() {
+            let first = sample_fingerprint();
+            let mut second = sample_fingerprint();
+            second.hid_path = Some("/dev/hid1".to_string());
+
+            assert_eq!(
+                telemetry_cache_key(Some(0xB034), Some("Bluetooth Low Energy"), &first),
+                telemetry_cache_key(Some(0xB034), Some("Bluetooth Low Energy"), &second),
+            );
+        }
+
+        #[test]
+        fn telemetry_probe_policy_handles_ttl_reconnect_and_verify() {
+            let now = Instant::now();
+            let fresh = DeviceTelemetryCacheEntry {
+                current_dpi: Some(1000),
+                battery_level: Some(80),
+                last_battery_probe_at: now,
+                verify_after: None,
+                connected: true,
+            };
+            assert!(!should_probe_cached_telemetry(Some(&fresh), now));
+
+            let stale_battery = DeviceTelemetryCacheEntry {
+                last_battery_probe_at: now - BATTERY_CACHE_TTL,
+                ..fresh.clone()
+            };
+            assert!(should_probe_cached_telemetry(Some(&stale_battery), now));
+
+            let disconnected = DeviceTelemetryCacheEntry {
+                connected: false,
+                ..fresh.clone()
+            };
+            assert!(should_probe_cached_telemetry(Some(&disconnected), now));
+
+            let verify_due = DeviceTelemetryCacheEntry {
+                verify_after: Some(now),
+                ..fresh
+            };
+            assert!(should_probe_cached_telemetry(Some(&verify_due), now));
+            assert!(should_probe_cached_telemetry(None, now));
+        }
     }
 }
 
