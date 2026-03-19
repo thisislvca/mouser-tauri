@@ -19,9 +19,11 @@ use mouser_core::{
 };
 
 use crate::{
-    dedupe_installed_apps, horizontal_scroll_control, push_bounded_hook_event,
-    AppDiscoveryBackend, AppFocusBackend, HidBackend, HidCapabilities, HookBackend,
-    HookBackendEvent, HookBackendSettings, HookCapabilities, PlatformError,
+    dedupe_installed_apps, gesture,
+    hidpp::{self, HidppIo, HidppMessage, BT_DEV_IDX},
+    horizontal_scroll_control, push_bounded_hook_event, AppDiscoveryBackend, AppFocusBackend,
+    HidBackend, HidCapabilities, HookBackend, HookBackendEvent, HookBackendSettings,
+    HookCapabilities, PlatformError,
 };
 
 #[cfg(target_os = "windows")]
@@ -38,16 +40,7 @@ use windows_sys::Win32::{
 };
 
 const LOGI_VID: u16 = 0x046D;
-const LONG_ID: u8 = 0x11;
-const LONG_LEN: usize = 20;
-const BT_DEV_IDX: u8 = 0xFF;
-const FEAT_ADJ_DPI: u16 = 0x2201;
-const FEAT_UNIFIED_BATT: u16 = 0x1004;
-const FEAT_BATTERY_STATUS: u16 = 0x1000;
 const FEAT_REPROG_V4: u16 = 0x1B04;
-const MY_SW: u8 = 0x0A;
-const HIDPP_GET_SENSOR_DPI_FN: u8 = 0x02;
-const HIDPP_SET_SENSOR_DPI_FN: u8 = 0x03;
 const DEVICE_INDICES: [u8; 3] = [0xFF, 0x00, 0x01];
 const DEFAULT_GESTURE_CIDS: [u16; 3] = [0x00C3, 0x00D7, 0x0056];
 const GESTURE_DIVERT_FLAGS: u8 = 0x01;
@@ -917,7 +910,7 @@ fn run_gesture_worker(shared: Arc<WindowsHookShared>, stop: Arc<AtomicBool>) {
             continue;
         };
 
-        match read_hid_packet(&active_session.device, 120) {
+        match active_session.device.read_packet(120) {
             Ok(packet) => {
                 if !packet.is_empty() {
                     active_session.handle_report(&shared, &packet);
@@ -961,7 +954,7 @@ struct GestureSession {
 #[cfg(target_os = "windows")]
 impl GestureSession {
     fn handle_report(&mut self, shared: &WindowsHookShared, raw: &[u8]) {
-        let Some((dev_idx, feature_idx, function, _sw, params)) = parse_hidpp_message(raw) else {
+        let Some((dev_idx, feature_idx, function, _sw, params)) = hidpp::parse_message(raw) else {
             return;
         };
 
@@ -1006,7 +999,7 @@ impl GestureSession {
         } else {
             GESTURE_UNDIVERT_FLAGS
         };
-        let _ = write_hidpp_request(
+        let _ = hidpp::write_request(
             &self.device,
             self.dev_idx,
             self.feature_idx,
@@ -1130,17 +1123,7 @@ fn initialize_gesture_session(
 
 #[cfg(target_os = "windows")]
 fn gesture_candidates_for(gesture_cids: &[u16]) -> Vec<u16> {
-    let mut ordered = Vec::new();
-    for cid in gesture_cids
-        .iter()
-        .copied()
-        .chain(DEFAULT_GESTURE_CIDS.into_iter())
-    {
-        if !ordered.contains(&cid) {
-            ordered.push(cid);
-        }
-    }
-    ordered
+    gesture::ordered_gesture_candidates(gesture_cids, &DEFAULT_GESTURE_CIDS)
 }
 
 #[cfg(target_os = "windows")]
@@ -1226,153 +1209,17 @@ fn transport_label(bus_type: BusType) -> &'static str {
 
 #[cfg(target_os = "windows")]
 fn set_hidpp_dpi(device: &HidDevice, dpi: u16) -> Result<bool, PlatformError> {
-    let Some(feature_index) = find_feature(device, FEAT_ADJ_DPI)? else {
-        return Ok(false);
-    };
-
-    let hi = ((dpi >> 8) & 0xFF) as u8;
-    let lo = (dpi & 0xFF) as u8;
-    Ok(request(device, feature_index, HIDPP_SET_SENSOR_DPI_FN, &[0, hi, lo])?.is_some())
+    hidpp::set_sensor_dpi(device, BT_DEV_IDX, dpi, 1_500)
 }
 
 #[cfg(target_os = "windows")]
 fn read_hidpp_current_dpi(device: &HidDevice) -> Result<Option<u16>, PlatformError> {
-    let Some(feature_index) = find_feature(device, FEAT_ADJ_DPI)? else {
-        return Ok(None);
-    };
-
-    let Some(response) = request(device, feature_index, HIDPP_GET_SENSOR_DPI_FN, &[0])? else {
-        return Ok(None);
-    };
-    Ok(parse_sensor_dpi_response(&response))
-}
-
-fn parse_sensor_dpi_response(response: &[u8]) -> Option<u16> {
-    if response.len() < 3 {
-        return None;
-    }
-
-    Some(u16::from(response[1]) << 8 | u16::from(response[2]))
+    hidpp::read_sensor_dpi(device, BT_DEV_IDX, 1_500)
 }
 
 #[cfg(target_os = "windows")]
 fn read_hidpp_battery(device: &HidDevice) -> Result<Option<u8>, PlatformError> {
-    if let Some(feature_index) = find_feature(device, FEAT_UNIFIED_BATT)? {
-        if let Some(response) = request(device, feature_index, 1, &[])? {
-            return Ok(response.first().copied());
-        }
-    }
-
-    if let Some(feature_index) = find_feature(device, FEAT_BATTERY_STATUS)? {
-        if let Some(response) = request(device, feature_index, 0, &[])? {
-            return Ok(response.first().copied());
-        }
-    }
-
-    Ok(None)
-}
-
-#[cfg(target_os = "windows")]
-fn find_feature(device: &HidDevice, feature_id: u16) -> Result<Option<u8>, PlatformError> {
-    let feature_hi = ((feature_id >> 8) & 0xFF) as u8;
-    let feature_lo = (feature_id & 0xFF) as u8;
-    let Some(response) = request(device, 0x00, 0, &[feature_hi, feature_lo, 0x00])? else {
-        return Ok(None);
-    };
-
-    Ok(response
-        .first()
-        .copied()
-        .filter(|feature_index| *feature_index != 0))
-}
-
-#[cfg(target_os = "windows")]
-fn request(
-    device: &HidDevice,
-    feature_index: u8,
-    function: u8,
-    params: &[u8],
-) -> Result<Option<Vec<u8>>, PlatformError> {
-    write_request(device, feature_index, function, params)?;
-    let deadline = Instant::now() + Duration::from_millis(1_500);
-    let expected_reply_functions = [function, (function + 1) & 0x0F];
-
-    while Instant::now() < deadline {
-        let packet = read_hid_packet(device, 200)?;
-        if packet.is_empty() {
-            continue;
-        }
-
-        let Some((response_feature, response_function, response_sw, response_params)) =
-            parse_message(&packet)
-        else {
-            continue;
-        };
-
-        if response_feature == 0xFF {
-            return Ok(None);
-        }
-
-        if response_feature == feature_index
-            && response_sw == MY_SW
-            && expected_reply_functions.contains(&response_function)
-        {
-            return Ok(Some(response_params));
-        }
-    }
-
-    Ok(None)
-}
-
-#[cfg(target_os = "windows")]
-fn write_request(
-    device: &HidDevice,
-    feature_index: u8,
-    function: u8,
-    params: &[u8],
-) -> Result<(), PlatformError> {
-    let mut packet = [0u8; LONG_LEN];
-    packet[0] = LONG_ID;
-    packet[1] = BT_DEV_IDX;
-    packet[2] = feature_index;
-    packet[3] = ((function & 0x0F) << 4) | (MY_SW & 0x0F);
-    for (offset, byte) in params.iter().copied().enumerate() {
-        if 4 + offset < LONG_LEN {
-            packet[4 + offset] = byte;
-        }
-    }
-
-    device.write(&packet).map_err(map_hid_error)?;
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn parse_message(raw: &[u8]) -> Option<(u8, u8, u8, Vec<u8>)> {
-    if raw.len() < 4 {
-        return None;
-    }
-
-    let offset = usize::from(matches!(raw.first(), Some(0x10) | Some(0x11)));
-    if raw.len() < offset + 4 {
-        return None;
-    }
-
-    let feature = raw[offset + 1];
-    let function_and_sw = raw[offset + 2];
-    let function = (function_and_sw >> 4) & 0x0F;
-    let sw = function_and_sw & 0x0F;
-    let params = raw[offset + 3..].to_vec();
-
-    Some((feature, function, sw, params))
-}
-
-#[cfg(target_os = "windows")]
-fn read_hid_packet(device: &HidDevice, timeout_ms: i32) -> Result<Vec<u8>, PlatformError> {
-    let mut buffer = [0u8; 64];
-    let size = device
-        .read_timeout(&mut buffer, timeout_ms)
-        .map_err(map_hid_error)?;
-    Ok(buffer[..size].to_vec())
+    hidpp::read_battery_level(device, BT_DEV_IDX, 1_500)
 }
 
 #[cfg(target_os = "windows")]
@@ -1382,24 +1229,7 @@ fn find_hidpp_feature(
     feature_id: u16,
     timeout_ms: i32,
 ) -> Result<Option<u8>, PlatformError> {
-    let feature_hi = ((feature_id >> 8) & 0xFF) as u8;
-    let feature_lo = (feature_id & 0xFF) as u8;
-    let Some((_dev_idx, _feature, _function, _sw, params)) = hidpp_request(
-        device,
-        dev_idx,
-        0x00,
-        0,
-        &[feature_hi, feature_lo, 0x00],
-        timeout_ms,
-    )?
-    else {
-        return Ok(None);
-    };
-
-    Ok(params
-        .first()
-        .copied()
-        .filter(|feature_index| *feature_index != 0))
+    hidpp::find_feature(device, dev_idx, feature_id, timeout_ms)
 }
 
 #[cfg(target_os = "windows")]
@@ -1411,7 +1241,7 @@ fn set_gesture_reporting(
     flags: u8,
     timeout_ms: i32,
 ) -> Result<Option<(u8, u8, u8, u8, Vec<u8>)>, PlatformError> {
-    hidpp_request(
+    hidpp::request(
         device,
         dev_idx,
         feature_idx,
@@ -1425,111 +1255,6 @@ fn set_gesture_reporting(
         ],
         timeout_ms,
     )
-}
-
-#[cfg(target_os = "windows")]
-fn hidpp_request(
-    device: &HidDevice,
-    dev_idx: u8,
-    feature_idx: u8,
-    function: u8,
-    params: &[u8],
-    timeout_ms: i32,
-) -> Result<Option<(u8, u8, u8, u8, Vec<u8>)>, PlatformError> {
-    write_hidpp_request(device, dev_idx, feature_idx, function, params)?;
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(50) as u64);
-    let expected_reply_functions = [function, (function + 1) & 0x0F];
-
-    while Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let packet = read_hid_packet(
-            device,
-            remaining.min(Duration::from_millis(80)).as_millis() as i32,
-        )?;
-        if packet.is_empty() {
-            continue;
-        }
-
-        let Some((
-            response_dev_idx,
-            response_feature,
-            response_function,
-            response_sw,
-            response_params,
-        )) = parse_hidpp_message(&packet)
-        else {
-            continue;
-        };
-
-        if response_feature == 0xFF {
-            return Ok(None);
-        }
-
-        if response_dev_idx == dev_idx
-            && response_feature == feature_idx
-            && response_sw == MY_SW
-            && expected_reply_functions.contains(&response_function)
-        {
-            return Ok(Some((
-                response_dev_idx,
-                response_feature,
-                response_function,
-                response_sw,
-                response_params,
-            )));
-        }
-    }
-
-    Ok(None)
-}
-
-#[cfg(target_os = "windows")]
-fn write_hidpp_request(
-    device: &HidDevice,
-    dev_idx: u8,
-    feature_idx: u8,
-    function: u8,
-    params: &[u8],
-) -> Result<(), PlatformError> {
-    let mut packet = [0u8; LONG_LEN];
-    packet[0] = LONG_ID;
-    packet[1] = dev_idx;
-    packet[2] = feature_idx;
-    packet[3] = ((function & 0x0F) << 4) | (MY_SW & 0x0F);
-    for (offset, byte) in params.iter().copied().enumerate() {
-        if 4 + offset < LONG_LEN {
-            packet[4 + offset] = byte;
-        }
-    }
-
-    device.write(&packet).map_err(map_hid_error)?;
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn parse_hidpp_message(raw: &[u8]) -> Option<(u8, u8, u8, u8, Vec<u8>)> {
-    if raw.len() < 4 {
-        return None;
-    }
-
-    let offset = usize::from(matches!(raw.first(), Some(0x10) | Some(0x11)));
-    if raw.len() < offset + 4 {
-        return None;
-    }
-
-    let dev_idx = raw[offset];
-    let feature = raw[offset + 1];
-    let function_and_sw = raw[offset + 2];
-    let function = (function_and_sw >> 4) & 0x0F;
-    let sw = function_and_sw & 0x0F;
-    let params = raw[offset + 3..].to_vec();
-
-    Some((dev_idx, feature, function, sw, params))
-}
-
-#[cfg(target_os = "windows")]
-fn map_hid_error(error: hidapi::HidError) -> PlatformError {
-    PlatformError::Message(error.to_string())
 }
 
 fn cooldown_active(state: &GestureTrackingState) -> bool {
@@ -1563,33 +1288,7 @@ fn detect_gesture_control(
     threshold: f64,
     deadzone: f64,
 ) -> Option<LogicalControl> {
-    let abs_x = delta_x.abs();
-    let abs_y = delta_y.abs();
-    let dominant = abs_x.max(abs_y);
-    if dominant < threshold.max(5.0) {
-        return None;
-    }
-
-    let cross_limit = deadzone.max(dominant * 0.35);
-    if abs_x > abs_y {
-        if abs_y > cross_limit {
-            return None;
-        }
-        if delta_x < 0.0 {
-            Some(LogicalControl::GestureLeft)
-        } else {
-            Some(LogicalControl::GestureRight)
-        }
-    } else {
-        if abs_x > cross_limit {
-            return None;
-        }
-        if delta_y < 0.0 {
-            Some(LogicalControl::GestureUp)
-        } else {
-            Some(LogicalControl::GestureDown)
-        }
-    }
+    gesture::detect_gesture_control(delta_x, delta_y, threshold, deadzone)
 }
 
 #[cfg(target_os = "windows")]

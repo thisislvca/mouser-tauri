@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -90,11 +91,12 @@ impl ConfigStore for MemoryConfigStore {
 pub struct MockRuntime {
     catalog: MockCatalog,
     config_store: MemoryConfigStore,
+    resolved_profile_id: String,
     detected_devices: Vec<DeviceInfo>,
     selected_device_key: Option<String>,
     frontmost_app: Option<AppIdentity>,
     enabled: bool,
-    debug_log: Vec<DebugEvent>,
+    debug_log: VecDeque<DebugEvent>,
 }
 
 impl Default for MockRuntime {
@@ -131,6 +133,7 @@ impl MockRuntime {
         let mut runtime = Self {
             catalog,
             config_store,
+            resolved_profile_id: "default".to_string(),
             detected_devices: Vec::new(),
             selected_device_key,
             frontmost_app: Some(AppIdentity {
@@ -139,9 +142,10 @@ impl MockRuntime {
                 ..AppIdentity::default()
             }),
             enabled: true,
-            debug_log: Vec::new(),
+            debug_log: VecDeque::new(),
         };
         runtime.apply_device_selection();
+        runtime.sync_active_profile();
         runtime.push_debug(DebugEventKind::Info, "Mock runtime ready");
         runtime
     }
@@ -170,7 +174,7 @@ impl MockRuntime {
             DebugEventKind::Info,
             format!(
                 "Saved config for profile `{}` at {} DPI",
-                self.config().active_profile_id,
+                self.resolved_profile_id,
                 self.selected_device_settings().dpi
             ),
         );
@@ -179,8 +183,7 @@ impl MockRuntime {
                 DebugEventKind::Info,
                 format!(
                     "Resolved profile for app {:?} -> {}",
-                    self.frontmost_app,
-                    self.config().active_profile_id
+                    self.frontmost_app, self.resolved_profile_id
                 ),
             );
         }
@@ -246,8 +249,7 @@ impl MockRuntime {
                 DebugEventKind::Info,
                 format!(
                     "Mock app focus changed to {:?}; active profile is `{}`",
-                    frontmost_app,
-                    self.config().active_profile_id
+                    frontmost_app, self.resolved_profile_id
                 ),
             );
         }
@@ -299,20 +301,20 @@ impl MockRuntime {
                 connected: active_device
                     .as_ref()
                     .is_some_and(|device| device.connected),
-                active_profile_id: self.config().active_profile_id,
+                active_profile_id: self.resolved_profile_id.clone(),
                 frontmost_app: self
                     .frontmost_app
                     .as_ref()
                     .and_then(AppIdentity::label_or_fallback),
                 selected_device_key: self.selected_device_key.clone(),
                 debug_mode: self.config().settings.debug_mode,
-                debug_log: self.debug_log.clone(),
+                debug_log: self.debug_log.iter().cloned().collect(),
             },
         }
     }
 
     pub fn last_debug_event(&self) -> Option<DebugEvent> {
-        self.debug_log.first().cloned()
+        self.debug_log.front().cloned()
     }
 
     fn apply_device_selection(&mut self) {
@@ -354,16 +356,19 @@ impl MockRuntime {
     }
 
     fn sync_active_profile(&mut self) -> bool {
-        let mut config = self.config();
         let selected_profile_id = self
             .selected_managed_device()
             .and_then(|device| device.profile_id);
-        let changed =
-            config.sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_ref());
-        if changed {
-            self.config_store.save(&config).unwrap();
+        let config = self.config();
+        let next_profile_id = config.resolved_profile_id(
+            selected_profile_id.as_deref(),
+            self.frontmost_app.as_ref(),
+        );
+        if self.resolved_profile_id != next_profile_id {
+            self.resolved_profile_id = next_profile_id;
+            return true;
         }
-        changed
+        false
     }
 
     fn apply_config(&mut self, mut config: AppConfig) -> bool {
@@ -388,15 +393,14 @@ impl MockRuntime {
     }
 
     fn push_debug(&mut self, kind: DebugEventKind, message: impl Into<String>) {
-        self.debug_log.insert(
-            0,
-            DebugEvent {
-                kind,
-                message: message.into(),
-                timestamp_ms: now_ms(),
-            },
-        );
-        self.debug_log.truncate(24);
+        self.debug_log.push_front(DebugEvent {
+            kind,
+            message: message.into(),
+            timestamp_ms: now_ms(),
+        });
+        while self.debug_log.len() > 24 {
+            let _ = self.debug_log.pop_back();
+        }
     }
 }
 
@@ -462,7 +466,10 @@ mod tests {
             bindings: default_profile_bindings(),
         });
         runtime.set_frontmost_app(Some("Code.exe".to_string()));
-        assert_eq!(runtime.config().active_profile_id, "code");
+        assert_eq!(
+            runtime.engine_snapshot().engine_status.active_profile_id,
+            "code"
+        );
     }
 
     #[test]

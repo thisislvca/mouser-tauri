@@ -357,6 +357,21 @@ function selectedDeviceSettings(
   );
 }
 
+function resolveIsDarkAppearance(
+  appearanceMode: AppConfig["settings"]["appearanceMode"],
+  mediaQuery: MediaQueryList | null,
+) {
+  if (appearanceMode === "dark") {
+    return true;
+  }
+
+  if (appearanceMode === "light") {
+    return false;
+  }
+
+  return mediaQuery?.matches ?? false;
+}
+
 function App() {
   const queryClient = useQueryClient();
   useRuntimeEvents();
@@ -475,7 +490,6 @@ function App() {
     mutationFn: importLegacyConfig,
     onSuccess: (report) => {
       setImportWarnings(report.warnings);
-      setSelectedProfileId(report.config.activeProfileId);
       void invalidateBootstrap();
     },
   });
@@ -501,12 +515,48 @@ function App() {
       return;
     }
 
+    const root = document.documentElement;
+    const appearanceMode = bootstrapQuery.data.config.settings.appearanceMode;
+    const mediaQuery =
+      typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-color-scheme: dark)")
+        : null;
+
+    const syncAppearance = () => {
+      root.classList.toggle(
+        "dark",
+        resolveIsDarkAppearance(appearanceMode, mediaQuery),
+      );
+    };
+
+    syncAppearance();
+
+    if (appearanceMode !== "system" || mediaQuery == null) {
+      return;
+    }
+
+    const handleChange = () => {
+      syncAppearance();
+    };
+
+    mediaQuery.addEventListener("change", handleChange);
+    return () => {
+      mediaQuery.removeEventListener("change", handleChange);
+    };
+  }, [bootstrapQuery.data]);
+
+  useEffect(() => {
+    if (!bootstrapQuery.data) {
+      return;
+    }
+
     hydrateDebugLog(bootstrapQuery.data.engineSnapshot.engineStatus.debugLog);
 
     const profileIds = new Set(
       bootstrapQuery.data.config.profiles.map((profile) => profile.id),
     );
-    const activeProfileId = bootstrapQuery.data.config.activeProfileId;
+    const activeProfileId =
+      bootstrapQuery.data.engineSnapshot.engineStatus.activeProfileId;
     const activeProfileChanged =
       lastActiveProfileIdRef.current != null &&
       lastActiveProfileIdRef.current !== activeProfileId;
@@ -642,7 +692,9 @@ function App() {
   const discoveredApps = appDiscovery.browseApps;
   const selectedProfile =
     config.profiles.find((profile) => profile.id === selectedProfileId) ??
-    config.profiles.find((profile) => profile.id === config.activeProfileId) ??
+    config.profiles.find(
+      (profile) => profile.id === engineSnapshot.engineStatus.activeProfileId,
+    ) ??
     config.profiles[0];
   const activeDevice = engineSnapshot.activeDevice;
   const activeLayout = resolveActiveLayout(activeDevice, config, layouts);
@@ -790,11 +842,11 @@ function App() {
           supportedDevices={bootstrap.supportedDevices}
         />
       ) : (
-        <div className="relative min-h-screen bg-white">
-          <header className="fixed inset-x-0 top-0 z-30 flex items-center justify-between bg-white/70 px-8 py-4 backdrop-blur-xl">
+        <div className="relative min-h-screen bg-[var(--app-bg)]">
+          <header className="fixed inset-x-0 top-0 z-30 flex items-center justify-between border-b border-[var(--border-soft)] bg-[var(--surface)] px-8 py-4 backdrop-blur-xl">
             <div className="flex items-center gap-3">
               <button
-                className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--foreground)] transition hover:bg-black/5"
+                className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--foreground)] transition hover:bg-[var(--accent)]"
                 onClick={() => setShellMode("dashboard")}
                 type="button"
               >
@@ -815,7 +867,7 @@ function App() {
                       "flex h-9 w-9 items-center justify-center rounded-xl border-2 transition",
                       profile.id === selectedProfile.id
                         ? "border-[#10b981] bg-[#10b981]/10"
-                        : "border-transparent bg-black/[0.04] hover:bg-black/[0.07]",
+                        : "border-transparent bg-[var(--card-muted)] hover:bg-[var(--card)]",
                     )}
                     key={profile.id}
                     onClick={() => {
@@ -850,7 +902,7 @@ function App() {
           </header>
 
           <nav className="fixed left-7 top-1/2 z-20 hidden -translate-y-1/2 lg:block">
-            <div className="flex flex-col gap-0.5 rounded-[20px] bg-white/80 p-2 shadow-[0_8px_40px_rgba(0,0,0,0.06)] ring-1 ring-black/[0.04] backdrop-blur-xl">
+            <div className="flex flex-col gap-0.5 rounded-[20px] bg-[var(--surface)] p-2 shadow-[0_8px_40px_rgba(0,0,0,0.16)] ring-1 ring-[var(--border-soft)] backdrop-blur-xl">
               {SECTION_ORDER.map((section) => (
                 <SectionNavButton
                   active={activeSection === section}
@@ -860,9 +912,9 @@ function App() {
                   onClick={() => setActiveSection(section)}
                 />
               ))}
-              <div className="mx-3 my-1 h-px bg-black/[0.06]" />
+              <div className="mx-3 my-1 h-px bg-[var(--border-soft)]" />
               <button
-                className="flex items-center gap-3 rounded-2xl px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)] transition hover:bg-black/5 hover:text-[var(--foreground)]"
+                className="flex items-center gap-3 rounded-2xl px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)] transition hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                 onClick={() => setAppSettingsOpen(true)}
                 type="button"
               >
@@ -1052,7 +1104,7 @@ function ButtonsView(props: {
             {selectedHotspot && (
               <motion.aside
                 animate={{ opacity: 1, x: 0 }}
-                className="fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l border-black/[0.06] bg-white/95 px-8 pb-8 pt-20 backdrop-blur-xl"
+                className="fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l border-[var(--border-soft)] bg-[var(--surface)] px-8 pb-8 pt-20 backdrop-blur-xl"
                 exit={{ opacity: 0, x: 24 }}
                 initial={{ opacity: 0, x: 24 }}
                 key={selectedHotspot.control}
@@ -1108,7 +1160,7 @@ function DashboardShell(props: {
     props.engineSnapshot.activeDeviceKey ?? props.activeDevice?.key ?? null;
 
   return (
-    <div className="flex min-h-screen flex-col bg-white">
+    <div className="flex min-h-screen flex-col bg-[var(--app-bg)]">
       <div className="mx-auto w-full max-w-[1680px] px-6 py-8 sm:px-10 sm:py-10">
         <header className="flex flex-wrap items-start justify-between gap-6">
           <div>
@@ -1250,7 +1302,7 @@ function DashboardShell(props: {
             <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {unmanagedDetectedDevices.map((device) => (
                 <div
-                  className="flex items-center justify-between gap-3 rounded-[24px] bg-white px-4 py-4 ring-1 ring-[var(--border)]"
+                  className="flex items-center justify-between gap-3 rounded-[24px] bg-[var(--card)] px-4 py-4 ring-1 ring-[var(--border)]"
                   key={device.key}
                 >
                   <div className="min-w-0">
@@ -1983,7 +2035,7 @@ function DeviceDetailView(props: {
                         : " Changes will apply once the device reconnects."}
                     </p>
                   </div>
-                  <div className="rounded-full bg-white px-3 py-1.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border)]">
+                  <div className="rounded-full bg-[var(--card)] px-3 py-1.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border)]">
                     {dpiDraft} DPI
                   </div>
                 </div>
@@ -2350,7 +2402,7 @@ function AppSettingsDialog(props: {
                             it.
                           </p>
                         </div>
-                        <div className="rounded-full bg-white px-3 py-1.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border)]">
+                        <div className="rounded-full bg-[var(--card)] px-3 py-1.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[var(--border)]">
                           {defaultDpiDraft} DPI
                         </div>
                       </div>
@@ -3129,10 +3181,10 @@ function CapabilityRow(props: { label: string; value: string }) {
 function LogEntry(props: { event: DebugEventRecord }) {
   const accent =
     props.event.kind === "warning"
-      ? "border-[#f2dfc0] bg-[#fff9ef] text-[#8b5e1a]"
+      ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-100"
       : props.event.kind === "gesture"
-        ? "border-[#bfdbfe] bg-[#f2f7ff] text-[#1d4ed8]"
-        : "border-[#e3e7f0] bg-white text-[#485062]";
+        ? "border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/35 dark:text-sky-100"
+        : "border-[var(--border)] bg-[var(--card)] text-[var(--foreground)]";
 
   return (
     <article className={`rounded-[24px] border px-4 py-4 ${accent}`}>
@@ -3140,11 +3192,11 @@ function LogEntry(props: { event: DebugEventRecord }) {
         <strong className="text-[11px] font-semibold uppercase tracking-[0.22em]">
           {props.event.kind}
         </strong>
-        <span className="text-xs">
+        <span className="text-xs text-[var(--muted-foreground)]">
           {new Date(props.event.timestampMs).toLocaleTimeString()}
         </span>
       </div>
-      <p className="mt-3 text-sm leading-6">{props.event.message}</p>
+      <p className="mt-3 text-sm leading-6 text-current">{props.event.message}</p>
     </article>
   );
 }

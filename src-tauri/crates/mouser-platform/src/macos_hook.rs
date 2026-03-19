@@ -1,4 +1,8 @@
 #[cfg(target_os = "macos")]
+use crate::gesture;
+#[cfg(target_os = "macos")]
+use crate::hidpp::{self, HidppMessage};
+#[cfg(target_os = "macos")]
 use crate::macos_iokit::{enumerate_iokit_infos, MacOsIoKitInfo, MacOsNativeHidDevice};
 #[cfg(target_os = "macos")]
 use crate::{horizontal_scroll_control, push_bounded_hook_event};
@@ -100,12 +104,6 @@ const SCROLL_INVERT_MARKER: i64 = 0x4D4F5553;
 #[cfg(target_os = "macos")]
 const THUMB_WHEEL_TRACKPAD_MARKER: i64 = 0x4D575450;
 #[cfg(target_os = "macos")]
-const LONG_ID: u8 = 0x11;
-#[cfg(target_os = "macos")]
-const LONG_LEN: usize = 20;
-#[cfg(target_os = "macos")]
-const MY_SW: u8 = 0x0A;
-#[cfg(target_os = "macos")]
 const FEAT_REPROG_V4: u16 = 0x1B04;
 #[cfg(target_os = "macos")]
 const DEVICE_INDICES: [u8; 7] = [0xFF, 1, 2, 3, 4, 5, 6];
@@ -119,9 +117,6 @@ const GESTURE_RAWXY_FLAGS: u8 = 0x33;
 const GESTURE_UNDIVERT_FLAGS: u8 = 0x02;
 #[cfg(target_os = "macos")]
 const GESTURE_UNDIVERT_RAWXY_FLAGS: u8 = 0x22;
-#[cfg(target_os = "macos")]
-type HidppMessage = (u8, u8, u8, u8, Vec<u8>);
-
 #[cfg(target_os = "macos")]
 const NX_PLAY: isize = 16;
 #[cfg(target_os = "macos")]
@@ -1070,7 +1065,7 @@ struct GestureSession {
 #[cfg(target_os = "macos")]
 impl GestureSession {
     fn handle_report(&mut self, shared: &MacOsHookShared, raw: &[u8]) {
-        let Some((dev_idx, feature_idx, function, _sw, params)) = parse_hidpp_message(raw) else {
+        let Some((dev_idx, feature_idx, function, _sw, params)) = hidpp::parse_message(raw) else {
             return;
         };
 
@@ -1115,7 +1110,7 @@ impl GestureSession {
         } else {
             GESTURE_UNDIVERT_FLAGS
         };
-        let _ = write_hidpp_request(
+        let _ = hidpp::write_request(
             &self.device,
             self.dev_idx,
             self.feature_idx,
@@ -1361,19 +1356,7 @@ fn initialize_gesture_session(
 
 #[cfg(target_os = "macos")]
 fn gesture_candidates_for(gesture_cids: &[u16]) -> Vec<u16> {
-    let mut ordered = Vec::new();
-
-    for cid in gesture_cids
-        .iter()
-        .copied()
-        .chain(DEFAULT_GESTURE_CIDS.into_iter())
-    {
-        if !ordered.contains(&cid) {
-            ordered.push(cid);
-        }
-    }
-
-    ordered
+    gesture::ordered_gesture_candidates(gesture_cids, &DEFAULT_GESTURE_CIDS)
 }
 
 #[cfg(target_os = "macos")]
@@ -1408,24 +1391,7 @@ fn find_hidpp_feature(
     feature_id: u16,
     timeout_ms: i32,
 ) -> Result<Option<u8>, PlatformError> {
-    let feature_hi = ((feature_id >> 8) & 0xFF) as u8;
-    let feature_lo = (feature_id & 0xFF) as u8;
-    let Some((_dev_idx, _feature, _function, _sw, params)) = hidpp_request(
-        device,
-        dev_idx,
-        0x00,
-        0,
-        &[feature_hi, feature_lo, 0x00],
-        timeout_ms,
-    )?
-    else {
-        return Ok(None);
-    };
-
-    Ok(params
-        .first()
-        .copied()
-        .filter(|feature_index| *feature_index != 0))
+    hidpp::find_feature(device, dev_idx, feature_id, timeout_ms)
 }
 
 #[cfg(target_os = "macos")]
@@ -1437,7 +1403,7 @@ fn set_gesture_reporting(
     flags: u8,
     timeout_ms: i32,
 ) -> Result<Option<HidppMessage>, PlatformError> {
-    hidpp_request(
+    hidpp::request(
         device,
         dev_idx,
         feature_idx,
@@ -1451,102 +1417,6 @@ fn set_gesture_reporting(
         ],
         timeout_ms,
     )
-}
-
-#[cfg(target_os = "macos")]
-fn hidpp_request(
-    device: &MacOsNativeHidDevice,
-    dev_idx: u8,
-    feature_idx: u8,
-    function: u8,
-    params: &[u8],
-    timeout_ms: i32,
-) -> Result<Option<HidppMessage>, PlatformError> {
-    write_hidpp_request(device, dev_idx, feature_idx, function, params)?;
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(50) as u64);
-    let expected_reply_functions = [function, (function + 1) & 0x0F];
-
-    while Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let packet =
-            device.read_timeout(remaining.min(Duration::from_millis(80)).as_millis() as i32)?;
-        if packet.is_empty() {
-            continue;
-        }
-
-        let Some((
-            response_dev_idx,
-            response_feature,
-            response_function,
-            response_sw,
-            response_params,
-        )) = parse_hidpp_message(&packet)
-        else {
-            continue;
-        };
-
-        if response_feature == 0xFF {
-            return Ok(None);
-        }
-
-        if response_dev_idx == dev_idx
-            && response_feature == feature_idx
-            && response_sw == MY_SW
-            && expected_reply_functions.contains(&response_function)
-        {
-            return Ok(Some((
-                response_dev_idx,
-                response_feature,
-                response_function,
-                response_sw,
-                response_params,
-            )));
-        }
-    }
-
-    Ok(None)
-}
-
-#[cfg(target_os = "macos")]
-fn write_hidpp_request(
-    device: &MacOsNativeHidDevice,
-    dev_idx: u8,
-    feature_idx: u8,
-    function: u8,
-    params: &[u8],
-) -> Result<(), PlatformError> {
-    let mut packet = [0u8; LONG_LEN];
-    packet[0] = LONG_ID;
-    packet[1] = dev_idx;
-    packet[2] = feature_idx;
-    packet[3] = ((function & 0x0F) << 4) | (MY_SW & 0x0F);
-    for (offset, byte) in params.iter().copied().enumerate() {
-        if 4 + offset < LONG_LEN {
-            packet[4 + offset] = byte;
-        }
-    }
-    device.write_report(&packet)
-}
-
-#[cfg(target_os = "macos")]
-fn parse_hidpp_message(raw: &[u8]) -> Option<HidppMessage> {
-    if raw.len() < 4 {
-        return None;
-    }
-
-    let offset = usize::from(matches!(raw.first(), Some(0x10) | Some(0x11)));
-    if raw.len() < offset + 4 {
-        return None;
-    }
-
-    let dev_idx = raw[offset];
-    let feature = raw[offset + 1];
-    let function_and_sw = raw[offset + 2];
-    let function = (function_and_sw >> 4) & 0x0F;
-    let sw = function_and_sw & 0x0F;
-    let params = raw[offset + 3..].to_vec();
-
-    Some((dev_idx, feature, function, sw, params))
 }
 
 #[cfg(target_os = "macos")]
@@ -1590,33 +1460,7 @@ fn detect_gesture_control(
     threshold: f64,
     deadzone: f64,
 ) -> Option<LogicalControl> {
-    let abs_x = delta_x.abs();
-    let abs_y = delta_y.abs();
-    let dominant = abs_x.max(abs_y);
-    if dominant < threshold.max(5.0) {
-        return None;
-    }
-
-    let cross_limit = deadzone.max(dominant * 0.35);
-    if abs_x > abs_y {
-        if abs_y > cross_limit {
-            return None;
-        }
-        if delta_x < 0.0 {
-            Some(LogicalControl::GestureLeft)
-        } else {
-            Some(LogicalControl::GestureRight)
-        }
-    } else {
-        if abs_x > cross_limit {
-            return None;
-        }
-        if delta_y < 0.0 {
-            Some(LogicalControl::GestureUp)
-        } else {
-            Some(LogicalControl::GestureDown)
-        }
-    }
+    gesture::detect_gesture_control(delta_x, delta_y, threshold, deadzone)
 }
 
 #[cfg(target_os = "macos")]
@@ -1790,7 +1634,7 @@ fn approximate_point_delta_from_fixed(fixed: i64) -> i64 {
         }
     }
 
-    fixed.signum().max(-1).min(1) * fixed.abs().min(120)
+    fixed.signum().clamp(-1, 1) * fixed.abs().min(120)
 }
 
 #[cfg(target_os = "macos")]

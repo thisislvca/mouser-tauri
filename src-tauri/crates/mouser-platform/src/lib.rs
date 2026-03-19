@@ -1,25 +1,24 @@
+#[cfg(target_os = "macos")]
+use std::path::Path;
 use std::{
     fs::{self, File},
     io::Write,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-#[cfg(target_os = "macos")]
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
 
 #[cfg(target_os = "macos")]
 use mouser_core::build_connected_device_info;
 use mouser_core::{
-    clamp_dpi, default_config, default_device_settings, default_known_apps, default_layouts,
-    AppDiscoverySource, AppIdentity, AppConfig, DebugEventKind, DeviceFingerprint, DeviceInfo,
-    DeviceLayout, DeviceSettings, InstalledApp, KnownApp, LogicalControl, Profile, Settings,
-    known_device_specs,
+    clamp_dpi, default_config, default_device_settings, default_known_apps_ref,
+    default_layouts_ref, known_device_specs_ref, AppConfig, AppDiscoverySource, AppIdentity,
+    DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp,
+    KnownApp, LogicalControl, Profile, Settings,
 };
 use thiserror::Error;
 
+mod gesture;
+mod hidpp;
 mod macos_hook;
 mod macos_iokit;
 mod windows_backend;
@@ -208,9 +207,10 @@ pub struct StaticDeviceCatalog {
 impl StaticDeviceCatalog {
     pub fn new() -> Self {
         Self {
-            layouts: default_layouts(),
-            devices: known_device_specs()
-                .into_iter()
+            layouts: default_layouts_ref().to_vec(),
+            devices: known_device_specs_ref()
+                .iter()
+                .cloned()
                 .map(|spec| DeviceInfo {
                     key: spec.key.clone(),
                     model_key: spec.key,
@@ -232,8 +232,20 @@ impl StaticDeviceCatalog {
                     fingerprint: DeviceFingerprint::default(),
                 })
                 .collect(),
-            apps: default_known_apps(),
+            apps: default_known_apps_ref().to_vec(),
         }
+    }
+
+    pub fn layouts(&self) -> &[DeviceLayout] {
+        &self.layouts
+    }
+
+    pub fn known_apps_ref(&self) -> &[KnownApp] {
+        &self.apps
+    }
+
+    pub fn layout_by_key(&self, layout_key: &str) -> Option<&DeviceLayout> {
+        self.layouts.iter().find(|layout| layout.key == layout_key)
     }
 }
 
@@ -563,6 +575,7 @@ impl ConfigStore for JsonConfigStore {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
 pub mod macos {
     use super::*;
+    use crate::hidpp::{self, HidppIo, BT_DEV_IDX};
     pub use crate::macos_hook::MacOsHookBackend;
     #[cfg(target_os = "macos")]
     use crate::macos_iokit::{enumerate_iokit_infos, MacOsIoKitInfo, MacOsNativeHidDevice};
@@ -577,15 +590,6 @@ pub mod macos {
     use plist::Value as PlistValue;
 
     const LOGI_VID: u16 = 0x046D;
-    const LONG_ID: u8 = 0x11;
-    const LONG_LEN: usize = 20;
-    const BT_DEV_IDX: u8 = 0xFF;
-    const FEAT_ADJ_DPI: u16 = 0x2201;
-    const FEAT_UNIFIED_BATT: u16 = 0x1004;
-    const FEAT_BATTERY_STATUS: u16 = 0x1000;
-    const MY_SW: u8 = 0x0A;
-    const HIDPP_GET_SENSOR_DPI_FN: u8 = 0x02;
-    const HIDPP_SET_SENSOR_DPI_FN: u8 = 0x03;
 
     pub struct MacOsHidBackend;
     pub struct MacOsAppFocusBackend;
@@ -652,7 +656,7 @@ pub mod macos {
                             }
                         }
                     }
-                    Err(error) => issues.push(format!("hidapi: {}", map_hid_error(error))),
+                    Err(error) => issues.push(format!("hidapi: {error}")),
                 }
 
                 if devices.is_empty() && !issues.is_empty() {
@@ -910,29 +914,7 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    trait HidppDeviceIo {
-        fn write_packet(&self, packet: &[u8]) -> Result<(), PlatformError>;
-        fn read_packet(&self, timeout_ms: i32) -> Result<Vec<u8>, PlatformError>;
-    }
-
-    #[cfg(target_os = "macos")]
-    impl HidppDeviceIo for HidDevice {
-        fn write_packet(&self, packet: &[u8]) -> Result<(), PlatformError> {
-            self.write(packet).map_err(map_hid_error)?;
-            Ok(())
-        }
-
-        fn read_packet(&self, timeout_ms: i32) -> Result<Vec<u8>, PlatformError> {
-            let mut buffer = [0u8; 64];
-            let size = self
-                .read_timeout(&mut buffer, timeout_ms)
-                .map_err(map_hid_error)?;
-            Ok(buffer[..size].to_vec())
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    impl HidppDeviceIo for MacOsNativeHidDevice {
+    impl HidppIo for MacOsNativeHidDevice {
         fn write_packet(&self, packet: &[u8]) -> Result<(), PlatformError> {
             self.write_report(packet)
         }
@@ -969,7 +951,7 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    fn probe_transport_device<T: HidppDeviceIo + ?Sized>(
+    fn probe_transport_device<T: HidppIo + ?Sized>(
         device: &T,
         product_id: Option<u16>,
         product_name: Option<&str>,
@@ -977,11 +959,13 @@ pub mod macos {
         source: &'static str,
         fingerprint: DeviceFingerprint,
     ) -> Option<DeviceInfo> {
-        let current_dpi = read_hidpp_current_dpi(device)
+        let current_dpi = hidpp::read_sensor_dpi(device, BT_DEV_IDX, 1_500)
             .ok()
             .flatten()
             .unwrap_or(1000);
-        let battery_level = read_hidpp_battery(device).ok().flatten();
+        let battery_level = hidpp::read_battery_level(device, BT_DEV_IDX, 1_500)
+            .ok()
+            .flatten();
         Some(build_connected_device_info(
             product_id,
             product_name,
@@ -1111,159 +1095,8 @@ pub mod macos {
     }
 
     #[cfg(target_os = "macos")]
-    fn set_hidpp_dpi<T: HidppDeviceIo + ?Sized>(
-        device: &T,
-        dpi: u16,
-    ) -> Result<bool, PlatformError> {
-        let Some(feature_index) = find_feature(device, FEAT_ADJ_DPI)? else {
-            return Ok(false);
-        };
-
-        let hi = ((dpi >> 8) & 0xFF) as u8;
-        let lo = (dpi & 0xFF) as u8;
-        Ok(request(device, feature_index, HIDPP_SET_SENSOR_DPI_FN, &[0, hi, lo])?.is_some())
-    }
-
-    #[cfg(target_os = "macos")]
-    fn read_hidpp_current_dpi<T: HidppDeviceIo + ?Sized>(
-        device: &T,
-    ) -> Result<Option<u16>, PlatformError> {
-        let Some(feature_index) = find_feature(device, FEAT_ADJ_DPI)? else {
-            return Ok(None);
-        };
-
-        let Some(response) = request(device, feature_index, HIDPP_GET_SENSOR_DPI_FN, &[0])? else {
-            return Ok(None);
-        };
-        Ok(parse_sensor_dpi_response(&response))
-    }
-
-    #[cfg(target_os = "macos")]
-    fn parse_sensor_dpi_response(response: &[u8]) -> Option<u16> {
-        if response.len() < 3 {
-            return None;
-        }
-
-        Some(u16::from(response[1]) << 8 | u16::from(response[2]))
-    }
-
-    #[cfg(target_os = "macos")]
-    fn read_hidpp_battery<T: HidppDeviceIo + ?Sized>(
-        device: &T,
-    ) -> Result<Option<u8>, PlatformError> {
-        if let Some(feature_index) = find_feature(device, FEAT_UNIFIED_BATT)? {
-            if let Some(response) = request(device, feature_index, 1, &[])? {
-                return Ok(response.first().copied());
-            }
-        }
-
-        if let Some(feature_index) = find_feature(device, FEAT_BATTERY_STATUS)? {
-            if let Some(response) = request(device, feature_index, 0, &[])? {
-                return Ok(response.first().copied());
-            }
-        }
-
-        Ok(None)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn find_feature<T: HidppDeviceIo + ?Sized>(
-        device: &T,
-        feature_id: u16,
-    ) -> Result<Option<u8>, PlatformError> {
-        let feature_hi = ((feature_id >> 8) & 0xFF) as u8;
-        let feature_lo = (feature_id & 0xFF) as u8;
-        let Some(response) = request(device, 0x00, 0, &[feature_hi, feature_lo, 0x00])? else {
-            return Ok(None);
-        };
-        Ok(response
-            .first()
-            .copied()
-            .filter(|feature_index| *feature_index != 0))
-    }
-
-    #[cfg(target_os = "macos")]
-    fn request<T: HidppDeviceIo + ?Sized>(
-        device: &T,
-        feature_index: u8,
-        function: u8,
-        params: &[u8],
-    ) -> Result<Option<Vec<u8>>, PlatformError> {
-        write_request(device, feature_index, function, params)?;
-        let deadline = Instant::now() + Duration::from_millis(1_500);
-        let expected_reply_functions = [function, (function + 1) & 0x0F];
-
-        while Instant::now() < deadline {
-            let packet = device.read_packet(200)?;
-            if packet.is_empty() {
-                continue;
-            }
-
-            let Some((response_feature, response_function, response_sw, response_params)) =
-                parse_message(&packet)
-            else {
-                continue;
-            };
-
-            if response_feature == 0xFF {
-                return Ok(None);
-            }
-
-            if response_feature == feature_index
-                && response_sw == MY_SW
-                && expected_reply_functions.contains(&response_function)
-            {
-                return Ok(Some(response_params));
-            }
-        }
-
-        Ok(None)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn write_request<T: HidppDeviceIo + ?Sized>(
-        device: &T,
-        feature_index: u8,
-        function: u8,
-        params: &[u8],
-    ) -> Result<(), PlatformError> {
-        let mut packet = [0u8; LONG_LEN];
-        packet[0] = LONG_ID;
-        packet[1] = BT_DEV_IDX;
-        packet[2] = feature_index;
-        packet[3] = ((function & 0x0F) << 4) | (MY_SW & 0x0F);
-        for (offset, byte) in params.iter().copied().enumerate() {
-            if 4 + offset < LONG_LEN {
-                packet[4 + offset] = byte;
-            }
-        }
-        device.write_packet(&packet)?;
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    fn parse_message(raw: &[u8]) -> Option<(u8, u8, u8, Vec<u8>)> {
-        if raw.len() < 4 {
-            return None;
-        }
-
-        let offset = usize::from(matches!(raw.first(), Some(0x10) | Some(0x11)));
-        if raw.len() < offset + 4 {
-            return None;
-        }
-
-        let feature = raw[offset + 1];
-        let function_and_sw = raw[offset + 2];
-        let function = (function_and_sw >> 4) & 0x0F;
-        let sw = function_and_sw & 0x0F;
-        let params = raw[offset + 3..].to_vec();
-
-        Some((feature, function, sw, params))
-    }
-
-    #[cfg(target_os = "macos")]
-    fn map_hid_error(error: hidapi::HidError) -> PlatformError {
-        PlatformError::Message(error.to_string())
+    fn set_hidpp_dpi<T: HidppIo + ?Sized>(device: &T, dpi: u16) -> Result<bool, PlatformError> {
+        hidpp::set_sensor_dpi(device, BT_DEV_IDX, dpi, 1_500)
     }
 }
 

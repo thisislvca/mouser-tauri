@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import type {
   AppConfig,
@@ -17,12 +17,65 @@ const DEFAULT_DEVICE_SETTINGS: NonNullable<AppConfig["deviceDefaults"]> = {
   dpi: 1000,
   invertHorizontalScroll: false,
   invertVerticalScroll: false,
+  macosThumbWheelSimulateTrackpad: false,
+  macosThumbWheelTrackpadHoldTimeoutMs: 500,
   gestureThreshold: 50,
   gestureDeadzone: 40,
   gestureTimeoutMs: 3000,
   gestureCooldownMs: 500,
   manualLayoutOverride: null,
 };
+let systemPrefersDark = false;
+const matchMediaListeners = new Set<(event: MediaQueryListEvent) => void>();
+
+function installMatchMediaMock() {
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    get matches() {
+      return query === "(prefers-color-scheme: dark)" ? systemPrefersDark : false;
+    },
+    media: query,
+    onchange: null,
+    addEventListener: (
+      eventName: string,
+      listener: (event: MediaQueryListEvent) => void,
+    ) => {
+      if (query === "(prefers-color-scheme: dark)" && eventName === "change") {
+        matchMediaListeners.add(listener);
+      }
+    },
+    removeEventListener: (
+      eventName: string,
+      listener: (event: MediaQueryListEvent) => void,
+    ) => {
+      if (query === "(prefers-color-scheme: dark)" && eventName === "change") {
+        matchMediaListeners.delete(listener);
+      }
+    },
+    addListener: (listener: (event: MediaQueryListEvent) => void) => {
+      if (query === "(prefers-color-scheme: dark)") {
+        matchMediaListeners.add(listener);
+      }
+    },
+    removeListener: (listener: (event: MediaQueryListEvent) => void) => {
+      if (query === "(prefers-color-scheme: dark)") {
+        matchMediaListeners.delete(listener);
+      }
+    },
+    dispatchEvent: vi.fn(),
+  }));
+}
+
+function setSystemAppearance(prefersDark: boolean) {
+  systemPrefersDark = prefersDark;
+  const event = {
+    matches: prefersDark,
+    media: "(prefers-color-scheme: dark)",
+  } as MediaQueryListEvent;
+
+  for (const listener of matchMediaListeners) {
+    listener(event);
+  }
+}
 
 function normalizedIdentityKey(identityKey: string | null | undefined) {
   const trimmed = identityKey?.trim();
@@ -56,6 +109,12 @@ function normalizeDeviceSettings(
     invertVerticalScroll:
       settings?.invertVerticalScroll ??
       DEFAULT_DEVICE_SETTINGS.invertVerticalScroll,
+    macosThumbWheelSimulateTrackpad:
+      settings?.macosThumbWheelSimulateTrackpad ??
+      DEFAULT_DEVICE_SETTINGS.macosThumbWheelSimulateTrackpad,
+    macosThumbWheelTrackpadHoldTimeoutMs:
+      settings?.macosThumbWheelTrackpadHoldTimeoutMs ??
+      DEFAULT_DEVICE_SETTINGS.macosThumbWheelTrackpadHoldTimeoutMs,
     gestureThreshold:
       settings?.gestureThreshold ?? DEFAULT_DEVICE_SETTINGS.gestureThreshold,
     gestureDeadzone:
@@ -505,6 +564,11 @@ function renderApp() {
 
 describe("App", () => {
   beforeEach(() => {
+    systemPrefersDark = false;
+    matchMediaListeners.clear();
+    installMatchMediaMock();
+    document.documentElement.className = "";
+
     currentBootstrap = makeBootstrap();
 
     apiMocks.bootstrapLoad.mockReset();
@@ -875,6 +939,11 @@ describe("App", () => {
     });
   });
 
+  afterEach(() => {
+    document.documentElement.className = "";
+    matchMediaListeners.clear();
+  });
+
   it("renders the MX Master layout from bootstrap data", async () => {
     renderApp();
     expect(await screen.findByTestId("device-layout-card")).toBeInTheDocument();
@@ -1059,6 +1128,46 @@ describe("App", () => {
         sourcePath: "/tmp/legacy-config.json",
         rawJson: null,
       });
+    });
+  });
+
+  it("applies the saved dark appearance mode to the document root", async () => {
+    const bootstrap = makeBootstrap();
+    currentBootstrap = {
+      ...bootstrap,
+      config: {
+        ...bootstrap.config,
+        settings: {
+          ...bootstrap.config.settings,
+          appearanceMode: "dark",
+        },
+      },
+    };
+
+    renderApp();
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass("dark");
+    });
+  });
+
+  it("follows system appearance changes when configured for system mode", async () => {
+    renderApp();
+
+    await waitFor(() => {
+      expect(document.documentElement).not.toHaveClass("dark");
+    });
+
+    setSystemAppearance(true);
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass("dark");
+    });
+
+    setSystemAppearance(false);
+
+    await waitFor(() => {
+      expect(document.documentElement).not.toHaveClass("dark");
     });
   });
 
