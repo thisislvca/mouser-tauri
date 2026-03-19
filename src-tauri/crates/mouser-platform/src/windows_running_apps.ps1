@@ -1,4 +1,7 @@
 $items = New-Object System.Collections.Generic.List[object]
+$packages = Get-AppxPackage |
+  Where-Object { -not [string]::IsNullOrWhiteSpace($_.InstallLocation) } |
+  Sort-Object { $_.InstallLocation.Length } -Descending
 
 Get-Process | ForEach-Object {
   $proc = $_
@@ -16,6 +19,19 @@ Get-Process | ForEach-Object {
     return
   }
 
+  $executable = [System.IO.Path]::GetFileName($path)
+  if ($executable -ieq "ApplicationFrameHost.exe") {
+    return
+  }
+
+  $packageFamilyName = $null
+  foreach ($pkg in $packages) {
+    if ($path.StartsWith($pkg.InstallLocation, [System.StringComparison]::OrdinalIgnoreCase)) {
+      $packageFamilyName = $pkg.PackageFamilyName
+      break
+    }
+  }
+
   $label = $proc.MainWindowTitle
   if ([string]::IsNullOrWhiteSpace($label)) {
     $label = $proc.ProcessName
@@ -23,8 +39,9 @@ Get-Process | ForEach-Object {
 
   $items.Add([pscustomobject]@{
       label = $label
-      executable = [System.IO.Path]::GetFileName($path)
+      executable = $executable
       executablePath = $path
+      packageFamilyName = $packageFamilyName
     }) | Out-Null
 }
 

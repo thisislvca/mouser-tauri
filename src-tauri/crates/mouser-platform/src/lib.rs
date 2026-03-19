@@ -194,23 +194,25 @@ pub(crate) fn push_bounded_hook_event(
 pub(crate) fn dedupe_installed_apps(
     apps: Vec<InstalledApp>,
 ) -> Result<Vec<InstalledApp>, PlatformError> {
-    let mut merged = std::collections::BTreeMap::<String, InstalledApp>::new();
+    let mut deduped = Vec::<InstalledApp>::new();
 
     for app in apps {
         if app.identity.preferred_matchers().is_empty() {
             continue;
         }
 
-        let stable_id = app.identity.stable_id();
-        if let Some(existing) = merged.get_mut(&stable_id) {
+        if let Some(existing) = deduped
+            .iter_mut()
+            .find(|existing| installed_apps_overlap(existing, &app))
+        {
             merge_installed_app(existing, app);
         } else {
-            merged.insert(stable_id, app);
+            deduped.push(app);
         }
     }
 
-    let mut deduped = merged
-        .into_values()
+    let mut deduped = deduped
+        .into_iter()
         .map(|mut app| {
             app.source_kinds.sort();
             app.source_kinds.dedup();
@@ -226,6 +228,30 @@ pub(crate) fn dedupe_installed_apps(
     });
 
     Ok(deduped)
+}
+
+fn installed_apps_overlap(left: &InstalledApp, right: &InstalledApp) -> bool {
+    if left.identity.stable_id() == right.identity.stable_id() {
+        return true;
+    }
+
+    identity_matchers_overlap(&left.identity, &right.identity)
+}
+
+fn identity_matchers_overlap(left: &AppIdentity, right: &AppIdentity) -> bool {
+    let left_matchers = left
+        .preferred_matchers()
+        .into_iter()
+        .filter(|matcher| matcher.kind != mouser_core::AppMatcherKind::Executable)
+        .collect::<Vec<_>>();
+    let right_matchers = right
+        .preferred_matchers()
+        .into_iter()
+        .filter(|matcher| matcher.kind != mouser_core::AppMatcherKind::Executable)
+        .collect::<Vec<_>>();
+
+    left_matchers.iter().any(|matcher| right.matches(matcher))
+        || right_matchers.iter().any(|matcher| left.matches(matcher))
 }
 
 fn merge_installed_app(existing: &mut InstalledApp, incoming: InstalledApp) {
@@ -1614,5 +1640,93 @@ mod tests {
             ]
         );
         assert_eq!(app.source_path.as_deref(), Some("C:\\Apps\\Code.exe"));
+    }
+
+    #[test]
+    fn dedupe_installed_apps_merges_package_and_running_entries_by_path_overlap() {
+        let apps = vec![
+            InstalledApp {
+                identity: AppIdentity {
+                    label: Some("Contoso Player".to_string()),
+                    executable: Some("ContosoPlayer.exe".to_string()),
+                    executable_path: Some(
+                        "C:\\Program Files\\WindowsApps\\Contoso.Player_1.0.0.0_x64__abc\\ContosoPlayer.exe"
+                            .to_string(),
+                    ),
+                    bundle_id: None,
+                    package_family_name: Some("Contoso.Player_abc".to_string()),
+                },
+                source_kinds: vec![AppDiscoverySource::Package],
+                source_path: Some(
+                    "C:\\Program Files\\WindowsApps\\Contoso.Player_1.0.0.0_x64__abc\\Assets\\Logo.png"
+                        .to_string(),
+                ),
+            },
+            InstalledApp {
+                identity: AppIdentity {
+                    label: Some("Contoso Player".to_string()),
+                    executable: Some("ContosoPlayer.exe".to_string()),
+                    executable_path: Some(
+                        "C:\\Program Files\\WindowsApps\\Contoso.Player_1.0.0.0_x64__abc\\ContosoPlayer.exe"
+                            .to_string(),
+                    ),
+                    bundle_id: None,
+                    package_family_name: None,
+                },
+                source_kinds: vec![AppDiscoverySource::RunningProcess],
+                source_path: Some(
+                    "C:\\Program Files\\WindowsApps\\Contoso.Player_1.0.0.0_x64__abc\\ContosoPlayer.exe"
+                        .to_string(),
+                ),
+            },
+        ];
+
+        let deduped = dedupe_installed_apps(apps).expect("expected dedupe to succeed");
+
+        assert_eq!(deduped.len(), 1);
+        let app = &deduped[0];
+        assert_eq!(
+            app.source_kinds,
+            vec![
+                AppDiscoverySource::Package,
+                AppDiscoverySource::RunningProcess,
+            ]
+        );
+        assert_eq!(
+            app.identity.package_family_name.as_deref(),
+            Some("Contoso.Player_abc")
+        );
+    }
+
+    #[test]
+    fn dedupe_installed_apps_does_not_merge_executable_only_name_collisions() {
+        let apps = vec![
+            InstalledApp {
+                identity: AppIdentity {
+                    label: Some("Portable Tool".to_string()),
+                    executable: Some("tool.exe".to_string()),
+                    executable_path: Some("D:\\Portable\\tool.exe".to_string()),
+                    bundle_id: None,
+                    package_family_name: None,
+                },
+                source_kinds: vec![AppDiscoverySource::RunningProcess],
+                source_path: Some("D:\\Portable\\tool.exe".to_string()),
+            },
+            InstalledApp {
+                identity: AppIdentity {
+                    label: Some("Installed Tool".to_string()),
+                    executable: Some("tool.exe".to_string()),
+                    executable_path: Some("C:\\Program Files\\Tool\\tool.exe".to_string()),
+                    bundle_id: None,
+                    package_family_name: None,
+                },
+                source_kinds: vec![AppDiscoverySource::Registry],
+                source_path: Some("C:\\Program Files\\Tool\\tool.exe".to_string()),
+            },
+        ];
+
+        let deduped = dedupe_installed_apps(apps).expect("expected dedupe to succeed");
+
+        assert_eq!(deduped.len(), 2);
     }
 }

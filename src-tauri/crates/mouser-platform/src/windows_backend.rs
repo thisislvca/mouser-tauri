@@ -1669,7 +1669,7 @@ fn collect_running_process_apps(apps: &mut Vec<InstalledApp>) -> Result<(), Plat
                 executable,
                 executable_path: Some(executable_path.clone()),
                 bundle_id: None,
-                package_family_name: None,
+                package_family_name: json_string(entry, "packageFamilyName"),
             },
             source_kinds: vec![AppDiscoverySource::RunningProcess],
             source_path: Some(executable_path),
