@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::PlatformError;
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use hidapi::HidDevice;
 
 pub(crate) const LONG_ID: u8 = 0x11;
@@ -22,7 +22,7 @@ pub(crate) trait HidppIo {
     fn read_packet(&self, timeout_ms: i32) -> Result<Vec<u8>, PlatformError>;
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 impl HidppIo for HidDevice {
     fn write_packet(&self, packet: &[u8]) -> Result<(), PlatformError> {
         self.write(packet)

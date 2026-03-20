@@ -451,6 +451,7 @@ pub struct CatalogApp {
 pub enum AppDiscoverySource {
     Catalog,
     ApplicationBundle,
+    DesktopEntry,
     StartMenuShortcut,
     Registry,
     Package,

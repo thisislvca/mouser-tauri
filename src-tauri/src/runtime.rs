@@ -15,6 +15,7 @@ use mouser_core::{
     Profile,
 };
 use mouser_platform::{
+    linux::{LinuxAppDiscoveryBackend, LinuxAppFocusBackend, LinuxHidBackend, LinuxHookBackend},
     macos::{MacOsAppDiscoveryBackend, MacOsAppFocusBackend, MacOsHidBackend, MacOsHookBackend},
     windows::{
         WindowsAppDiscoveryBackend, WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend,
@@ -776,6 +777,8 @@ impl AppRuntime {
         PlatformCapabilities {
             platform: if cfg!(target_os = "macos") {
                 "macos".to_string()
+            } else if cfg!(target_os = "linux") {
+                "linux".to_string()
             } else if cfg!(target_os = "windows") {
                 "windows".to_string()
             } else {
@@ -791,7 +794,11 @@ impl AppRuntime {
             active_hid_backend: self.hid_backend.backend_id().to_string(),
             active_hook_backend: self.hook_backend.backend_id().to_string(),
             active_focus_backend: self.app_focus_backend.backend_id().to_string(),
-            hidapi_available: cfg!(any(target_os = "macos", target_os = "windows")),
+            hidapi_available: cfg!(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "windows"
+            )),
             iokit_available: cfg!(target_os = "macos"),
         }
     }
@@ -1292,6 +1299,8 @@ fn matcher_priority(kind: AppMatcherKind) -> u8 {
 fn current_hid_backend() -> Arc<dyn HidBackend> {
     if cfg!(target_os = "macos") {
         Arc::new(MacOsHidBackend::new())
+    } else if cfg!(target_os = "linux") {
+        Arc::new(LinuxHidBackend::new())
     } else {
         Arc::new(WindowsHidBackend::new())
     }
@@ -1300,6 +1309,8 @@ fn current_hid_backend() -> Arc<dyn HidBackend> {
 fn current_hook_backend() -> Arc<dyn HookBackend> {
     if cfg!(target_os = "macos") {
         Arc::new(MacOsHookBackend::new())
+    } else if cfg!(target_os = "linux") {
+        Arc::new(LinuxHookBackend::new())
     } else {
         Arc::new(WindowsHookBackend::new())
     }
@@ -1308,6 +1319,8 @@ fn current_hook_backend() -> Arc<dyn HookBackend> {
 fn current_app_focus_backend() -> Arc<dyn AppFocusBackend> {
     if cfg!(target_os = "macos") {
         Arc::new(MacOsAppFocusBackend)
+    } else if cfg!(target_os = "linux") {
+        Arc::new(LinuxAppFocusBackend)
     } else {
         Arc::new(WindowsAppFocusBackend)
     }
@@ -1316,6 +1329,8 @@ fn current_app_focus_backend() -> Arc<dyn AppFocusBackend> {
 fn current_app_discovery_backend() -> Box<dyn AppDiscoveryBackend> {
     if cfg!(target_os = "macos") {
         Box::new(MacOsAppDiscoveryBackend)
+    } else if cfg!(target_os = "linux") {
+        Box::new(LinuxAppDiscoveryBackend)
     } else {
         Box::new(WindowsAppDiscoveryBackend)
     }

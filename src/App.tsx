@@ -327,6 +327,8 @@ function formatDiscoverySource(
   switch (source) {
     case "application_bundle":
       return "Applications";
+    case "desktop_entry":
+      return "Desktop";
     case "start_menu_shortcut":
       return "Start Menu";
     case "registry":
@@ -3109,11 +3111,12 @@ function ButtonsControlSheet(props: {
   const gestureControl = props.control.startsWith("gesture_");
   const note =
     gestureControl && !props.platformCapabilities.gestureDiversionAvailable
-      ? props.platformCapabilities.platform === "macos"
+      ? props.platformCapabilities.platform === "macos" ||
+        props.platformCapabilities.platform === "linux"
         ? "Gesture remapping will appear when the Logitech gesture channel connects."
         : "Gesture remapping is unavailable on this platform."
       : !props.mappingEngineReady
-        ? "Live remapping is unavailable because the macOS event tap did not start."
+        ? "Live remapping is unavailable because the native input hook did not start."
         : null;
 
   return (

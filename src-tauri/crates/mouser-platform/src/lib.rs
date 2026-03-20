@@ -1,17 +1,14 @@
-#[cfg(target_os = "macos")]
-use std::path::Path;
 use std::{
     fs::{self, File},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(target_os = "macos")]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 #[cfg(target_os = "macos")]
 use mouser_core::build_connected_device_info;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 use mouser_core::AppDiscoverySource;
 use mouser_core::{
     clamp_dpi, default_config, default_device_settings, default_known_apps_ref,
@@ -26,6 +23,7 @@ use thiserror::Error;
 
 mod gesture;
 mod hidpp;
+mod linux_backend;
 mod macos_hook;
 mod macos_iokit;
 mod windows_backend;
@@ -154,18 +152,59 @@ pub trait ConfigStore: Send + Sync {
 pub fn load_native_app_icon(source_path: &str) -> Result<Option<String>, PlatformError> {
     #[cfg(target_os = "macos")]
     {
-        macos::load_native_app_icon(source_path)
+        if let Some(icon) = macos::load_native_app_icon(source_path)? {
+            return Ok(Some(icon));
+        }
     }
 
     #[cfg(target_os = "windows")]
     {
-        return windows_backend::load_native_app_icon(source_path);
+        if let Some(icon) = windows_backend::load_native_app_icon(source_path)? {
+            return Ok(Some(icon));
+        }
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        let _ = source_path;
-        Ok(None)
+    local_image_data_url(source_path)
+}
+
+fn local_image_data_url(source_path: &str) -> Result<Option<String>, PlatformError> {
+    let path = Path::new(source_path.trim());
+    let Some(extension) = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+    else {
+        return Ok(None);
+    };
+    let Some(mime_type) = image_mime_type(&extension) else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let bytes = fs::read(path).map_err(|error| PlatformError::Io {
+        path: path.display().to_string(),
+        message: error.to_string(),
+    })?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(format!(
+        "data:{mime_type};base64,{}",
+        BASE64_STANDARD.encode(bytes)
+    )))
+}
+
+fn image_mime_type(extension: &str) -> Option<&'static str> {
+    match extension {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "svg" => Some("image/svg+xml"),
+        "ico" => Some("image/x-icon"),
+        "icns" => Some("image/icns"),
+        _ => None,
     }
 }
 
@@ -450,6 +489,19 @@ pub struct JsonConfigStore {
     path: PathBuf,
 }
 
+fn linux_config_base_dir() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .map(|home| home.join(".config"))
+        })
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
 type JsonMap = serde_json::Map<String, serde_json::Value>;
 
 fn deserialize_app_config(raw: &str) -> Result<AppConfig, serde_json::Error> {
@@ -660,6 +712,8 @@ impl JsonConfigStore {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("Library")
                 .join("Application Support")
+        } else if cfg!(target_os = "linux") {
+            linux_config_base_dir()
         } else if cfg!(target_os = "windows") {
             std::env::var_os("APPDATA")
                 .map(PathBuf::from)
@@ -1907,6 +1961,12 @@ pub mod macos {
             assert!(should_probe_cached_telemetry(None, now));
         }
     }
+}
+
+pub mod linux {
+    pub use crate::linux_backend::{
+        LinuxAppDiscoveryBackend, LinuxAppFocusBackend, LinuxHidBackend, LinuxHookBackend,
+    };
 }
 
 pub mod windows {
