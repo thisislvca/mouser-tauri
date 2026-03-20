@@ -11,7 +11,7 @@ This repo now includes a first Linux-native backend pass alongside the typed con
 - Mock devices, mock app focus, and mock engine status
 - A live Linux backend for Logitech HID++ enumeration, DPI changes, battery/DPI reads, input remapping, gestures, and app discovery
 - A React shell for `Devices`, `Buttons`, `Profiles`, `Settings`, and `Debug`
-- Tauri commands and runtime events for the mock-backed flow
+- Tauri commands and runtime events for the desktop runtime, with live Linux backends and mock fallbacks
 
 ## Workspace
 
@@ -27,10 +27,10 @@ The Tauri backend exposes config, profile, device, app-discovery, icon-loading, 
 It also emits:
 
 - `device_changed`
-- `app_discovery_changed`
+- `app_discovery_changed` when the discovery snapshot actually changes
 - `profile_changed`
 - `engine_status_changed`
-- `debug_event`
+- `debug_event` for incremental runtime log entries
 
 ## First-Time Setup
 
