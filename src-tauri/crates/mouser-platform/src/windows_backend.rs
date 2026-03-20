@@ -1029,7 +1029,7 @@ impl AppDiscoveryBackend for WindowsAppDiscoveryBackend {
             collect_uninstall_registry_apps(&mut apps)?;
             collect_package_apps(&mut apps)?;
             collect_running_process_apps(&mut apps)?;
-            dedupe_installed_apps(apps)
+            Ok(dedupe_installed_apps(apps))
         }
     }
 }

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use mouser_core::LogicalControl;
 
 pub(crate) fn ordered_gesture_candidates(
@@ -5,12 +7,13 @@ pub(crate) fn ordered_gesture_candidates(
     default_gesture_cids: &[u16],
 ) -> Vec<u16> {
     let mut ordered = Vec::new();
+    let mut seen = BTreeSet::new();
     for cid in gesture_cids
         .iter()
         .copied()
         .chain(default_gesture_cids.iter().copied())
     {
-        if !ordered.contains(&cid) {
+        if seen.insert(cid) {
             ordered.push(cid);
         }
     }

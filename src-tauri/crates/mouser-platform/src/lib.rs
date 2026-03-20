@@ -16,9 +16,9 @@ use mouser_core::AppDiscoverySource;
 use mouser_core::{
     clamp_dpi, default_config, default_device_settings, default_known_apps_ref,
     default_layouts_ref, default_profile_bindings, known_device_specs_ref,
-    legacy_default_profile_bindings_v3, normalize_bindings, AppConfig, AppIdentity, Binding,
-    DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp,
-    KnownApp, LogicalControl, Profile, Settings,
+    legacy_default_profile_bindings_v3, normalize_app_match_value, normalize_bindings, AppConfig,
+    AppIdentity, AppMatcherKind, Binding, DebugEventKind, DeviceFingerprint, DeviceInfo,
+    DeviceLayout, DeviceSettings, InstalledApp, KnownApp, LogicalControl, Profile, Settings,
 };
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -154,7 +154,7 @@ pub trait ConfigStore: Send + Sync {
 pub fn load_native_app_icon(source_path: &str) -> Result<Option<String>, PlatformError> {
     #[cfg(target_os = "macos")]
     {
-        return macos::load_native_app_icon(source_path);
+        macos::load_native_app_icon(source_path)
     }
 
     #[cfg(target_os = "windows")]
@@ -192,32 +192,33 @@ pub(crate) fn push_bounded_hook_event(
     }
 }
 
-pub(crate) fn dedupe_installed_apps(
-    apps: Vec<InstalledApp>,
-) -> Result<Vec<InstalledApp>, PlatformError> {
-    let mut deduped = Vec::<InstalledApp>::new();
+pub(crate) fn dedupe_installed_apps(apps: Vec<InstalledApp>) -> Vec<InstalledApp> {
+    let mut deduped = Vec::<DedupedInstalledApp>::new();
 
     for app in apps {
-        if app.identity.preferred_matchers().is_empty() {
+        let identity = NormalizedAppIdentity::new(&app.identity);
+        if !identity.has_matchers {
             continue;
         }
 
         if let Some(existing) = deduped
             .iter_mut()
-            .find(|existing| installed_apps_overlap(existing, &app))
+            .find(|existing| existing.identity.overlaps(&identity))
         {
-            merge_installed_app(existing, app);
+            merge_installed_app(&mut existing.app, app);
+            existing.identity = NormalizedAppIdentity::new(&existing.app.identity);
         } else {
-            deduped.push(app);
+            deduped.push(DedupedInstalledApp { app, identity });
         }
     }
 
     let mut deduped = deduped
         .into_iter()
-        .map(|mut app| {
+        .map(|mut entry| {
+            let app = &mut entry.app;
             app.source_kinds.sort();
             app.source_kinds.dedup();
-            app
+            entry.app
         })
         .collect::<Vec<_>>();
 
@@ -228,31 +229,55 @@ pub(crate) fn dedupe_installed_apps(
             .cmp(&right.identity.label_or_fallback().unwrap_or_default())
     });
 
-    Ok(deduped)
+    deduped
 }
 
-fn installed_apps_overlap(left: &InstalledApp, right: &InstalledApp) -> bool {
-    if left.identity.stable_id() == right.identity.stable_id() {
-        return true;
+struct DedupedInstalledApp {
+    app: InstalledApp,
+    identity: NormalizedAppIdentity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct NormalizedMatcher {
+    kind: AppMatcherKind,
+    value: String,
+}
+
+#[derive(Clone)]
+struct NormalizedAppIdentity {
+    stable_id: String,
+    has_matchers: bool,
+    non_executable_matchers: std::collections::BTreeSet<NormalizedMatcher>,
+}
+
+impl NormalizedAppIdentity {
+    fn new(identity: &AppIdentity) -> Self {
+        let preferred_matchers = identity.preferred_matchers();
+        let non_executable_matchers = preferred_matchers
+            .iter()
+            .filter(|matcher| matcher.kind != AppMatcherKind::Executable)
+            .map(|matcher| NormalizedMatcher {
+                kind: matcher.kind,
+                value: normalize_app_match_value(matcher.kind, &matcher.value),
+            })
+            .collect();
+
+        Self {
+            stable_id: identity.stable_id(),
+            has_matchers: !preferred_matchers.is_empty(),
+            non_executable_matchers,
+        }
     }
 
-    identity_matchers_overlap(&left.identity, &right.identity)
-}
+    fn overlaps(&self, other: &Self) -> bool {
+        if self.stable_id == other.stable_id {
+            return true;
+        }
 
-fn identity_matchers_overlap(left: &AppIdentity, right: &AppIdentity) -> bool {
-    let left_matchers = left
-        .preferred_matchers()
-        .into_iter()
-        .filter(|matcher| matcher.kind != mouser_core::AppMatcherKind::Executable)
-        .collect::<Vec<_>>();
-    let right_matchers = right
-        .preferred_matchers()
-        .into_iter()
-        .filter(|matcher| matcher.kind != mouser_core::AppMatcherKind::Executable)
-        .collect::<Vec<_>>();
-
-    left_matchers.iter().any(|matcher| right.matches(matcher))
-        || right_matchers.iter().any(|matcher| left.matches(matcher))
+        self.non_executable_matchers
+            .iter()
+            .any(|matcher| other.non_executable_matchers.contains(matcher))
+    }
 }
 
 fn merge_installed_app(existing: &mut InstalledApp, incoming: InstalledApp) {
@@ -394,10 +419,6 @@ impl StaticDeviceCatalog {
     pub fn known_apps_ref(&self) -> &[KnownApp] {
         &self.apps
     }
-
-    pub fn layout_by_key(&self, layout_key: &str) -> Option<&DeviceLayout> {
-        self.layouts.iter().find(|layout| layout.key == layout_key)
-    }
 }
 
 impl DeviceCatalog for StaticDeviceCatalog {
@@ -427,6 +448,8 @@ pub struct JsonConfigStore {
     path: PathBuf,
 }
 
+type JsonMap = serde_json::Map<String, serde_json::Value>;
+
 fn deserialize_app_config(raw: &str) -> Result<AppConfig, serde_json::Error> {
     let mut value: serde_json::Value = serde_json::from_str(raw)?;
     migrate_app_config_value(&mut value);
@@ -438,109 +461,149 @@ fn migrate_app_config_value(value: &mut serde_json::Value) {
         return;
     };
 
-    let (mut device_defaults, layout_overrides) = {
-        let settings_value = config
+    let settings = ensure_json_object(
+        config
             .entry("settings".to_string())
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if !settings_value.is_object() {
-            *settings_value = serde_json::Value::Object(serde_json::Map::new());
-        }
-        let settings = settings_value.as_object_mut().unwrap();
-
-        let mut device_defaults = settings
-            .remove("deviceDefaults")
-            .filter(|value| value.is_object())
-            .unwrap_or_else(|| {
-                serde_json::to_value(default_device_settings())
-                    .expect("default device settings should serialize")
-            });
-        if !device_defaults.is_object() {
-            device_defaults = serde_json::to_value(default_device_settings())
-                .expect("default device settings should serialize");
-        }
-        {
-            let device_defaults_map = device_defaults.as_object_mut().unwrap();
-            for (legacy_key, next_key) in [
-                ("dpi", "dpi"),
-                ("invertHorizontalScroll", "invertHorizontalScroll"),
-                ("invertVerticalScroll", "invertVerticalScroll"),
-                ("gestureThreshold", "gestureThreshold"),
-                ("gestureDeadzone", "gestureDeadzone"),
-                ("gestureTimeoutMs", "gestureTimeoutMs"),
-                ("gestureCooldownMs", "gestureCooldownMs"),
-            ] {
-                if let Some(legacy_value) = settings.remove(legacy_key) {
-                    device_defaults_map.insert(next_key.to_string(), legacy_value);
-                }
-            }
-        }
-
-        let layout_overrides = settings
-            .remove("deviceLayoutOverrides")
-            .and_then(|value| value.as_object().cloned());
-        (device_defaults, layout_overrides)
-    };
+            .or_insert_with(empty_json_object),
+    );
+    let (mut device_defaults, layout_overrides) = extract_legacy_device_defaults(settings);
     let device_defaults_template = device_defaults.clone();
 
-    let mut applied_layout_override = false;
-    if let Some(managed_devices) = config
-        .get_mut("managedDevices")
-        .and_then(|value| value.as_array_mut())
-    {
-        for device in managed_devices {
-            let Some(device_object) = device.as_object_mut() else {
-                continue;
-            };
-            let device_id = device_object
-                .get("id")
-                .and_then(|value| value.as_str())
-                .map(str::to_string);
-            let model_key = device_object
-                .get("modelKey")
-                .and_then(|value| value.as_str())
-                .map(str::to_string);
-
-            let device_settings = device_object
-                .entry("settings".to_string())
-                .or_insert_with(|| device_defaults_template.clone());
-            if !device_settings.is_object() {
-                *device_settings = device_defaults_template.clone();
-            }
-            let device_settings_map = device_settings.as_object_mut().unwrap();
-
-            if let Some(layout_overrides) = layout_overrides.as_ref() {
-                let override_value = device_id
-                    .as_deref()
-                    .and_then(|device_id| layout_overrides.get(device_id))
-                    .or_else(|| {
-                        model_key
-                            .as_deref()
-                            .and_then(|model_key| layout_overrides.get(model_key))
-                    })
-                    .cloned();
-                if let Some(override_value) = override_value {
-                    device_settings_map.insert("manualLayoutOverride".to_string(), override_value);
-                    applied_layout_override = true;
-                }
-            }
-        }
-    }
-
-    if !applied_layout_override {
-        if let Some(layout_overrides) = layout_overrides.as_ref() {
-            if layout_overrides.len() == 1 {
-                if let Some(layout) = layout_overrides.values().next() {
-                    device_defaults
-                        .as_object_mut()
-                        .unwrap()
-                        .insert("manualLayoutOverride".to_string(), layout.clone());
-                }
-            }
-        }
-    }
+    let applied_layout_override = migrate_managed_device_settings(
+        config,
+        &device_defaults_template,
+        layout_overrides.as_ref(),
+    );
+    apply_default_layout_override(
+        &mut device_defaults,
+        layout_overrides.as_ref(),
+        applied_layout_override,
+    );
 
     config.insert("deviceDefaults".to_string(), device_defaults);
+    apply_config_version_migrations(config);
+}
 
+fn empty_json_object() -> serde_json::Value {
+    serde_json::Value::Object(JsonMap::new())
+}
+
+fn ensure_json_object(value: &mut serde_json::Value) -> &mut JsonMap {
+    if !value.is_object() {
+        *value = empty_json_object();
+    }
+
+    value
+        .as_object_mut()
+        .expect("json object should remain an object")
+}
+
+fn default_device_settings_value() -> serde_json::Value {
+    serde_json::to_value(default_device_settings())
+        .expect("default device settings should serialize")
+}
+
+fn extract_legacy_device_defaults(settings: &mut JsonMap) -> (serde_json::Value, Option<JsonMap>) {
+    let mut device_defaults = settings
+        .remove("deviceDefaults")
+        .unwrap_or_else(default_device_settings_value);
+    if !device_defaults.is_object() {
+        device_defaults = default_device_settings_value();
+    }
+
+    let device_defaults_map = ensure_json_object(&mut device_defaults);
+    for (legacy_key, next_key) in [
+        ("dpi", "dpi"),
+        ("invertHorizontalScroll", "invertHorizontalScroll"),
+        ("invertVerticalScroll", "invertVerticalScroll"),
+        ("gestureThreshold", "gestureThreshold"),
+        ("gestureDeadzone", "gestureDeadzone"),
+        ("gestureTimeoutMs", "gestureTimeoutMs"),
+        ("gestureCooldownMs", "gestureCooldownMs"),
+    ] {
+        if let Some(legacy_value) = settings.remove(legacy_key) {
+            device_defaults_map.insert(next_key.to_string(), legacy_value);
+        }
+    }
+
+    let layout_overrides = settings
+        .remove("deviceLayoutOverrides")
+        .and_then(|value| value.as_object().cloned());
+
+    (device_defaults, layout_overrides)
+}
+
+fn migrate_managed_device_settings(
+    config: &mut JsonMap,
+    device_defaults_template: &serde_json::Value,
+    layout_overrides: Option<&JsonMap>,
+) -> bool {
+    let Some(managed_devices) = config
+        .get_mut("managedDevices")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return false;
+    };
+
+    let mut applied_layout_override = false;
+    for device in managed_devices {
+        let Some(device_object) = device.as_object_mut() else {
+            continue;
+        };
+        let override_value = layout_override_for_device(device_object, layout_overrides);
+
+        let device_settings = device_object
+            .entry("settings".to_string())
+            .or_insert_with(|| device_defaults_template.clone());
+        let device_settings_map = ensure_json_object(device_settings);
+
+        if let Some(override_value) = override_value {
+            device_settings_map.insert("manualLayoutOverride".to_string(), override_value);
+            applied_layout_override = true;
+        }
+    }
+
+    applied_layout_override
+}
+
+fn layout_override_for_device(
+    device: &JsonMap,
+    layout_overrides: Option<&JsonMap>,
+) -> Option<serde_json::Value> {
+    let layout_overrides = layout_overrides?;
+    let device_id = device.get("id").and_then(|value| value.as_str());
+    let model_key = device.get("modelKey").and_then(|value| value.as_str());
+
+    device_id
+        .and_then(|device_id| layout_overrides.get(device_id))
+        .or_else(|| model_key.and_then(|model_key| layout_overrides.get(model_key)))
+        .cloned()
+}
+
+fn apply_default_layout_override(
+    device_defaults: &mut serde_json::Value,
+    layout_overrides: Option<&JsonMap>,
+    applied_layout_override: bool,
+) {
+    if applied_layout_override {
+        return;
+    }
+
+    let Some(layout_overrides) = layout_overrides else {
+        return;
+    };
+    if layout_overrides.len() != 1 {
+        return;
+    }
+
+    let Some(layout) = layout_overrides.values().next() else {
+        return;
+    };
+
+    ensure_json_object(device_defaults).insert("manualLayoutOverride".to_string(), layout.clone());
+}
+
+fn apply_config_version_migrations(config: &mut JsonMap) {
     let version = config
         .get("version")
         .and_then(|value| value.as_u64())
@@ -551,7 +614,9 @@ fn migrate_app_config_value(value: &mut serde_json::Value) {
     }
 }
 
-fn migrate_legacy_default_profile_bindings(config: &mut serde_json::Map<String, serde_json::Value>) {
+fn migrate_legacy_default_profile_bindings(
+    config: &mut serde_json::Map<String, serde_json::Value>,
+) {
     let Some(profiles) = config
         .get_mut("profiles")
         .and_then(|value| value.as_array_mut())
@@ -1163,7 +1228,7 @@ pub mod macos {
                 for root in macos_application_roots() {
                     collect_macos_apps_from_root(&root, &mut apps)?;
                 }
-                dedupe_installed_apps(apps)
+                Ok(dedupe_installed_apps(apps))
             }
         }
     }
@@ -1997,7 +2062,7 @@ mod tests {
         let config = store.load().unwrap();
 
         assert_eq!(config.version, 4);
-        assert_eq!(config.settings.debug_mode, true);
+        assert!(config.settings.debug_mode);
         assert_eq!(config.device_defaults.dpi, 1600);
         let managed = config
             .managed_devices
@@ -2005,7 +2070,7 @@ mod tests {
             .find(|device| device.id == "mx_master_3s-1")
             .expect("expected managed device");
         assert_eq!(managed.settings.dpi, 1600);
-        assert_eq!(managed.settings.invert_horizontal_scroll, true);
+        assert!(managed.settings.invert_horizontal_scroll);
         assert!(config.device_defaults.invert_horizontal_scroll);
         assert!(!config.device_defaults.invert_vertical_scroll);
         assert!(!config.device_defaults.macos_thumb_wheel_simulate_trackpad);
@@ -2111,7 +2176,7 @@ mod tests {
             },
         ];
 
-        let deduped = dedupe_installed_apps(apps).expect("expected dedupe to succeed");
+        let deduped = dedupe_installed_apps(apps);
 
         assert_eq!(deduped.len(), 1);
         let app = &deduped[0];
@@ -2165,7 +2230,7 @@ mod tests {
             },
         ];
 
-        let deduped = dedupe_installed_apps(apps).expect("expected dedupe to succeed");
+        let deduped = dedupe_installed_apps(apps);
 
         assert_eq!(deduped.len(), 1);
         let app = &deduped[0];
@@ -2209,7 +2274,7 @@ mod tests {
             },
         ];
 
-        let deduped = dedupe_installed_apps(apps).expect("expected dedupe to succeed");
+        let deduped = dedupe_installed_apps(apps);
 
         assert_eq!(deduped.len(), 2);
     }

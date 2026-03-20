@@ -386,7 +386,10 @@ impl AppConfig {
         }
 
         if self.version < 4 {
-            if let Some(default_profile) = self.profiles.iter_mut().find(|profile| profile.id == "default")
+            if let Some(default_profile) = self
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == "default")
             {
                 if default_profile.bindings == legacy_default_profile_bindings_v3() {
                     default_profile.bindings = default_profile_bindings();
@@ -1481,11 +1484,11 @@ pub fn normalize_device_settings(model_key: Option<&str>, settings: &mut DeviceS
     }
 }
 
-pub fn layout_by_key(layouts: &[DeviceLayout], layout_key: &str) -> Option<DeviceLayout> {
-    layouts
-        .iter()
-        .find(|layout| layout.key == layout_key)
-        .cloned()
+pub fn layout_by_key<'a>(
+    layouts: &'a [DeviceLayout],
+    layout_key: &str,
+) -> Option<&'a DeviceLayout> {
+    layouts.iter().find(|layout| layout.key == layout_key)
 }
 
 pub fn effective_layout_key(manual_override: Option<&str>, default_layout_key: &str) -> String {
@@ -1494,6 +1497,53 @@ pub fn effective_layout_key(manual_override: Option<&str>, default_layout_key: &
         .filter(|value| !value.is_empty())
         .unwrap_or(default_layout_key)
         .to_string()
+}
+
+pub fn active_device_with_layout(
+    mut device: DeviceInfo,
+    manual_override: Option<&str>,
+    layouts: &[DeviceLayout],
+) -> DeviceInfo {
+    let layout_key = effective_layout_key(manual_override, &device.ui_layout);
+    device.ui_layout = layout_key.clone();
+    if let Some(layout) = layout_by_key(layouts, &layout_key) {
+        device.image_asset = layout.image_asset.clone();
+    }
+    device
+}
+
+pub struct EngineSnapshotState<'a> {
+    pub enabled: bool,
+    pub active_profile_id: String,
+    pub frontmost_app: Option<&'a AppIdentity>,
+    pub debug_mode: bool,
+    pub debug_log: Vec<DebugEvent>,
+}
+
+pub fn build_engine_snapshot(
+    devices: Vec<DeviceInfo>,
+    detected_devices: Vec<DeviceInfo>,
+    active_device_key: Option<String>,
+    active_device: Option<DeviceInfo>,
+    state: EngineSnapshotState<'_>,
+) -> EngineSnapshot {
+    EngineSnapshot {
+        devices,
+        detected_devices,
+        active_device_key: active_device_key.clone(),
+        active_device: active_device.clone(),
+        engine_status: EngineStatus {
+            enabled: state.enabled,
+            connected: active_device
+                .as_ref()
+                .is_some_and(|device| device.connected),
+            active_profile_id: state.active_profile_id,
+            frontmost_app: state.frontmost_app.and_then(AppIdentity::label_or_fallback),
+            selected_device_key: active_device_key,
+            debug_mode: state.debug_mode,
+            debug_log: state.debug_log,
+        },
+    }
 }
 
 struct KnownDeviceSeed<'a> {

@@ -5,11 +5,12 @@ use std::{
 };
 
 use mouser_core::{
-    build_managed_device_info, clamp_dpi, default_action_catalog, default_app_discovery_snapshot,
-    default_config, default_device_catalog, default_known_apps, default_layouts,
-    effective_layout_key, manual_layout_choices, AppConfig, AppIdentity, BootstrapPayload,
-    DebugEvent, DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings,
-    EngineSnapshot, EngineStatus, KnownApp, ManagedDevice, PlatformCapabilities, Profile,
+    active_device_with_layout, build_engine_snapshot, build_managed_device_info, clamp_dpi,
+    default_action_catalog, default_app_discovery_snapshot, default_config, default_device_catalog,
+    default_known_apps, default_layouts, manual_layout_choices, AppConfig, AppIdentity,
+    BootstrapPayload, DebugEvent, DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout,
+    DeviceSettings, EngineSnapshot, EngineSnapshotState, KnownApp, ManagedDevice,
+    PlatformCapabilities, Profile,
 };
 use mouser_platform::{ConfigStore, DeviceCatalog, PlatformError};
 
@@ -38,6 +39,10 @@ impl MockCatalog {
             layouts: default_layouts(),
             devices,
         }
+    }
+
+    pub fn layouts(&self) -> &[DeviceLayout] {
+        &self.layouts
     }
 }
 
@@ -151,16 +156,18 @@ impl MockRuntime {
     }
 
     pub fn bootstrap_payload(&self) -> BootstrapPayload {
+        let config = self.config();
+        let layouts = self.catalog.all_layouts();
         BootstrapPayload {
-            config: self.config(),
+            config,
             available_actions: default_action_catalog(),
             known_apps: default_known_apps(),
             app_discovery: default_app_discovery_snapshot(),
             supported_devices: mouser_core::known_device_specs(),
-            layouts: self.catalog.all_layouts(),
+            layouts: layouts.clone(),
             engine_snapshot: self.engine_snapshot(),
             platform_capabilities: current_platform_capabilities(),
-            manual_layout_choices: manual_layout_choices(&self.catalog.all_layouts()),
+            manual_layout_choices: manual_layout_choices(&layouts),
         }
     }
 
@@ -190,33 +197,21 @@ impl MockRuntime {
     }
 
     pub fn create_profile(&mut self, profile: Profile) {
-        let mut config = self.config();
-        config.upsert_profile(profile);
-        let selected_profile_id = self
-            .selected_managed_device()
-            .and_then(|device| device.profile_id);
-        config.sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_ref());
-        self.save_config(config);
+        self.upsert_profile(profile);
     }
 
     pub fn update_profile(&mut self, profile: Profile) {
-        let mut config = self.config();
-        config.upsert_profile(profile);
-        let selected_profile_id = self
-            .selected_managed_device()
-            .and_then(|device| device.profile_id);
-        config.sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_ref());
-        self.save_config(config);
+        self.upsert_profile(profile);
+    }
+
+    fn upsert_profile(&mut self, profile: Profile) {
+        self.edit_config(|config| config.upsert_profile(profile));
     }
 
     pub fn delete_profile(&mut self, profile_id: &str) {
-        let mut config = self.config();
-        config.delete_profile(profile_id);
-        let selected_profile_id = self
-            .selected_managed_device()
-            .and_then(|device| device.profile_id);
-        config.sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_ref());
-        self.save_config(config);
+        self.edit_config(|config| {
+            config.delete_profile(profile_id);
+        });
     }
 
     pub fn select_device(&mut self, device_key: &str) {
@@ -257,49 +252,35 @@ impl MockRuntime {
 
     pub fn engine_snapshot(&self) -> EngineSnapshot {
         let devices = self.managed_device_infos();
+        let manual_layout_override = self
+            .selected_managed_device()
+            .and_then(|managed| managed.settings.manual_layout_override);
         let active_device = self
             .selected_device_key
             .as_ref()
             .and_then(|device_key| devices.iter().find(|device| &device.key == device_key))
             .cloned()
-            .map(|mut device| {
-                let manual_layout_override = self
-                    .selected_managed_device()
-                    .and_then(|managed| managed.settings.manual_layout_override);
-                let layout_key =
-                    effective_layout_key(manual_layout_override.as_deref(), &device.ui_layout);
-                device.ui_layout = layout_key.clone();
-                if let Some(layout) = self
-                    .catalog
-                    .all_layouts()
-                    .into_iter()
-                    .find(|layout| layout.key == layout_key)
-                {
-                    device.image_asset = layout.image_asset;
-                }
-                device
+            .map(|device| {
+                active_device_with_layout(
+                    device,
+                    manual_layout_override.as_deref(),
+                    self.catalog.layouts(),
+                )
             });
 
-        EngineSnapshot {
+        build_engine_snapshot(
             devices,
-            detected_devices: self.detected_devices.clone(),
-            active_device_key: self.selected_device_key.clone(),
-            active_device: active_device.clone(),
-            engine_status: EngineStatus {
+            self.detected_devices.clone(),
+            self.selected_device_key.clone(),
+            active_device,
+            EngineSnapshotState {
                 enabled: self.enabled,
-                connected: active_device
-                    .as_ref()
-                    .is_some_and(|device| device.connected),
                 active_profile_id: self.resolved_profile_id.clone(),
-                frontmost_app: self
-                    .frontmost_app
-                    .as_ref()
-                    .and_then(AppIdentity::label_or_fallback),
-                selected_device_key: self.selected_device_key.clone(),
+                frontmost_app: self.frontmost_app.as_ref(),
                 debug_mode: self.config().settings.debug_mode,
                 debug_log: self.debug_log.iter().cloned().collect(),
             },
-        }
+        )
     }
 
     pub fn last_debug_event(&self) -> Option<DebugEvent> {
@@ -363,6 +344,16 @@ impl MockRuntime {
         self.config_store.save(&config).unwrap();
         self.apply_device_selection();
         self.sync_active_profile()
+    }
+
+    fn edit_config(&mut self, edit: impl FnOnce(&mut AppConfig)) {
+        let mut config = self.config();
+        edit(&mut config);
+        let selected_profile_id = self
+            .selected_managed_device()
+            .and_then(|device| device.profile_id);
+        config.sync_active_profile(selected_profile_id.as_deref(), self.frontmost_app.as_ref());
+        self.save_config(config);
     }
 
     fn selected_managed_device(&self) -> Option<ManagedDevice> {

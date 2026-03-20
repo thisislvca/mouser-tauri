@@ -101,12 +101,7 @@ fn config_save(
     state: State<'_, AppState>,
     config: AppConfig,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.save_config(config);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| runtime.save_config(config))
 }
 
 #[tauri::command]
@@ -116,12 +111,9 @@ fn app_settings_update(
     state: State<'_, AppState>,
     settings: Settings,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.update_app_settings(settings);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
+        runtime.update_app_settings(settings)
+    })
 }
 
 #[tauri::command]
@@ -131,12 +123,9 @@ fn device_defaults_update(
     state: State<'_, AppState>,
     settings: DeviceSettings,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.update_device_defaults(settings);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
+        runtime.update_device_defaults(settings)
+    })
 }
 
 #[tauri::command]
@@ -146,12 +135,7 @@ fn profiles_create(
     state: State<'_, AppState>,
     profile: Profile,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.create_profile(profile);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| runtime.create_profile(profile))
 }
 
 #[tauri::command]
@@ -161,12 +145,7 @@ fn profiles_update(
     state: State<'_, AppState>,
     profile: Profile,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.update_profile(profile);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| runtime.update_profile(profile))
 }
 
 #[tauri::command]
@@ -176,12 +155,7 @@ fn profiles_delete(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.delete_profile(&profile_id);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| runtime.delete_profile(&profile_id))
 }
 
 #[tauri::command]
@@ -190,12 +164,7 @@ fn app_discovery_refresh(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.refresh_app_discovery();
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, AppRuntime::refresh_app_discovery)
 }
 
 #[tauri::command]
@@ -214,12 +183,9 @@ fn devices_update_settings(
     device_key: String,
     settings: DeviceSettings,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.update_managed_device_settings(&device_key, settings);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
+        runtime.update_managed_device_settings(&device_key, settings)
+    })
 }
 
 #[tauri::command]
@@ -230,12 +196,9 @@ fn devices_update_profile(
     device_key: String,
     profile_id: Option<String>,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.update_managed_device_profile(&device_key, profile_id);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
+        runtime.update_managed_device_profile(&device_key, profile_id)
+    })
 }
 
 #[tauri::command]
@@ -246,12 +209,9 @@ fn devices_update_nickname(
     device_key: String,
     nickname: Option<String>,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.update_managed_device_nickname(&device_key, nickname);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
+        runtime.update_managed_device_nickname(&device_key, nickname)
+    })
 }
 
 #[tauri::command]
@@ -267,12 +227,9 @@ fn devices_add(
     state: State<'_, AppState>,
     model_key: String,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.add_managed_device(&model_key);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
+        runtime.add_managed_device(&model_key)
+    })
 }
 
 #[tauri::command]
@@ -282,12 +239,9 @@ fn devices_remove(
     state: State<'_, AppState>,
     device_key: String,
 ) -> Result<BootstrapPayload, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.remove_managed_device(&device_key);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
-    })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
-    Ok(payload)
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
+        runtime.remove_managed_device(&device_key)
+    })
 }
 
 #[tauri::command]
@@ -297,11 +251,9 @@ fn devices_select(
     state: State<'_, AppState>,
     device_key: String,
 ) -> Result<EngineSnapshot, String> {
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.select_device(&device_key);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    let payload = mutate_runtime_and_emit_payload(&app, &state, |runtime| {
+        runtime.select_device(&device_key)
     })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
     Ok(payload.engine_snapshot)
 }
 
@@ -328,11 +280,9 @@ fn import_legacy_config(
     })
     .map_err(|error| error.to_string())?;
 
-    let (payload, debug_event) = with_runtime_mut(&state, |runtime| {
-        runtime.apply_imported_config(report.config.clone());
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
+        runtime.apply_imported_config(report.config.clone())
     })?;
-    emit_runtime_events(&app, &payload, debug_event)?;
     Ok(report)
 }
 
@@ -343,7 +293,7 @@ fn debug_clear_log(app: AppHandle, state: State<'_, AppState>) -> Result<EngineS
         runtime.clear_debug_log();
         runtime.bootstrap_payload()
     })?;
-    emit_runtime_events(&app, &payload, None)?;
+    emit_runtime_events(&app, &payload, &[])?;
     Ok(payload.engine_snapshot)
 }
 
@@ -370,6 +320,31 @@ fn with_runtime_mut<T>(
     Ok(f(&mut runtime))
 }
 
+fn mutate_runtime_and_emit<T>(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&mut AppRuntime) -> T,
+) -> Result<(T, BootstrapPayload), String> {
+    let (result, payload, debug_events) = with_runtime_mut(state, |runtime| {
+        let previous_debug_len = runtime.debug_log_len();
+        let result = f(runtime);
+        let payload = runtime.bootstrap_payload();
+        let debug_events = runtime.debug_events_since(previous_debug_len);
+        (result, payload, debug_events)
+    })?;
+    emit_runtime_events(app, &payload, &debug_events)?;
+    Ok((result, payload))
+}
+
+fn mutate_runtime_and_emit_payload<T>(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&mut AppRuntime) -> T,
+) -> Result<BootstrapPayload, String> {
+    let (_, payload) = mutate_runtime_and_emit(app, state, f)?;
+    Ok(payload)
+}
+
 fn with_manager_runtime<M, T>(manager: &M, f: impl FnOnce(&mut AppRuntime) -> T) -> CommandResult<T>
 where
     M: Manager<Wry>,
@@ -382,10 +357,30 @@ where
     Ok(f(&mut runtime))
 }
 
+fn emit_runtime_updates_if_changed(
+    app: &AppHandle,
+    f: impl FnOnce(&mut AppRuntime) -> runtime::RuntimeUpdateEffect,
+) -> Result<(), String> {
+    let result = with_manager_runtime(app, |runtime| {
+        let effect = f(runtime);
+        let payload = effect.payload_changed.then(|| runtime.bootstrap_payload());
+        (payload, effect.debug_events)
+    })?;
+
+    let (payload, debug_events) = result;
+    if let Some(payload) = payload {
+        emit_runtime_events(app, &payload, &debug_events)?;
+    } else if !debug_events.is_empty() {
+        emit_debug_events(app, &debug_events)?;
+    }
+
+    Ok(())
+}
+
 fn emit_runtime_events(
     app: &AppHandle,
     payload: &BootstrapPayload,
-    debug_event: Option<DebugEvent>,
+    debug_events: &[DebugEvent],
 ) -> Result<(), String> {
     sync_tray_menu(app, payload)?;
 
@@ -412,8 +407,12 @@ fn emit_runtime_events(
         .emit(app)
         .map_err(|error| error.to_string())?;
 
-    if let Some(debug_event) = debug_event {
-        DebugEventEnvelope(debug_event)
+    emit_debug_events(app, debug_events)
+}
+
+fn emit_debug_events(app: &AppHandle, debug_events: &[DebugEvent]) -> Result<(), String> {
+    for debug_event in debug_events {
+        DebugEventEnvelope(debug_event.clone())
             .emit(app)
             .map_err(|error| error.to_string())?;
     }
@@ -424,13 +423,15 @@ fn emit_runtime_events(
 #[cfg(target_os = "macos")]
 fn push_runtime_debug_event(app: &AppHandle, kind: DebugEventKind, message: impl Into<String>) {
     let message = message.into();
-    let Ok((payload, debug_event)) = with_manager_runtime(app, |runtime| {
+    let Ok((payload, debug_events)) = with_manager_runtime(app, |runtime| {
+        let previous_debug_len = runtime.debug_log_len();
         runtime.record_debug_event(kind, message);
-        (runtime.bootstrap_payload(), runtime.last_debug_event())
+        let debug_events = runtime.debug_events_since(previous_debug_len);
+        (runtime.bootstrap_payload(), debug_events)
     }) else {
         return;
     };
-    let _ = emit_runtime_events(app, &payload, debug_event);
+    let _ = emit_runtime_events(app, &payload, &debug_events);
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -514,27 +515,12 @@ fn run_runtime_monitor(app: AppHandle, rx: mpsc::Receiver<RuntimeSignal>) {
             }
         };
 
-        let Ok((changed, payload, debug_event)) = with_manager_runtime(&app, |runtime| {
-            let changed = runtime.apply_runtime_updates(devices, frontmost_app, hook_events);
-            let payload = if changed {
-                Some(runtime.bootstrap_payload())
-            } else {
-                None
-            };
-            let debug_event = if changed {
-                runtime.last_debug_event()
-            } else {
-                None
-            };
-            (changed, payload, debug_event)
-        }) else {
+        if emit_runtime_updates_if_changed(&app, move |runtime| {
+            runtime.apply_runtime_updates(devices, frontmost_app, hook_events)
+        })
+        .is_err()
+        {
             break;
-        };
-
-        if changed {
-            if let Some(payload) = payload {
-                let _ = emit_runtime_events(&app, &payload, debug_event);
-            }
         }
     }
 }
@@ -587,7 +573,6 @@ fn spawn_runtime_monitor(app: AppHandle) {
                 format!("macOS app-focus monitor unavailable: {error}"),
             );
             spawn_focus_fallback(app, tx);
-            return;
         }
     }
 }
@@ -687,30 +672,35 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             |app: &AppHandle<Wry>, event: MenuEvent| match event.id.as_ref() {
                 TRAY_SHOW_ID => show_main_window(app),
                 TRAY_TOGGLE_REMAPPING_ID => {
-                    let Ok((payload, debug_event)) = with_manager_runtime(app, |runtime| {
+                    let Ok((payload, debug_events)) = with_manager_runtime(app, |runtime| {
+                        let previous_debug_len = runtime.debug_log_len();
                         let next_enabled = !runtime.enabled();
                         runtime.set_enabled(next_enabled);
-                        (runtime.bootstrap_payload(), runtime.last_debug_event())
+                        (
+                            runtime.bootstrap_payload(),
+                            runtime.debug_events_since(previous_debug_len),
+                        )
                     }) else {
                         return;
                     };
-                    let _ = emit_runtime_events(app, &payload, debug_event);
+                    let _ = emit_runtime_events(app, &payload, &debug_events);
                 }
                 TRAY_TOGGLE_DEBUG_ID => {
-                    let Ok((payload, debug_event, debug_mode)) =
+                    let Ok((payload, debug_events, debug_mode)) =
                         with_manager_runtime(app, |runtime| {
+                            let previous_debug_len = runtime.debug_log_len();
                             let next_debug_mode = !runtime.debug_mode();
                             runtime.set_debug_mode(next_debug_mode);
                             (
                                 runtime.bootstrap_payload(),
-                                runtime.last_debug_event(),
+                                runtime.debug_events_since(previous_debug_len),
                                 next_debug_mode,
                             )
                         })
                     else {
                         return;
                     };
-                    let _ = emit_runtime_events(app, &payload, debug_event);
+                    let _ = emit_runtime_events(app, &payload, &debug_events);
                     if debug_mode {
                         show_main_window(app);
                     }
@@ -744,27 +734,12 @@ fn spawn_runtime_poller(app: AppHandle) {
         let frontmost_app = app_focus_backend.current_frontmost_app();
         let hook_events = hook_backend.drain_events();
 
-        let Ok((changed, payload, debug_event)) = with_manager_runtime(&app, |runtime| {
-            let changed = runtime.apply_poll_results(devices, frontmost_app, hook_events);
-            let payload = if changed {
-                Some(runtime.bootstrap_payload())
-            } else {
-                None
-            };
-            let debug_event = if changed {
-                runtime.last_debug_event()
-            } else {
-                None
-            };
-            (changed, payload, debug_event)
-        }) else {
+        if emit_runtime_updates_if_changed(&app, move |runtime| {
+            runtime.apply_poll_results(devices, frontmost_app, hook_events)
+        })
+        .is_err()
+        {
             break;
-        };
-
-        if changed {
-            if let Some(payload) = payload {
-                let _ = emit_runtime_events(&app, &payload, debug_event);
-            }
         }
     });
 }
