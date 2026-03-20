@@ -39,7 +39,8 @@ pub struct AppRuntime {
     frontmost_app: Option<AppIdentity>,
     app_discovery: AppDiscoverySnapshot,
     enabled: bool,
-    debug_log: VecDeque<DebugEvent>,
+    debug_log: VecDeque<DebugLogEntry>,
+    next_debug_seq: u64,
 }
 
 struct DeviceResolution {
@@ -59,7 +60,14 @@ impl DeviceResolution {
 
 pub struct RuntimeUpdateEffect {
     pub payload_changed: bool,
+    pub app_discovery_changed: bool,
     pub debug_events: Vec<DebugEvent>,
+}
+
+#[derive(Clone)]
+struct DebugLogEntry {
+    seq: u64,
+    event: DebugEvent,
 }
 
 impl AppRuntime {
@@ -85,6 +93,7 @@ impl AppRuntime {
             app_discovery: default_app_discovery_snapshot(),
             enabled: true,
             debug_log: VecDeque::new(),
+            next_debug_seq: 0,
         };
 
         if let Some(load_warning) = load_warning {
@@ -371,8 +380,12 @@ impl AppRuntime {
         self.managed_device_infos()
     }
 
-    pub(crate) fn debug_log_len(&self) -> usize {
-        self.debug_log.len()
+    pub(crate) fn debug_event_cursor(&self) -> u64 {
+        self.next_debug_seq
+    }
+
+    pub(crate) fn app_discovery_snapshot(&self) -> AppDiscoverySnapshot {
+        self.app_discovery.clone()
     }
 
     pub fn clear_debug_log(&mut self) {
@@ -442,7 +455,7 @@ impl AppRuntime {
         frontmost_app: Option<Result<Option<AppIdentity>, PlatformError>>,
         hook_events: Vec<HookBackendEvent>,
     ) -> RuntimeUpdateEffect {
-        let previous_debug_len = self.debug_log.len();
+        let previous_debug_cursor = self.debug_event_cursor();
         let mut payload_changed = false;
         if let Some(devices) = devices {
             payload_changed |= self.apply_device_results(devices);
@@ -453,7 +466,8 @@ impl AppRuntime {
         self.collect_hook_events(hook_events);
         RuntimeUpdateEffect {
             payload_changed,
-            debug_events: self.debug_events_since(previous_debug_len),
+            app_discovery_changed: false,
+            debug_events: self.debug_events_since(previous_debug_cursor),
         }
     }
 
@@ -470,7 +484,11 @@ impl AppRuntime {
                 active_profile_id: self.resolved_profile_id.clone(),
                 frontmost_app: self.frontmost_app.as_ref(),
                 debug_mode: self.config.settings.debug_mode,
-                debug_log: self.debug_log.iter().cloned().collect(),
+                debug_log: self
+                    .debug_log
+                    .iter()
+                    .map(|entry| entry.event.clone())
+                    .collect(),
             },
         )
     }
@@ -793,11 +811,16 @@ impl AppRuntime {
     }
 
     fn push_debug(&mut self, kind: DebugEventKind, message: impl Into<String>) {
-        self.debug_log.push_front(DebugEvent {
-            kind,
-            message: message.into(),
-            timestamp_ms: now_ms(),
-        });
+        let entry = DebugLogEntry {
+            seq: self.next_debug_seq,
+            event: DebugEvent {
+                kind,
+                message: message.into(),
+                timestamp_ms: now_ms(),
+            },
+        };
+        self.next_debug_seq += 1;
+        self.debug_log.push_front(entry);
         while self.debug_log.len() > 48 {
             let _ = self.debug_log.pop_back();
         }
@@ -815,13 +838,12 @@ impl AppRuntime {
         }
     }
 
-    pub(crate) fn debug_events_since(&self, previous_len: usize) -> Vec<DebugEvent> {
-        let new_count = self.debug_log.len().saturating_sub(previous_len);
+    pub(crate) fn debug_events_since(&self, previous_cursor: u64) -> Vec<DebugEvent> {
         let mut events = self
             .debug_log
             .iter()
-            .take(new_count)
-            .cloned()
+            .filter(|entry| entry.seq >= previous_cursor)
+            .map(|entry| entry.event.clone())
             .collect::<Vec<_>>();
         events.reverse();
         events
@@ -1357,7 +1379,108 @@ fn live_matches_managed_device(managed: &ManagedDevice, live: &DeviceInfo) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mouser_core::{default_device_settings, DeviceFingerprint};
+    use mouser_core::{
+        default_app_discovery_snapshot, default_config, default_device_settings, DeviceFingerprint,
+    };
+    use mouser_platform::{HidCapabilities, HookCapabilities};
+
+    struct TestHidBackend;
+    struct TestHookBackend;
+    struct TestAppFocusBackend;
+    struct TestAppDiscoveryBackend;
+
+    impl HidBackend for TestHidBackend {
+        fn backend_id(&self) -> &'static str {
+            "test-hid"
+        }
+
+        fn capabilities(&self) -> HidCapabilities {
+            HidCapabilities {
+                can_enumerate_devices: false,
+                can_read_battery: false,
+                can_read_dpi: false,
+                can_write_dpi: false,
+            }
+        }
+
+        fn list_devices(&self) -> Result<Vec<DeviceInfo>, PlatformError> {
+            Ok(Vec::new())
+        }
+
+        fn set_device_dpi(&self, _device_key: &str, _dpi: u16) -> Result<(), PlatformError> {
+            Ok(())
+        }
+    }
+
+    impl HookBackend for TestHookBackend {
+        fn backend_id(&self) -> &'static str {
+            "test-hook"
+        }
+
+        fn capabilities(&self) -> HookCapabilities {
+            HookCapabilities {
+                can_intercept_buttons: false,
+                can_intercept_scroll: false,
+                supports_gesture_diversion: false,
+            }
+        }
+
+        fn configure(
+            &self,
+            _settings: &HookBackendSettings,
+            _profile: &Profile,
+            _enabled: bool,
+        ) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn drain_events(&self) -> Vec<HookBackendEvent> {
+            Vec::new()
+        }
+    }
+
+    impl AppFocusBackend for TestAppFocusBackend {
+        fn backend_id(&self) -> &'static str {
+            "test-focus"
+        }
+
+        fn current_frontmost_app(&self) -> Result<Option<AppIdentity>, PlatformError> {
+            Ok(None)
+        }
+    }
+
+    impl AppDiscoveryBackend for TestAppDiscoveryBackend {
+        fn backend_id(&self) -> &'static str {
+            "test-discovery"
+        }
+
+        fn discover_apps(&self) -> Result<Vec<InstalledApp>, PlatformError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn test_runtime() -> AppRuntime {
+        let config = default_config();
+        AppRuntime {
+            catalog: StaticDeviceCatalog::new(),
+            config_store: JsonConfigStore::new(
+                std::env::temp_dir().join(format!("mouser-runtime-test-{}.json", now_ms())),
+            ),
+            hid_backend: Arc::new(TestHidBackend),
+            hook_backend: Arc::new(TestHookBackend),
+            app_focus_backend: Arc::new(TestAppFocusBackend),
+            app_discovery_backend: Box::new(TestAppDiscoveryBackend),
+            resolved_profile_id: config.active_profile_id.clone(),
+            config,
+            detected_devices: Vec::new(),
+            selected_device_key: None,
+            frontmost_app: None,
+            app_discovery: default_app_discovery_snapshot(),
+            enabled: true,
+            debug_log: VecDeque::new(),
+            next_debug_seq: 0,
+        }
+    }
 
     fn managed_device(identity_key: Option<&str>) -> ManagedDevice {
         ManagedDevice {
@@ -1412,5 +1535,21 @@ mod tests {
         let managed = managed_device(None);
         let live = live_device(Some("serial:123"));
         assert!(live_matches_managed_device(&managed, &live));
+    }
+
+    #[test]
+    fn debug_events_since_still_returns_new_events_after_ring_buffer_rollover() {
+        let mut runtime = test_runtime();
+
+        for index in 0..48 {
+            runtime.push_debug(DebugEventKind::Info, format!("seed-{index}"));
+        }
+
+        let cursor = runtime.debug_event_cursor();
+        runtime.push_debug(DebugEventKind::Info, "latest");
+
+        let events = runtime.debug_events_since(cursor);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].message, "latest");
     }
 }

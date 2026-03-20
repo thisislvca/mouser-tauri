@@ -44,6 +44,12 @@ enum RuntimeSignal {
     SafetyResync,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+type RuntimeSignalTx = mpsc::SyncSender<RuntimeSignal>;
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const RUNTIME_SIGNAL_BUFFER: usize = 32;
+
 type CommandResult<T> = Result<T, String>;
 const RUNTIME_STATE_ERROR: &str = "runtime state is unavailable";
 
@@ -293,7 +299,7 @@ fn debug_clear_log(app: AppHandle, state: State<'_, AppState>) -> Result<EngineS
         runtime.clear_debug_log();
         runtime.bootstrap_payload()
     })?;
-    emit_runtime_events(&app, &payload, &[])?;
+    emit_runtime_events(&app, &payload, &[], false)?;
     Ok(payload.engine_snapshot)
 }
 
@@ -325,14 +331,17 @@ fn mutate_runtime_and_emit<T>(
     state: &State<'_, AppState>,
     f: impl FnOnce(&mut AppRuntime) -> T,
 ) -> Result<(T, BootstrapPayload), String> {
-    let (result, payload, debug_events) = with_runtime_mut(state, |runtime| {
-        let previous_debug_len = runtime.debug_log_len();
-        let result = f(runtime);
-        let payload = runtime.bootstrap_payload();
-        let debug_events = runtime.debug_events_since(previous_debug_len);
-        (result, payload, debug_events)
-    })?;
-    emit_runtime_events(app, &payload, &debug_events)?;
+    let (result, payload, debug_events, app_discovery_changed) =
+        with_runtime_mut(state, |runtime| {
+            let previous_debug_cursor = runtime.debug_event_cursor();
+            let previous_app_discovery = runtime.app_discovery_snapshot();
+            let result = f(runtime);
+            let payload = runtime.bootstrap_payload();
+            let debug_events = runtime.debug_events_since(previous_debug_cursor);
+            let app_discovery_changed = payload.app_discovery != previous_app_discovery;
+            (result, payload, debug_events, app_discovery_changed)
+        })?;
+    emit_runtime_events(app, &payload, &debug_events, app_discovery_changed)?;
     Ok((result, payload))
 }
 
@@ -364,12 +373,12 @@ fn emit_runtime_updates_if_changed(
     let result = with_manager_runtime(app, |runtime| {
         let effect = f(runtime);
         let payload = effect.payload_changed.then(|| runtime.bootstrap_payload());
-        (payload, effect.debug_events)
+        (payload, effect.debug_events, effect.app_discovery_changed)
     })?;
 
-    let (payload, debug_events) = result;
+    let (payload, debug_events, app_discovery_changed) = result;
     if let Some(payload) = payload {
-        emit_runtime_events(app, &payload, &debug_events)?;
+        emit_runtime_events(app, &payload, &debug_events, app_discovery_changed)?;
     } else if !debug_events.is_empty() {
         emit_debug_events(app, &debug_events)?;
     }
@@ -381,6 +390,7 @@ fn emit_runtime_events(
     app: &AppHandle,
     payload: &BootstrapPayload,
     debug_events: &[DebugEvent],
+    app_discovery_changed: bool,
 ) -> Result<(), String> {
     sync_tray_menu(app, payload)?;
 
@@ -403,9 +413,11 @@ fn emit_runtime_events(
         .emit(app)
         .map_err(|error| error.to_string())?;
 
-    AppDiscoveryChangedEvent(payload.app_discovery.clone())
-        .emit(app)
-        .map_err(|error| error.to_string())?;
+    if app_discovery_changed {
+        AppDiscoveryChangedEvent(payload.app_discovery.clone())
+            .emit(app)
+            .map_err(|error| error.to_string())?;
+    }
 
     emit_debug_events(app, debug_events)
 }
@@ -424,32 +436,36 @@ fn emit_debug_events(app: &AppHandle, debug_events: &[DebugEvent]) -> Result<(),
 fn push_runtime_debug_event(app: &AppHandle, kind: DebugEventKind, message: impl Into<String>) {
     let message = message.into();
     let Ok((payload, debug_events)) = with_manager_runtime(app, |runtime| {
-        let previous_debug_len = runtime.debug_log_len();
+        let previous_debug_cursor = runtime.debug_event_cursor();
         runtime.record_debug_event(kind, message);
-        let debug_events = runtime.debug_events_since(previous_debug_len);
+        let debug_events = runtime.debug_events_since(previous_debug_cursor);
         (runtime.bootstrap_payload(), debug_events)
     }) else {
         return;
     };
-    let _ = emit_runtime_events(app, &payload, &debug_events);
+    let _ = emit_runtime_events(app, &payload, &debug_events, false);
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn spawn_periodic_runtime_signal(
-    tx: mpsc::Sender<RuntimeSignal>,
-    signal: RuntimeSignal,
-    interval: Duration,
-) {
+fn enqueue_runtime_signal(tx: &RuntimeSignalTx, signal: RuntimeSignal) -> bool {
+    match tx.try_send(signal) {
+        Ok(()) | Err(mpsc::TrySendError::Full(_)) => true,
+        Err(mpsc::TrySendError::Disconnected(_)) => false,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn spawn_periodic_runtime_signal(tx: RuntimeSignalTx, signal: RuntimeSignal, interval: Duration) {
     std::thread::spawn(move || loop {
         std::thread::sleep(interval);
-        if tx.send(signal.clone()).is_err() {
+        if !enqueue_runtime_signal(&tx, signal.clone()) {
             break;
         }
     });
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn spawn_focus_fallback(app: AppHandle, tx: mpsc::Sender<RuntimeSignal>) {
+fn spawn_focus_fallback(app: AppHandle, tx: RuntimeSignalTx) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
 
@@ -460,10 +476,7 @@ fn spawn_focus_fallback(app: AppHandle, tx: mpsc::Sender<RuntimeSignal>) {
         };
 
         let frontmost_app = app_focus_backend.current_frontmost_app().ok().flatten();
-        if tx
-            .send(RuntimeSignal::FrontmostAppChanged(frontmost_app))
-            .is_err()
-        {
+        if !enqueue_runtime_signal(&tx, RuntimeSignal::FrontmostAppChanged(frontmost_app)) {
             break;
         }
     });
@@ -527,7 +540,7 @@ fn run_runtime_monitor(app: AppHandle, rx: mpsc::Receiver<RuntimeSignal>) {
 
 #[cfg(target_os = "macos")]
 fn spawn_runtime_monitor(app: AppHandle) {
-    let (tx, rx) = mpsc::channel::<RuntimeSignal>();
+    let (tx, rx) = mpsc::sync_channel::<RuntimeSignal>(RUNTIME_SIGNAL_BUFFER);
     let monitor_app = app.clone();
     std::thread::spawn(move || run_runtime_monitor(monitor_app, rx));
 
@@ -544,7 +557,7 @@ fn spawn_runtime_monitor(app: AppHandle) {
 
     let device_signal_tx = tx.clone();
     match MacOsDeviceMonitor::new(move || {
-        let _ = device_signal_tx.send(RuntimeSignal::DevicesChanged);
+        let _ = enqueue_runtime_signal(&device_signal_tx, RuntimeSignal::DevicesChanged);
     }) {
         Ok(monitor) => std::mem::forget(monitor),
         Err(error) => {
@@ -563,7 +576,10 @@ fn spawn_runtime_monitor(app: AppHandle) {
 
     let focus_signal_tx = tx.clone();
     match MacOsAppFocusMonitor::new(move |frontmost_app| {
-        let _ = focus_signal_tx.send(RuntimeSignal::FrontmostAppChanged(frontmost_app));
+        let _ = enqueue_runtime_signal(
+            &focus_signal_tx,
+            RuntimeSignal::FrontmostAppChanged(frontmost_app),
+        );
     }) {
         Ok(monitor) => std::mem::forget(monitor),
         Err(error) => {
@@ -579,7 +595,7 @@ fn spawn_runtime_monitor(app: AppHandle) {
 
 #[cfg(target_os = "windows")]
 fn spawn_runtime_monitor(app: AppHandle) {
-    let (tx, rx) = mpsc::channel::<RuntimeSignal>();
+    let (tx, rx) = mpsc::sync_channel::<RuntimeSignal>(RUNTIME_SIGNAL_BUFFER);
     let monitor_app = app.clone();
     std::thread::spawn(move || run_runtime_monitor(monitor_app, rx));
 
@@ -601,7 +617,10 @@ fn spawn_runtime_monitor(app: AppHandle) {
 
     let focus_signal_tx = tx.clone();
     match WindowsAppFocusMonitor::new(move |frontmost_app| {
-        let _ = focus_signal_tx.send(RuntimeSignal::FrontmostAppChanged(frontmost_app));
+        let _ = enqueue_runtime_signal(
+            &focus_signal_tx,
+            RuntimeSignal::FrontmostAppChanged(frontmost_app),
+        );
     }) {
         Ok(monitor) => std::mem::forget(monitor),
         Err(error) => {
@@ -673,34 +692,34 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 TRAY_SHOW_ID => show_main_window(app),
                 TRAY_TOGGLE_REMAPPING_ID => {
                     let Ok((payload, debug_events)) = with_manager_runtime(app, |runtime| {
-                        let previous_debug_len = runtime.debug_log_len();
+                        let previous_debug_cursor = runtime.debug_event_cursor();
                         let next_enabled = !runtime.enabled();
                         runtime.set_enabled(next_enabled);
                         (
                             runtime.bootstrap_payload(),
-                            runtime.debug_events_since(previous_debug_len),
+                            runtime.debug_events_since(previous_debug_cursor),
                         )
                     }) else {
                         return;
                     };
-                    let _ = emit_runtime_events(app, &payload, &debug_events);
+                    let _ = emit_runtime_events(app, &payload, &debug_events, false);
                 }
                 TRAY_TOGGLE_DEBUG_ID => {
                     let Ok((payload, debug_events, debug_mode)) =
                         with_manager_runtime(app, |runtime| {
-                            let previous_debug_len = runtime.debug_log_len();
+                            let previous_debug_cursor = runtime.debug_event_cursor();
                             let next_debug_mode = !runtime.debug_mode();
                             runtime.set_debug_mode(next_debug_mode);
                             (
                                 runtime.bootstrap_payload(),
-                                runtime.debug_events_since(previous_debug_len),
+                                runtime.debug_events_since(previous_debug_cursor),
                                 next_debug_mode,
                             )
                         })
                     else {
                         return;
                     };
-                    let _ = emit_runtime_events(app, &payload, &debug_events);
+                    let _ = emit_runtime_events(app, &payload, &debug_events, false);
                     if debug_mode {
                         show_main_window(app);
                     }
