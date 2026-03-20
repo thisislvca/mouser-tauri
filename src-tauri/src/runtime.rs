@@ -137,10 +137,7 @@ impl AppRuntime {
             ),
         );
         self.log_dpi_state("DPI snapshot");
-
-        if !debug_mode_was_enabled && self.config.settings.debug_mode {
-            self.log_debug_session_state();
-        }
+        self.log_debug_session_if_newly_enabled(debug_mode_was_enabled);
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
@@ -199,6 +196,29 @@ impl AppRuntime {
         self.sync_hook_backend();
         self.push_debug(DebugEventKind::Info, message);
         self.log_active_profile_snapshot("Bindings snapshot");
+    }
+
+    fn edit_managed_device(
+        &mut self,
+        device_key: &str,
+        edit: impl FnOnce(&mut ManagedDevice),
+    ) -> bool {
+        let mut edit = Some(edit);
+        let mut updated = false;
+        self.apply_config_edit(|config| {
+            let Some(device) = config
+                .managed_devices
+                .iter_mut()
+                .find(|device| device.id == device_key)
+            else {
+                return;
+            };
+            if let Some(edit) = edit.take() {
+                edit(device);
+                updated = true;
+            }
+        });
+        updated
     }
 
     pub fn delete_profile(&mut self, profile_id: &str) {
@@ -283,9 +303,7 @@ impl AppRuntime {
             config.settings = settings;
         });
         self.push_debug(DebugEventKind::Info, "Updated app settings");
-        if !debug_mode_was_enabled && self.config.settings.debug_mode {
-            self.log_debug_session_state();
-        }
+        self.log_debug_session_if_newly_enabled(debug_mode_was_enabled);
     }
 
     pub fn update_device_defaults(&mut self, settings: DeviceSettings) {
@@ -299,17 +317,8 @@ impl AppRuntime {
     }
 
     pub fn update_managed_device_settings(&mut self, device_key: &str, settings: DeviceSettings) {
-        let mut updated = false;
-        self.apply_config_edit(|config| {
-            let Some(device) = config
-                .managed_devices
-                .iter_mut()
-                .find(|device| device.id == device_key)
-            else {
-                return;
-            };
+        let updated = self.edit_managed_device(device_key, move |device| {
             device.settings = settings;
-            updated = true;
         });
         if !updated {
             return;
@@ -322,17 +331,8 @@ impl AppRuntime {
     }
 
     pub fn update_managed_device_profile(&mut self, device_key: &str, profile_id: Option<String>) {
-        let mut updated = false;
-        self.apply_config_edit(|config| {
-            let Some(device) = config
-                .managed_devices
-                .iter_mut()
-                .find(|device| device.id == device_key)
-            else {
-                return;
-            };
+        let updated = self.edit_managed_device(device_key, move |device| {
             device.profile_id = profile_id;
-            updated = true;
         });
         if !updated {
             return;
@@ -345,17 +345,8 @@ impl AppRuntime {
     }
 
     pub fn update_managed_device_nickname(&mut self, device_key: &str, nickname: Option<String>) {
-        let mut updated = false;
-        self.apply_config_edit(|config| {
-            let Some(device) = config
-                .managed_devices
-                .iter_mut()
-                .find(|device| device.id == device_key)
-            else {
-                return;
-            };
+        let updated = self.edit_managed_device(device_key, move |device| {
             device.nickname = nickname;
-            updated = true;
         });
         if !updated {
             return;
@@ -371,9 +362,7 @@ impl AppRuntime {
         let debug_mode_was_enabled = self.replace_config(config);
         self.push_debug(DebugEventKind::Info, "Imported legacy Mouser config");
         self.log_active_profile_snapshot("Imported bindings");
-        if !debug_mode_was_enabled && self.config.settings.debug_mode {
-            self.log_debug_session_state();
-        }
+        self.log_debug_session_if_newly_enabled(debug_mode_was_enabled);
     }
 
     pub fn devices(&self) -> Vec<DeviceInfo> {
@@ -821,6 +810,12 @@ impl AppRuntime {
     fn push_debug_if_enabled(&mut self, kind: DebugEventKind, message: impl Into<String>) {
         if self.config.settings.debug_mode {
             self.push_debug(kind, message);
+        }
+    }
+
+    fn log_debug_session_if_newly_enabled(&mut self, debug_mode_was_enabled: bool) {
+        if !debug_mode_was_enabled && self.config.settings.debug_mode {
+            self.log_debug_session_state();
         }
     }
 

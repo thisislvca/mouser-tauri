@@ -297,29 +297,17 @@ fn merge_identity(existing: &mut AppIdentity, incoming: AppIdentity) {
         existing.label = incoming.label;
     }
 
-    if existing.executable.is_none() {
-        existing.executable = incoming.executable;
-    }
-    if existing.executable_path.is_none() {
-        existing.executable_path = incoming.executable_path;
-    }
-    if existing.bundle_id.is_none() {
-        existing.bundle_id = incoming.bundle_id;
-    }
-    if existing.package_family_name.is_none() {
-        existing.package_family_name = incoming.package_family_name;
-    }
+    fill_missing(&mut existing.executable, incoming.executable);
+    fill_missing(&mut existing.executable_path, incoming.executable_path);
+    fill_missing(&mut existing.bundle_id, incoming.bundle_id);
+    fill_missing(
+        &mut existing.package_family_name,
+        incoming.package_family_name,
+    );
 }
 
 fn preferred_text(current: Option<&str>, candidate: Option<&str>) -> bool {
-    let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) else {
-        return false;
-    };
-    let Some(current) = current.map(str::trim).filter(|value| !value.is_empty()) else {
-        return true;
-    };
-
-    label_quality(candidate) > label_quality(current)
+    candidate_beats_current(current, candidate, label_quality)
 }
 
 fn label_quality(value: &str) -> usize {
@@ -339,14 +327,7 @@ fn label_quality(value: &str) -> usize {
 }
 
 fn should_replace_source_path(current: Option<&str>, candidate: Option<&str>) -> bool {
-    let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) else {
-        return false;
-    };
-    let Some(current) = current.map(str::trim).filter(|value| !value.is_empty()) else {
-        return true;
-    };
-
-    source_path_priority(candidate) > source_path_priority(current)
+    candidate_beats_current(current, candidate, source_path_priority)
 }
 
 fn source_path_priority(path: &str) -> usize {
@@ -371,6 +352,27 @@ fn source_path_priority(path: &str) -> usize {
         return 2;
     }
     1
+}
+
+fn fill_missing(slot: &mut Option<String>, candidate: Option<String>) {
+    if slot.is_none() {
+        *slot = candidate;
+    }
+}
+
+fn candidate_beats_current(
+    current: Option<&str>,
+    candidate: Option<&str>,
+    score: impl Fn(&str) -> usize,
+) -> bool {
+    let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let Some(current) = current.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+
+    score(candidate) > score(current)
 }
 
 #[derive(Clone, Default)]

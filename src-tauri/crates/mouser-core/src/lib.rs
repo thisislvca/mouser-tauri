@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::Path, sync::OnceLock};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::OnceLock,
+};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -256,10 +260,7 @@ impl Profile {
     }
 
     pub fn normalized(mut self) -> Self {
-        self.bindings = normalize_bindings(std::mem::take(&mut self.bindings));
-        if self.label.trim().is_empty() {
-            self.label = self.id.clone();
-        }
+        normalize_profile_in_place(&mut self);
         self
     }
 }
@@ -379,10 +380,7 @@ impl AppConfig {
         }
 
         for profile in &mut self.profiles {
-            profile.bindings = normalize_bindings(std::mem::take(&mut profile.bindings));
-            if profile.label.trim().is_empty() {
-                profile.label = profile.id.clone();
-            }
+            normalize_profile_in_place(profile);
         }
 
         if self.version < 4 {
@@ -417,45 +415,7 @@ impl AppConfig {
             !device.id.trim().is_empty() && seen_managed_ids.insert(device.id.clone())
         });
         for device in &mut self.managed_devices {
-            if device.display_name.trim().is_empty() {
-                device.display_name = known_device_spec_by_key(&device.model_key)
-                    .map(|spec| spec.display_name)
-                    .unwrap_or_else(|| device.model_key.clone());
-            }
-
-            if device
-                .nickname
-                .as_deref()
-                .is_some_and(|value| value.trim().is_empty())
-            {
-                device.nickname = None;
-            }
-
-            if device
-                .profile_id
-                .as_deref()
-                .is_some_and(|value| value.trim().is_empty())
-            {
-                device.profile_id = None;
-            }
-
-            if device
-                .profile_id
-                .as_deref()
-                .is_some_and(|profile_id| !valid_profile_ids.contains(profile_id))
-            {
-                device.profile_id = None;
-            }
-
-            if device
-                .identity_key
-                .as_deref()
-                .is_some_and(|value| value.trim().is_empty())
-            {
-                device.identity_key = None;
-            }
-
-            normalize_device_settings(Some(&device.model_key), &mut device.settings);
+            normalize_managed_device(device, &valid_profile_ids);
         }
 
         self.version = self.version.max(4);
@@ -1314,10 +1274,12 @@ pub fn build_connected_device_info(
     mut fingerprint: DeviceFingerprint,
 ) -> DeviceInfo {
     hydrate_identity_key(product_id, &mut fingerprint);
-    if let Some(spec) = resolve_known_device(product_id, product_name) {
+    let product_name = non_empty_name(product_name);
+    if let Some(spec) = resolve_known_device(product_id, product_name.as_deref()) {
         let model_key = spec.key.clone();
-        let display_name =
-            non_empty_name(product_name).unwrap_or_else(|| spec.display_name.clone());
+        let display_name = product_name
+            .clone()
+            .unwrap_or_else(|| spec.display_name.clone());
         let key = live_device_key(&model_key, &fingerprint);
         return DeviceInfo {
             key,
@@ -1325,7 +1287,7 @@ pub fn build_connected_device_info(
             display_name,
             nickname: None,
             product_id,
-            product_name: non_empty_name(product_name),
+            product_name,
             transport: transport.map(str::to_string),
             source: source.map(str::to_string),
             ui_layout: spec.ui_layout,
@@ -1342,7 +1304,6 @@ pub fn build_connected_device_info(
     }
 
     let display_name = product_name
-        .map(str::to_string)
         .or_else(|| product_id.map(|product_id| format!("Logitech PID 0x{product_id:04X}")))
         .unwrap_or_else(|| "Logitech mouse".to_string());
     let key = normalize_name(&display_name).replace(' ', "_");
@@ -1379,20 +1340,15 @@ pub fn build_managed_device_info(managed: &ManagedDevice, live: Option<&DeviceIn
     let effective_current_dpi = live
         .map(|device| device.current_dpi)
         .unwrap_or(managed.settings.dpi);
-    let live_product_name = live
-        .and_then(|device| device.product_name.as_deref())
-        .and_then(|value| {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        });
+    let live_product_name = live.and_then(|device| non_empty_name(device.product_name.as_deref()));
+    let display_name = managed_device_display_name(managed, live_product_name.as_deref());
+    let connected = live.is_some();
+    let battery_level = live.and_then(|device| device.battery_level);
+    let transport = managed_device_transport(managed, live);
+    let source = managed_device_source(live);
+    let fingerprint = managed_device_fingerprint(managed, live);
 
     if let Some(spec) = known_device_spec_by_key(&managed.model_key) {
-        let display_name = managed
-            .nickname
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| live_product_name.clone())
-            .unwrap_or_else(|| managed.display_name.clone());
         return DeviceInfo {
             key: managed.id.clone(),
             model_key: managed.model_key.clone(),
@@ -1402,36 +1358,21 @@ pub fn build_managed_device_info(managed: &ManagedDevice, live: Option<&DeviceIn
                 .and_then(|device| device.product_id)
                 .or_else(|| spec.product_ids.first().copied()),
             product_name: live_product_name.or_else(|| Some(spec.display_name.clone())),
-            transport: live
-                .and_then(|device| device.transport.clone())
-                .or_else(|| managed.last_seen_transport.clone()),
-            source: live
-                .and_then(|device| device.source.clone())
-                .or_else(|| Some("managed".to_string())),
+            transport,
+            source,
             ui_layout: spec.ui_layout,
             image_asset: spec.image_asset,
             supported_controls: spec.supported_controls,
             gesture_cids: spec.gesture_cids,
             dpi_min: spec.dpi_min,
             dpi_max: spec.dpi_max,
-            connected: live.is_some(),
-            battery_level: live.and_then(|device| device.battery_level),
+            connected,
+            battery_level,
             current_dpi: effective_current_dpi.max(spec.dpi_min).min(spec.dpi_max),
-            fingerprint: live
-                .map(|device| device.fingerprint.clone())
-                .unwrap_or_else(|| DeviceFingerprint {
-                    identity_key: managed.identity_key.clone(),
-                    ..DeviceFingerprint::default()
-                }),
+            fingerprint,
         };
     }
 
-    let display_name = managed
-        .nickname
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| live_product_name.clone())
-        .unwrap_or_else(|| managed.display_name.clone());
     DeviceInfo {
         key: managed.id.clone(),
         model_key: managed.model_key.clone(),
@@ -1439,27 +1380,18 @@ pub fn build_managed_device_info(managed: &ManagedDevice, live: Option<&DeviceIn
         nickname: managed.nickname.clone(),
         product_id: live.and_then(|device| device.product_id),
         product_name: live_product_name.or_else(|| Some(managed.display_name.clone())),
-        transport: live
-            .and_then(|device| device.transport.clone())
-            .or_else(|| managed.last_seen_transport.clone()),
-        source: live
-            .and_then(|device| device.source.clone())
-            .or_else(|| Some("managed".to_string())),
+        transport,
+        source,
         ui_layout: "generic_mouse".to_string(),
         image_asset: "/assets/icons/mouse-simple.svg".to_string(),
         supported_controls: LogicalControl::all(),
         gesture_cids: vec![0x00C3, 0x00D7],
         dpi_min: 200,
         dpi_max: 8000,
-        connected: live.is_some(),
-        battery_level: live.and_then(|device| device.battery_level),
+        connected,
+        battery_level,
         current_dpi: effective_current_dpi.clamp(200, 8000),
-        fingerprint: live
-            .map(|device| device.fingerprint.clone())
-            .unwrap_or_else(|| DeviceFingerprint {
-                identity_key: managed.identity_key.clone(),
-                ..DeviceFingerprint::default()
-            }),
+        fingerprint,
     }
 }
 
@@ -1626,6 +1558,73 @@ fn non_empty_name(value: Option<&str>) -> Option<String> {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
+}
+
+fn normalize_profile_in_place(profile: &mut Profile) {
+    profile.bindings = normalize_bindings(std::mem::take(&mut profile.bindings));
+    if profile.label.trim().is_empty() {
+        profile.label = profile.id.clone();
+    }
+}
+
+fn normalize_optional_text(value: &mut Option<String>) {
+    if value
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        *value = None;
+    }
+}
+
+fn normalize_managed_device(device: &mut ManagedDevice, valid_profile_ids: &BTreeSet<String>) {
+    if device.display_name.trim().is_empty() {
+        device.display_name = known_device_spec_by_key(&device.model_key)
+            .map(|spec| spec.display_name)
+            .unwrap_or_else(|| device.model_key.clone());
+    }
+
+    normalize_optional_text(&mut device.nickname);
+    normalize_optional_text(&mut device.profile_id);
+    if device
+        .profile_id
+        .as_deref()
+        .is_some_and(|profile_id| !valid_profile_ids.contains(profile_id))
+    {
+        device.profile_id = None;
+    }
+
+    normalize_optional_text(&mut device.identity_key);
+    normalize_device_settings(Some(&device.model_key), &mut device.settings);
+}
+
+fn managed_device_display_name(managed: &ManagedDevice, live_product_name: Option<&str>) -> String {
+    managed
+        .nickname
+        .as_deref()
+        .and_then(|nickname| non_empty_name(Some(nickname)))
+        .or_else(|| non_empty_name(live_product_name))
+        .unwrap_or_else(|| managed.display_name.clone())
+}
+
+fn managed_device_transport(managed: &ManagedDevice, live: Option<&DeviceInfo>) -> Option<String> {
+    live.and_then(|device| device.transport.clone())
+        .or_else(|| managed.last_seen_transport.clone())
+}
+
+fn managed_device_source(live: Option<&DeviceInfo>) -> Option<String> {
+    live.and_then(|device| device.source.clone())
+        .or_else(|| Some("managed".to_string()))
+}
+
+fn managed_device_fingerprint(
+    managed: &ManagedDevice,
+    live: Option<&DeviceInfo>,
+) -> DeviceFingerprint {
+    live.map(|device| device.fingerprint.clone())
+        .unwrap_or_else(|| DeviceFingerprint {
+            identity_key: managed.identity_key.clone(),
+            ..DeviceFingerprint::default()
+        })
 }
 
 pub fn normalize_app_match_value(kind: AppMatcherKind, value: &str) -> String {
