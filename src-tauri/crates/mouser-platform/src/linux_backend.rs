@@ -845,8 +845,9 @@ impl AppDiscoveryBackend for LinuxAppDiscoveryBackend {
         #[cfg(target_os = "linux")]
         {
             let mut apps = Vec::new();
+            let mut resolver = DesktopEntryResolver::new();
             for root in linux_desktop_entry_roots() {
-                collect_desktop_entry_apps(&root, &mut apps)?;
+                collect_desktop_entry_apps(&root, &mut apps, &mut resolver)?;
             }
             collect_running_process_apps(&mut apps)?;
             Ok(dedupe_installed_apps(apps))
@@ -1746,17 +1747,22 @@ fn gesture_candidates_for(gesture_cids: &[u16]) -> Vec<u16> {
 }
 
 #[cfg(target_os = "linux")]
+struct X11Atoms {
+    active_window: u32,
+    net_wm_pid: u32,
+    net_wm_name: u32,
+    utf8_string: u32,
+}
+
+#[cfg(target_os = "linux")]
 fn current_frontmost_app_identity() -> Result<Option<AppIdentity>, PlatformError> {
     let (connection, screen_index) = x11rb::connect(None)
         .map_err(|error| PlatformError::Message(format!("could not connect to X11: {error}")))?;
     let root = connection.setup().roots[screen_index].root;
-
-    let active_window_atom = intern_atom(&connection, b"_NET_ACTIVE_WINDOW")?;
-    let pid_atom = intern_atom(&connection, b"_NET_WM_PID")?;
-    let utf8_atom = intern_atom(&connection, b"UTF8_STRING")?;
+    let atoms = intern_x11_atoms(&connection)?;
 
     let active_window = connection
-        .get_property(false, root, active_window_atom, AtomEnum::WINDOW, 0, 1)
+        .get_property(false, root, atoms.active_window, AtomEnum::WINDOW, 0, 1)
         .map_err(|error| PlatformError::Message(format!("could not query X11 active window: {error}")))?
         .reply()
         .map_err(|error| PlatformError::Message(format!("could not read X11 active window: {error}")))?
@@ -1768,7 +1774,7 @@ fn current_frontmost_app_identity() -> Result<Option<AppIdentity>, PlatformError
     };
 
     let pid = connection
-        .get_property(false, window, pid_atom, AtomEnum::CARDINAL, 0, 1)
+        .get_property(false, window, atoms.net_wm_pid, AtomEnum::CARDINAL, 0, 1)
         .map_err(|error| PlatformError::Message(format!("could not query X11 window PID: {error}")))?
         .reply()
         .map_err(|error| PlatformError::Message(format!("could not read X11 window PID: {error}")))?
@@ -1777,7 +1783,8 @@ fn current_frontmost_app_identity() -> Result<Option<AppIdentity>, PlatformError
 
     let executable_path = pid.and_then(read_executable_path_for_pid);
     let executable = executable_path.as_deref().and_then(path_file_name);
-    let label = window_label(&connection, window, utf8_atom).or_else(|| window_class(&connection, window));
+    let label =
+        window_label(&connection, window, &atoms).or_else(|| window_class(&connection, window));
 
     Ok(Some(AppIdentity {
         label,
@@ -1786,6 +1793,16 @@ fn current_frontmost_app_identity() -> Result<Option<AppIdentity>, PlatformError
         bundle_id: None,
         package_family_name: None,
     }))
+}
+
+#[cfg(target_os = "linux")]
+fn intern_x11_atoms<C: Connection>(connection: &C) -> Result<X11Atoms, PlatformError> {
+    Ok(X11Atoms {
+        active_window: intern_atom(connection, b"_NET_ACTIVE_WINDOW")?,
+        net_wm_pid: intern_atom(connection, b"_NET_WM_PID")?,
+        net_wm_name: intern_atom(connection, b"_NET_WM_NAME")?,
+        utf8_string: intern_atom(connection, b"UTF8_STRING")?,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -1799,9 +1816,16 @@ fn intern_atom<C: Connection>(connection: &C, name: &[u8]) -> Result<u32, Platfo
 }
 
 #[cfg(target_os = "linux")]
-fn window_label<C: Connection>(connection: &C, window: Window, utf8_atom: u32) -> Option<String> {
+fn window_label<C: Connection>(connection: &C, window: Window, atoms: &X11Atoms) -> Option<String> {
     connection
-        .get_property(false, window, intern_atom(connection, b"_NET_WM_NAME").ok()?, utf8_atom, 0, 256)
+        .get_property(
+            false,
+            window,
+            atoms.net_wm_name,
+            atoms.utf8_string,
+            0,
+            256,
+        )
         .ok()?
         .reply()
         .ok()?
@@ -1855,7 +1879,11 @@ fn linux_desktop_entry_roots() -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn collect_desktop_entry_apps(root: &Path, apps: &mut Vec<InstalledApp>) -> Result<(), PlatformError> {
+fn collect_desktop_entry_apps(
+    root: &Path,
+    apps: &mut Vec<InstalledApp>,
+    resolver: &mut DesktopEntryResolver,
+) -> Result<(), PlatformError> {
     if !root.exists() {
         return Ok(());
     }
@@ -1870,13 +1898,13 @@ fn collect_desktop_entry_apps(root: &Path, apps: &mut Vec<InstalledApp>) -> Resu
         })?;
         let path = entry.path();
         if path.is_dir() {
-            collect_desktop_entry_apps(&path, apps)?;
+            collect_desktop_entry_apps(&path, apps, resolver)?;
             continue;
         }
         if path.extension().and_then(|value| value.to_str()) != Some("desktop") {
             continue;
         }
-        if let Some(app) = read_desktop_entry(&path) {
+        if let Some(app) = read_desktop_entry(&path, resolver) {
             apps.push(app);
         }
     }
@@ -1885,7 +1913,7 @@ fn collect_desktop_entry_apps(root: &Path, apps: &mut Vec<InstalledApp>) -> Resu
 }
 
 #[cfg(target_os = "linux")]
-fn read_desktop_entry(path: &Path) -> Option<InstalledApp> {
+fn read_desktop_entry(path: &Path, resolver: &mut DesktopEntryResolver) -> Option<InstalledApp> {
     let entry = parse_desktop_entry(&fs::read_to_string(path).ok()?)?;
     if !entry.is_application {
         return None;
@@ -1898,13 +1926,12 @@ fn read_desktop_entry(path: &Path) -> Option<InstalledApp> {
     }
 
     let exec = entry.exec.as_deref().or(entry.try_exec.as_deref())?;
-    let (executable, executable_path) = parse_exec_command(exec);
+    let (executable, executable_path) = resolver.parse_exec_command(exec);
     let source_path = entry
         .icon
         .as_deref()
-        .and_then(resolve_icon_path)
-        .or_else(|| Some(path.to_string_lossy().to_string()))
-        .or_else(|| executable_path.clone());
+        .and_then(|icon| resolver.resolve_icon_path(icon))
+        .or_else(|| Some(path.to_string_lossy().to_string()));
 
     Some(InstalledApp {
         identity: AppIdentity {
@@ -2008,6 +2035,136 @@ struct DesktopEntryRecord {
     is_application: bool,
 }
 
+struct DesktopEntryResolver {
+    path_dirs: Vec<PathBuf>,
+    icon_search_roots: Vec<PathBuf>,
+    themed_icon_bases: Vec<PathBuf>,
+    executable_cache: HashMap<String, Option<String>>,
+    icon_cache: HashMap<String, Option<String>>,
+    themed_relative_cache: HashMap<String, Vec<PathBuf>>,
+}
+
+impl DesktopEntryResolver {
+    fn new() -> Self {
+        Self {
+            path_dirs: executable_search_roots(),
+            icon_search_roots: icon_search_roots(),
+            themed_icon_bases: themed_icon_bases(),
+            executable_cache: HashMap::new(),
+            icon_cache: HashMap::new(),
+            themed_relative_cache: HashMap::new(),
+        }
+    }
+
+    fn parse_exec_command(&mut self, raw: &str) -> (Option<String>, Option<String>) {
+        let tokens = split_command_line(raw)
+            .into_iter()
+            .map(|token| strip_desktop_field_codes(&token))
+            .filter(|token| !token.is_empty())
+            .collect::<Vec<_>>();
+        if tokens.is_empty() {
+            return (None, None);
+        }
+
+        let mut index = 0usize;
+        if tokens.first().is_some_and(|token| token == "env") {
+            index = 1;
+            while index < tokens.len()
+                && (tokens[index].contains('=') || tokens[index].starts_with('-'))
+            {
+                index += 1;
+            }
+        } else {
+            while index < tokens.len() && tokens[index].contains('=') {
+                index += 1;
+            }
+        }
+
+        let Some(command) = tokens.get(index).cloned() else {
+            return (None, None);
+        };
+
+        let executable_path = self.resolve_executable_path(&command);
+        let executable = executable_path
+            .as_deref()
+            .and_then(path_file_name)
+            .or_else(|| path_file_name(&command));
+
+        (executable, executable_path)
+    }
+
+    fn resolve_executable_path(&mut self, command: &str) -> Option<String> {
+        let path = Path::new(command);
+        if path.is_absolute() {
+            return path.exists().then(|| path.to_string_lossy().to_string());
+        }
+
+        if let Some(resolved) = self.executable_cache.get(command) {
+            return resolved.clone();
+        }
+
+        let resolved = self
+            .path_dirs
+            .iter()
+            .map(|dir| dir.join(command))
+            .find(|candidate| candidate.exists())
+            .map(|candidate| candidate.to_string_lossy().to_string());
+        self.executable_cache
+            .insert(command.to_string(), resolved.clone());
+        resolved
+    }
+
+    fn resolve_icon_path(&mut self, icon: &str) -> Option<String> {
+        let icon = icon.trim();
+        if icon.is_empty() {
+            return None;
+        }
+
+        let path = Path::new(icon);
+        if path.is_absolute() {
+            return path.exists().then(|| path.to_string_lossy().to_string());
+        }
+
+        if let Some(resolved) = self.icon_cache.get(icon) {
+            return resolved.clone();
+        }
+
+        let resolved = self.resolve_relative_icon_path(icon);
+        self.icon_cache.insert(icon.to_string(), resolved.clone());
+        resolved
+    }
+
+    fn resolve_relative_icon_path(&mut self, icon: &str) -> Option<String> {
+        let file_names = icon_file_names(icon);
+
+        for root in &self.icon_search_roots {
+            for file_name in &file_names {
+                let direct = root.join(file_name);
+                if direct.exists() {
+                    return Some(direct.to_string_lossy().to_string());
+                }
+            }
+        }
+
+        if !self.themed_relative_cache.contains_key(icon) {
+            self.themed_relative_cache
+                .insert(icon.to_string(), themed_icon_relatives(icon));
+        }
+        let relatives = self.themed_relative_cache.get(icon)?;
+
+        for base in &self.themed_icon_bases {
+            for relative in relatives {
+                let candidate = base.join(relative);
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().to_string());
+                }
+            }
+        }
+
+        None
+    }
+}
+
 fn parse_desktop_entry(raw: &str) -> Option<DesktopEntryRecord> {
     let mut in_desktop_entry = false;
     let mut record = DesktopEntryRecord::default();
@@ -2049,40 +2206,7 @@ fn parse_desktop_bool(value: &str) -> bool {
 }
 
 fn parse_exec_command(raw: &str) -> (Option<String>, Option<String>) {
-    let tokens = split_command_line(raw)
-        .into_iter()
-        .map(|token| strip_desktop_field_codes(&token))
-        .filter(|token| !token.is_empty())
-        .collect::<Vec<_>>();
-    if tokens.is_empty() {
-        return (None, None);
-    }
-
-    let mut index = 0usize;
-    if tokens.first().is_some_and(|token| token == "env") {
-        index = 1;
-        while index < tokens.len()
-            && (tokens[index].contains('=') || tokens[index].starts_with('-'))
-        {
-            index += 1;
-        }
-    } else {
-        while index < tokens.len() && tokens[index].contains('=') {
-            index += 1;
-        }
-    }
-
-    let Some(command) = tokens.get(index).cloned() else {
-        return (None, None);
-    };
-
-    let executable_path = resolve_executable_path(&command);
-    let executable = executable_path
-        .as_deref()
-        .and_then(path_file_name)
-        .or_else(|| path_file_name(&command));
-
-    (executable, executable_path)
+    DesktopEntryResolver::new().parse_exec_command(raw)
 }
 
 fn split_command_line(raw: &str) -> Vec<String> {
@@ -2138,32 +2262,14 @@ fn strip_desktop_field_codes(value: &str) -> String {
     result.trim().to_string()
 }
 
-fn resolve_executable_path(command: &str) -> Option<String> {
-    let path = Path::new(command);
-    if path.is_absolute() {
-        return path.exists().then(|| path.to_string_lossy().to_string());
-    }
-
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|dir| dir.join(command))
-            .find(|candidate| candidate.exists())
-            .map(|candidate| candidate.to_string_lossy().to_string())
-    })
+fn executable_search_roots() -> Vec<PathBuf> {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default()
 }
 
-fn resolve_icon_path(icon: &str) -> Option<String> {
-    let icon = icon.trim();
-    if icon.is_empty() {
-        return None;
-    }
-
-    let path = Path::new(icon);
-    if path.is_absolute() {
-        return path.exists().then(|| path.to_string_lossy().to_string());
-    }
-
-    let file_names = if path.extension().is_some() {
+fn icon_file_names(icon: &str) -> Vec<String> {
+    if Path::new(icon).extension().is_some() {
         vec![icon.to_string()]
     } else {
         vec![
@@ -2171,26 +2277,7 @@ fn resolve_icon_path(icon: &str) -> Option<String> {
             format!("{icon}.svg"),
             format!("{icon}.xpm"),
         ]
-    };
-
-    for root in icon_search_roots() {
-        for file_name in &file_names {
-            let direct = root.join(file_name);
-            if direct.exists() {
-                return Some(direct.to_string_lossy().to_string());
-            }
-        }
     }
-
-    for base in themed_icon_bases() {
-        for relative in themed_icon_relatives(icon) {
-            if base.join(&relative).exists() {
-                return Some(base.join(relative).to_string_lossy().to_string());
-            }
-        }
-    }
-
-    None
 }
 
 fn icon_search_roots() -> Vec<PathBuf> {
@@ -2218,15 +2305,7 @@ fn themed_icon_bases() -> Vec<PathBuf> {
 
 fn themed_icon_relatives(icon: &str) -> Vec<PathBuf> {
     let mut relatives = Vec::new();
-    let file_names = if Path::new(icon).extension().is_some() {
-        vec![icon.to_string()]
-    } else {
-        vec![
-            format!("{icon}.png"),
-            format!("{icon}.svg"),
-            format!("{icon}.xpm"),
-        ]
-    };
+    let file_names = icon_file_names(icon);
 
     for size in ["512x512", "256x256", "128x128", "96x96", "64x64", "48x48", "32x32", "24x24", "16x16", "scalable"] {
         for kind in ["apps", "categories"] {

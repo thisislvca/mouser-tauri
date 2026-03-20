@@ -12,7 +12,10 @@ use mouser_core::{
     DeviceSettings, EngineSnapshot, EngineSnapshotState, KnownApp, ManagedDevice,
     PlatformCapabilities, Profile,
 };
-use mouser_platform::{ConfigStore, DeviceCatalog, PlatformError};
+use mouser_platform::{
+    current_platform_name, host_hidapi_available, host_iokit_available, ConfigStore,
+    DeviceCatalog, PlatformError,
+};
 
 #[derive(Clone, Default)]
 pub struct MockCatalog {
@@ -384,15 +387,7 @@ impl MockRuntime {
 
 fn current_platform_capabilities() -> PlatformCapabilities {
     PlatformCapabilities {
-        platform: if cfg!(target_os = "macos") {
-            "macos".to_string()
-        } else if cfg!(target_os = "linux") {
-            "linux".to_string()
-        } else if cfg!(target_os = "windows") {
-            "windows".to_string()
-        } else {
-            "other".to_string()
-        },
+        platform: current_platform_name().to_string(),
         windows_supported: true,
         macos_supported: true,
         live_hooks_available: false,
@@ -403,12 +398,8 @@ fn current_platform_capabilities() -> PlatformCapabilities {
         active_hid_backend: "mock-hid".to_string(),
         active_hook_backend: "mock-hook".to_string(),
         active_focus_backend: "mock-focus".to_string(),
-        hidapi_available: cfg!(any(
-            target_os = "linux",
-            target_os = "macos",
-            target_os = "windows"
-        )),
-        iokit_available: cfg!(target_os = "macos"),
+        hidapi_available: host_hidapi_available(),
+        iokit_available: host_iokit_available(),
     }
 }
 

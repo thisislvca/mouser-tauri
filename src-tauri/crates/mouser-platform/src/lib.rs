@@ -108,6 +108,30 @@ pub enum PlatformError {
     Io { path: String, message: String },
 }
 
+pub fn current_platform_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "other"
+    }
+}
+
+pub fn host_hidapi_available() -> bool {
+    cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))
+}
+
+pub fn host_iokit_available() -> bool {
+    cfg!(target_os = "macos")
+}
+
 pub trait HookBackend: Send + Sync {
     fn backend_id(&self) -> &'static str;
     fn capabilities(&self) -> HookCapabilities;

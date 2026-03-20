@@ -15,6 +15,7 @@ use mouser_core::{
     Profile,
 };
 use mouser_platform::{
+    current_platform_name, host_hidapi_available, host_iokit_available,
     linux::{LinuxAppDiscoveryBackend, LinuxAppFocusBackend, LinuxHidBackend, LinuxHookBackend},
     macos::{MacOsAppDiscoveryBackend, MacOsAppFocusBackend, MacOsHidBackend, MacOsHookBackend},
     windows::{
@@ -775,15 +776,7 @@ impl AppRuntime {
         let hid_capabilities = self.hid_backend.capabilities();
         let hook_capabilities = self.hook_backend.capabilities();
         PlatformCapabilities {
-            platform: if cfg!(target_os = "macos") {
-                "macos".to_string()
-            } else if cfg!(target_os = "linux") {
-                "linux".to_string()
-            } else if cfg!(target_os = "windows") {
-                "windows".to_string()
-            } else {
-                "other".to_string()
-            },
+            platform: current_platform_name().to_string(),
             windows_supported: true,
             macos_supported: true,
             live_hooks_available: hook_capabilities.can_intercept_buttons,
@@ -794,12 +787,8 @@ impl AppRuntime {
             active_hid_backend: self.hid_backend.backend_id().to_string(),
             active_hook_backend: self.hook_backend.backend_id().to_string(),
             active_focus_backend: self.app_focus_backend.backend_id().to_string(),
-            hidapi_available: cfg!(any(
-                target_os = "linux",
-                target_os = "macos",
-                target_os = "windows"
-            )),
-            iokit_available: cfg!(target_os = "macos"),
+            hidapi_available: host_hidapi_available(),
+            iokit_available: host_iokit_available(),
         }
     }
 
@@ -853,12 +842,12 @@ impl AppRuntime {
             DebugEventKind::Info,
             format!(
                 "Transport support: hidapi={} iokit={}",
-                if cfg!(any(target_os = "macos", target_os = "windows")) {
+                if host_hidapi_available() {
                     "ready"
                 } else {
                     "unavailable"
                 },
-                if cfg!(target_os = "macos") {
+                if host_iokit_available() {
                     "ready"
                 } else {
                     "unavailable"
