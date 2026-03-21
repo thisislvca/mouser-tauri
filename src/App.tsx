@@ -239,6 +239,26 @@ function supportLevelTone(level: DeviceSupportLevel): "success" | "warning" | "n
   return "neutral";
 }
 
+function batteryStatusLabel(device: DeviceInfo | null | undefined) {
+  if (device?.battery?.label) {
+    return device.battery.label;
+  }
+  if (device?.batteryLevel != null) {
+    return `${device.batteryLevel}%`;
+  }
+  return null;
+}
+
+function batteryStatusPillValue(device: DeviceInfo | null | undefined) {
+  const label = batteryStatusLabel(device);
+  if (label == null) {
+    return device?.connected ? "Connected" : device ? "Added" : "No device";
+  }
+  return device?.battery?.kind === "percentage" || device?.batteryLevel != null
+    ? `${label} battery`
+    : label;
+}
+
 function supportsControl(
   supportedControls: LogicalControl[],
   control: LogicalControl,
@@ -929,9 +949,7 @@ function App() {
   const actionLookup = new Map(
     availableActions.map((action) => [action.id, action]),
   );
-  const groupedActions = groupActions(
-    availableActions.filter((action) => action.supported),
-  );
+  const groupedActions = groupActions(availableActions);
   const runtimeEvents =
     eventLog.length > 0 ? eventLog : engineSnapshot.engineStatus.debugLog;
 
@@ -1042,10 +1060,7 @@ function App() {
   const shellTitle =
     activeDevice?.displayName ?? SECTION_META[activeSection].label;
   const activeManagedDevice = findManagedDevice(config, activeDevice?.key);
-  const batteryLabel =
-    activeDevice?.batteryLevel != null
-      ? `${activeDevice.batteryLevel}%`
-      : "N/A";
+  const batteryLabel = batteryStatusLabel(activeDevice) ?? "N/A";
   const connectionStatus = activeDevice?.connected
     ? { tone: "success" as const, value: "Connected" }
     : activeDevice
@@ -1496,11 +1511,8 @@ function DashboardShell(props: {
                       <StatusPill
                         tone={device.connected ? "success" : "neutral"}
                         value={
-                          device.batteryLevel != null
-                            ? `${device.batteryLevel}%`
-                            : device.connected
-                              ? "Connected"
-                              : "Added"
+                          batteryStatusLabel(device) ??
+                          (device.connected ? "Connected" : "Added")
                         }
                       />
                       <StatusPill
@@ -2295,13 +2307,7 @@ function DeviceDetailView(props: {
             <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
               <StatusPill
                 tone={activeDevice.connected ? "success" : "neutral"}
-                value={
-                  activeDevice.batteryLevel != null
-                    ? `${activeDevice.batteryLevel}% battery`
-                    : activeDevice.connected
-                      ? "Connected"
-                      : "Added"
-                }
+                value={batteryStatusPillValue(activeDevice)}
               />
               <StatusPill
                 tone={activeDevice.connected ? "success" : "neutral"}
@@ -2595,11 +2601,10 @@ function DeviceDetailView(props: {
           <CapabilityRow
             label="Battery"
             value={
-              supportsBatteryStatus && activeDevice.batteryLevel != null
-                ? `${activeDevice.batteryLevel}%`
-                : supportsBatteryStatus
+              batteryStatusLabel(activeDevice) ??
+              (supportsBatteryStatus
                   ? "N/A"
-                  : "Not validated yet"
+                  : "Not validated yet")
             }
           />
           <CapabilityRow
@@ -4212,10 +4217,13 @@ function actionOptionsForControl(
         continue;
       }
 
+      const unsupported = action.supported === false;
       options.push({
-        group,
+        group: unsupported ? `${group} (Unsupported)` : group,
         label: action.label,
         value: action.id,
+        disabled: unsupported,
+        badge: unsupported ? "Unsupported" : undefined,
       });
     }
   }

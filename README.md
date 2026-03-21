@@ -96,3 +96,21 @@ Still incomplete:
 - Wayland frontmost-app detection and profile auto-switching
 - runtime validation across Linux distros and desktop environments
 - equivalent hardening and parity work on the macOS and Windows backends
+
+## Logitech Actions Not Yet Supported
+
+These actions are imported from Logitech device data and now surface in the UI as disabled `Unsupported` options, but Mouser does not execute them yet:
+
+- Horizontal Scroll: `card_global_presets_osx_horizontal_scroll`
+- Keyboard Shortcut: `card_global_presets_keyboard_shortcut`
+- Middle Button: `card_global_presets_middle_button`
+- Mode Shift: `card_global_presets_mode_shift`
+- One Of Gesture Button: `card_global_presets_one_of_gesture_button`
+- Scroll Left: `card_global_presets_scroll_left`
+- Scroll Right: `card_global_presets_scroll_right`
+- Show Radial Menu: `card_global_presets_show_radial_menu`
+- Smart Zoom: `card_global_presets_osx_smart_zoom`
+- Spotlight Effects: `card_global_presets_spotlight_effects`
+- Swipe Pages: `card_global_presets_osx_swipe_pages`
+- Volume Control: `card_global_presets_osx_volume_control`
+- Zoom: `card_global_presets_osx_zoom`

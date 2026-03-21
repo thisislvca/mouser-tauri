@@ -1610,6 +1610,11 @@ mod tests {
             dpi_inferred: false,
             dpi_source_kind: None,
             connected: true,
+            battery: Some(mouser_core::DeviceBatteryInfo {
+                kind: mouser_core::DeviceBatteryKind::Percentage,
+                percentage: Some(80),
+                label: "80%".to_string(),
+            }),
             battery_level: Some(80),
             current_dpi: 1000,
             fingerprint: DeviceFingerprint {

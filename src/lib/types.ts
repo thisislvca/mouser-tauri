@@ -10,6 +10,8 @@ export type {
   BootstrapPayload,
   DebugEvent as DebugEventRecord,
   DebugEventKind,
+  DeviceBatteryInfo,
+  DeviceBatteryKind,
   DeviceControlCaptureKind,
   DeviceControlSpec,
   DeviceFingerprint,

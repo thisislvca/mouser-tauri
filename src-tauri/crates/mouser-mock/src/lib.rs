@@ -419,11 +419,11 @@ mod tests {
     #[test]
     fn selecting_mock_device_updates_snapshot() {
         let mut runtime = MockRuntime::new();
-        runtime.select_device("mx_anywhere_3s");
+        runtime.select_device("mx_anywhere_3");
         let snapshot = runtime.engine_snapshot();
         assert_eq!(
             snapshot.active_device_key.as_deref(),
-            Some("mx_anywhere_3s")
+            Some("mx_anywhere_3")
         );
         assert!(snapshot.active_device.unwrap().connected);
     }

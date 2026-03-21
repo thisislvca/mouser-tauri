@@ -16,8 +16,8 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use mouser_core::{
     build_connected_device_info, default_config, hydrate_identity_key, AppDiscoverySource,
-    AppIdentity, DebugEventKind, DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint,
-    DeviceInfo, InstalledApp, LogicalControl, Profile,
+    AppIdentity, DebugEventKind, DeviceBatteryInfo, DeviceControlCaptureKind, DeviceControlSpec,
+    DeviceFingerprint, DeviceInfo, InstalledApp, LogicalControl, Profile,
 };
 use serde_json::Value as JsonValue;
 
@@ -98,7 +98,7 @@ pub struct WindowsAppDiscoveryBackend;
 #[derive(Debug, Clone)]
 struct DeviceTelemetryCacheEntry {
     current_dpi: Option<u16>,
-    battery_level: Option<u8>,
+    battery: Option<DeviceBatteryInfo>,
     last_battery_probe_at: Instant,
     verify_after: Option<Instant>,
     connected: bool,
@@ -107,7 +107,7 @@ struct DeviceTelemetryCacheEntry {
 #[derive(Debug, Clone)]
 struct DeviceTelemetrySnapshot {
     current_dpi: Option<u16>,
-    battery_level: Option<u8>,
+    battery: Option<DeviceBatteryInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -624,7 +624,7 @@ impl WindowsHidBackend {
                 probe_battery: true,
                 cached: DeviceTelemetrySnapshot {
                     current_dpi: None,
-                    battery_level: None,
+                    battery: None,
                 },
             }
         }
@@ -638,7 +638,7 @@ impl WindowsHidBackend {
                 probe_battery: should_probe_battery(entry, now),
                 cached: DeviceTelemetrySnapshot {
                     current_dpi: entry.and_then(|entry| entry.current_dpi),
-                    battery_level: entry.and_then(|entry| entry.battery_level),
+                    battery: entry.and_then(|entry| entry.battery.clone()),
                 },
             }
         }
@@ -656,7 +656,7 @@ impl WindowsHidBackend {
             let mut cache = self.telemetry_cache.lock().unwrap();
             let entry = cache.entry(cache_key).or_insert(DeviceTelemetryCacheEntry {
                 current_dpi: None,
-                battery_level: None,
+                battery: None,
                 last_battery_probe_at: now,
                 verify_after: None,
                 connected: true,
@@ -673,7 +673,7 @@ impl WindowsHidBackend {
             }
 
             if plan.probe_battery {
-                entry.battery_level = telemetry.battery_level;
+                entry.battery = telemetry.battery.clone();
                 entry.last_battery_probe_at = now;
             }
         }
@@ -705,7 +705,7 @@ impl WindowsHidBackend {
             let mut cache = self.telemetry_cache.lock().unwrap();
             let entry = cache.entry(cache_key).or_insert(DeviceTelemetryCacheEntry {
                 current_dpi: None,
-                battery_level: None,
+                battery: None,
                 last_battery_probe_at: now,
                 verify_after: None,
                 connected: true,
@@ -954,7 +954,7 @@ impl HidBackend for WindowsHidBackend {
                         info.product_string(),
                         Some(transport),
                         Some("hidapi"),
-                        telemetry.battery_level,
+                        telemetry.battery,
                         telemetry.current_dpi.unwrap_or(1000),
                         fingerprint,
                     ),
@@ -1643,13 +1643,13 @@ fn probe_device_telemetry(
         } else {
             plan.cached.current_dpi
         },
-        battery_level: if plan.probe_battery {
+        battery: if plan.probe_battery {
             read_hidpp_battery(device)
                 .ok()
                 .flatten()
-                .or(plan.cached.battery_level)
+                .or(plan.cached.battery)
         } else {
-            plan.cached.battery_level
+            plan.cached.battery
         },
     }
 }
@@ -1778,8 +1778,8 @@ fn read_hidpp_current_dpi(device: &HidDevice) -> Result<Option<u16>, PlatformErr
 }
 
 #[cfg(target_os = "windows")]
-fn read_hidpp_battery(device: &HidDevice) -> Result<Option<u8>, PlatformError> {
-    hidpp::read_battery_level(device, BT_DEV_IDX, 1_500)
+fn read_hidpp_battery(device: &HidDevice) -> Result<Option<DeviceBatteryInfo>, PlatformError> {
+    hidpp::read_battery_info(device, BT_DEV_IDX, 1_500)
 }
 
 #[cfg(target_os = "windows")]
@@ -2783,7 +2783,11 @@ mod tests {
         let now = Instant::now();
         let fresh = DeviceTelemetryCacheEntry {
             current_dpi: Some(1200),
-            battery_level: Some(70),
+            battery: Some(DeviceBatteryInfo {
+                kind: mouser_core::DeviceBatteryKind::Percentage,
+                percentage: Some(70),
+                label: "70%".to_string(),
+            }),
             last_battery_probe_at: now,
             verify_after: None,
             connected: true,

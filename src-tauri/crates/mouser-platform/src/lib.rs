@@ -14,9 +14,9 @@ use mouser_core::{
     clamp_dpi, default_config, default_device_settings, default_known_apps_ref,
     default_layouts_ref, default_profile_bindings, known_device_specs_ref,
     legacy_default_profile_bindings_v3, normalize_app_match_value, normalize_bindings, AppConfig,
-    AppIdentity, AppMatcherKind, Binding, DebugEventKind, DeviceControlSpec, DeviceFingerprint,
-    DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp, KnownApp, LogicalControl, Profile,
-    Settings,
+    AppIdentity, AppMatcherKind, Binding, DebugEventKind, DeviceBatteryInfo, DeviceControlSpec,
+    DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp, KnownApp,
+    LogicalControl, Profile, Settings,
 };
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -480,6 +480,7 @@ impl StaticDeviceCatalog {
                     dpi_inferred: spec.dpi_inferred,
                     dpi_source_kind: spec.dpi_source_kind,
                     connected: false,
+                    battery: None,
                     battery_level: None,
                     current_dpi: 1000,
                     fingerprint: DeviceFingerprint::default(),
@@ -973,7 +974,7 @@ pub mod macos {
     #[derive(Debug, Clone)]
     struct DeviceTelemetryCacheEntry {
         current_dpi: Option<u16>,
-        battery_level: Option<u8>,
+        battery: Option<DeviceBatteryInfo>,
         last_battery_probe_at: Instant,
         verify_after: Option<Instant>,
         connected: bool,
@@ -983,7 +984,7 @@ pub mod macos {
     #[derive(Debug, Clone)]
     struct DeviceTelemetrySnapshot {
         current_dpi: Option<u16>,
-        battery_level: Option<u8>,
+        battery: Option<DeviceBatteryInfo>,
     }
 
     #[cfg(target_os = "macos")]
@@ -1060,7 +1061,7 @@ pub mod macos {
                 should_probe: should_probe_cached_telemetry(entry, now),
                 cached: DeviceTelemetrySnapshot {
                     current_dpi: entry.and_then(|entry| entry.current_dpi),
-                    battery_level: entry.and_then(|entry| entry.battery_level),
+                    battery: entry.and_then(|entry| entry.battery.clone()),
                 },
             }
         }
@@ -1069,14 +1070,14 @@ pub mod macos {
             &self,
             cache_key: String,
             current_dpi: u16,
-            battery_level: Option<u8>,
+            battery: Option<DeviceBatteryInfo>,
             now: Instant,
         ) {
             self.telemetry_cache.lock().unwrap().insert(
                 cache_key,
                 DeviceTelemetryCacheEntry {
                     current_dpi: Some(current_dpi),
-                    battery_level,
+                    battery,
                     last_battery_probe_at: now,
                     verify_after: None,
                     connected: true,
@@ -1095,7 +1096,7 @@ pub mod macos {
             let mut cache = self.telemetry_cache.lock().unwrap();
             let entry = cache.entry(cache_key).or_insert(DeviceTelemetryCacheEntry {
                 current_dpi: None,
-                battery_level: None,
+                battery: None,
                 last_battery_probe_at: now,
                 verify_after: None,
                 connected: true,
@@ -1604,7 +1605,7 @@ pub mod macos {
                     info.product_string(),
                     transport,
                     Some("hidapi"),
-                    plan.cached.battery_level,
+                    plan.cached.battery,
                     plan.cached.current_dpi.unwrap_or(1000),
                     fingerprint,
                 )
@@ -1612,15 +1613,15 @@ pub mod macos {
                 let plan = self.telemetry_plan(&cache_key, now);
                 if plan.should_probe {
                     let device = info.open_device(api).ok()?;
-                    let (current_dpi, battery_level) = probe_device_telemetry(
+                    let (current_dpi, battery) = probe_device_telemetry(
                         &device,
                         plan.cached.current_dpi,
-                        plan.cached.battery_level,
+                        plan.cached.battery,
                     );
                     self.remember_device_telemetry(
                         cache_key.clone(),
                         current_dpi,
-                        battery_level,
+                        battery.clone(),
                         now,
                     );
                     build_connected_device_info(
@@ -1628,7 +1629,7 @@ pub mod macos {
                         info.product_string(),
                         transport,
                         Some("hidapi"),
-                        battery_level,
+                        battery,
                         current_dpi,
                         fingerprint,
                     )
@@ -1638,7 +1639,7 @@ pub mod macos {
                         info.product_string(),
                         transport,
                         Some("hidapi"),
-                        plan.cached.battery_level,
+                        plan.cached.battery,
                         plan.cached.current_dpi.unwrap_or(1000),
                         fingerprint,
                     )
@@ -1667,7 +1668,7 @@ pub mod macos {
                     info.product_string.as_deref(),
                     transport.as_deref(),
                     Some("iokit"),
-                    plan.cached.battery_level,
+                    plan.cached.battery,
                     plan.cached.current_dpi.unwrap_or(1000),
                     fingerprint,
                 )
@@ -1675,15 +1676,15 @@ pub mod macos {
                 let plan = self.telemetry_plan(&cache_key, now);
                 if plan.should_probe {
                     let device = open_iokit_device(info).ok()?;
-                    let (current_dpi, battery_level) = probe_device_telemetry(
+                    let (current_dpi, battery) = probe_device_telemetry(
                         &device,
                         plan.cached.current_dpi,
-                        plan.cached.battery_level,
+                        plan.cached.battery,
                     );
                     self.remember_device_telemetry(
                         cache_key.clone(),
                         current_dpi,
-                        battery_level,
+                        battery.clone(),
                         now,
                     );
                     build_connected_device_info(
@@ -1691,7 +1692,7 @@ pub mod macos {
                         info.product_string.as_deref(),
                         transport.as_deref(),
                         Some("iokit"),
-                        battery_level,
+                        battery,
                         current_dpi,
                         fingerprint,
                     )
@@ -1701,7 +1702,7 @@ pub mod macos {
                         info.product_string.as_deref(),
                         transport.as_deref(),
                         Some("iokit"),
-                        plan.cached.battery_level,
+                        plan.cached.battery,
                         plan.cached.current_dpi.unwrap_or(1000),
                         fingerprint,
                     )
@@ -1717,18 +1718,18 @@ pub mod macos {
     fn probe_device_telemetry<T: HidppIo + ?Sized>(
         device: &T,
         cached_dpi: Option<u16>,
-        cached_battery_level: Option<u8>,
-    ) -> (u16, Option<u8>) {
+        cached_battery: Option<DeviceBatteryInfo>,
+    ) -> (u16, Option<DeviceBatteryInfo>) {
         let current_dpi = hidpp::read_sensor_dpi(device, BT_DEV_IDX, 1_500)
             .ok()
             .flatten()
             .or(cached_dpi)
             .unwrap_or(1000);
-        let battery_level = hidpp::read_battery_level(device, BT_DEV_IDX, 1_500)
+        let battery = hidpp::read_battery_info(device, BT_DEV_IDX, 1_500)
             .ok()
             .flatten()
-            .or(cached_battery_level);
-        (current_dpi, battery_level)
+            .or(cached_battery);
+        (current_dpi, battery)
     }
 
     #[cfg(target_os = "macos")]
@@ -1970,7 +1971,11 @@ pub mod macos {
             let now = Instant::now();
             let fresh = DeviceTelemetryCacheEntry {
                 current_dpi: Some(1000),
-                battery_level: Some(80),
+                battery: Some(DeviceBatteryInfo {
+                    kind: mouser_core::DeviceBatteryKind::Percentage,
+                    percentage: Some(80),
+                    label: "80%".to_string(),
+                }),
                 last_battery_probe_at: now,
                 verify_after: None,
                 connected: true,
@@ -2062,14 +2067,20 @@ mod tests {
         let mut device_settings = default_device_settings();
         device_settings.macos_thumb_wheel_simulate_trackpad = true;
         device_settings.macos_thumb_wheel_trackpad_hold_timeout_ms = 900;
+        let mx_master = mouser_core::default_device_catalog()
+            .into_iter()
+            .find(|device| device.model_key == "mx_master_3s")
+            .expect("mx master fixture");
+        let mut generic_mouse = mx_master.clone();
+        generic_mouse.model_key = "mouse".to_string();
 
         let mx_master = HookBackendSettings::from_app_and_device(
             &settings,
             &device_settings,
-            Some("mx_master_3s"),
+            Some(&mx_master),
         );
         let generic_mouse =
-            HookBackendSettings::from_app_and_device(&settings, &device_settings, Some("mouse"));
+            HookBackendSettings::from_app_and_device(&settings, &device_settings, Some(&generic_mouse));
         let unknown_device =
             HookBackendSettings::from_app_and_device(&settings, &device_settings, None);
 

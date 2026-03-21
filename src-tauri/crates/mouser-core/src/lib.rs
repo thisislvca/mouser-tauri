@@ -565,6 +565,22 @@ pub struct KnownDeviceSpec {
     pub dpi_source_kind: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceBatteryKind {
+    Percentage,
+    Status,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceBatteryInfo {
+    pub kind: DeviceBatteryKind,
+    #[serde(default)]
+    pub percentage: Option<u8>,
+    pub label: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceControlCaptureKind {
@@ -680,6 +696,8 @@ pub struct DeviceInfo {
     #[serde(default)]
     pub dpi_source_kind: Option<String>,
     pub connected: bool,
+    #[serde(default)]
+    pub battery: Option<DeviceBatteryInfo>,
     pub battery_level: Option<u8>,
     pub current_dpi: u16,
     #[serde(default)]
@@ -1175,6 +1193,11 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
                 .as_ref()
                 .and_then(|spec| spec.dpi_source_kind.clone()),
             connected: true,
+            battery: Some(DeviceBatteryInfo {
+                kind: DeviceBatteryKind::Percentage,
+                percentage: Some(84),
+                label: "84%".to_string(),
+            }),
             battery_level: Some(84),
             current_dpi: 1200,
             fingerprint: DeviceFingerprint::default(),
@@ -1225,6 +1248,11 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
                 .as_ref()
                 .and_then(|spec| spec.dpi_source_kind.clone()),
             connected: false,
+            battery: Some(DeviceBatteryInfo {
+                kind: DeviceBatteryKind::Percentage,
+                percentage: Some(62),
+                label: "62%".to_string(),
+            }),
             battery_level: Some(62),
             current_dpi: 1000,
             fingerprint: DeviceFingerprint::default(),
@@ -1249,6 +1277,7 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
             dpi_inferred: false,
             dpi_source_kind: None,
             connected: false,
+            battery: None,
             battery_level: None,
             current_dpi: 900,
             fingerprint: DeviceFingerprint::default(),
@@ -1280,7 +1309,7 @@ pub fn build_connected_device_info(
     product_name: Option<&str>,
     transport: Option<&str>,
     source: Option<&str>,
-    battery_level: Option<u8>,
+    battery: Option<DeviceBatteryInfo>,
     current_dpi: u16,
     mut fingerprint: DeviceFingerprint,
 ) -> DeviceInfo {
@@ -1305,14 +1334,15 @@ pub fn build_connected_device_info(
             image_asset: spec.image_asset,
             supported_controls: spec.supported_controls,
             controls: spec.controls,
-            support: spec.support,
+            support: support_with_runtime_battery(spec.support, battery.as_ref()),
             gesture_cids: spec.gesture_cids,
             dpi_min: spec.dpi_min,
             dpi_max: spec.dpi_max,
             dpi_inferred: spec.dpi_inferred,
             dpi_source_kind: spec.dpi_source_kind,
             connected: true,
-            battery_level,
+            battery_level: battery.as_ref().and_then(|value| value.percentage),
+            battery,
             current_dpi,
             fingerprint,
         };
@@ -1342,14 +1372,15 @@ pub fn build_connected_device_info(
         image_asset: "/assets/icons/mouse-simple.svg".to_string(),
         supported_controls: Vec::new(),
         controls: Vec::new(),
-        support: generic_logitech_support(),
+        support: support_with_runtime_battery(generic_logitech_support(), battery.as_ref()),
         gesture_cids: vec![0x00C3, 0x00D7],
         dpi_min: 200,
         dpi_max: 8000,
         dpi_inferred: false,
         dpi_source_kind: None,
         connected: true,
-        battery_level,
+        battery_level: battery.as_ref().and_then(|value| value.percentage),
+        battery,
         current_dpi,
         fingerprint,
     }
@@ -1362,6 +1393,7 @@ pub fn build_managed_device_info(managed: &ManagedDevice, live: Option<&DeviceIn
     let live_product_name = live.and_then(|device| non_empty_name(device.product_name.as_deref()));
     let display_name = managed_device_display_name(managed, live_product_name.as_deref());
     let connected = live.is_some();
+    let battery = live.and_then(|device| device.battery.clone());
     let battery_level = live.and_then(|device| device.battery_level);
     let transport = managed_device_transport(managed, live);
     let source = managed_device_source(live);
@@ -1383,13 +1415,14 @@ pub fn build_managed_device_info(managed: &ManagedDevice, live: Option<&DeviceIn
             image_asset: spec.image_asset,
             supported_controls: spec.supported_controls,
             controls: spec.controls,
-            support: spec.support,
+            support: support_with_runtime_battery(spec.support, battery.as_ref()),
             gesture_cids: spec.gesture_cids,
             dpi_min: spec.dpi_min,
             dpi_max: spec.dpi_max,
             dpi_inferred: spec.dpi_inferred,
             dpi_source_kind: spec.dpi_source_kind,
             connected,
+            battery,
             battery_level,
             current_dpi: effective_current_dpi.max(spec.dpi_min).min(spec.dpi_max),
             fingerprint,
@@ -1409,13 +1442,14 @@ pub fn build_managed_device_info(managed: &ManagedDevice, live: Option<&DeviceIn
         image_asset: "/assets/icons/mouse-simple.svg".to_string(),
         supported_controls: Vec::new(),
         controls: Vec::new(),
-        support: generic_logitech_support(),
+        support: support_with_runtime_battery(generic_logitech_support(), battery.as_ref()),
         gesture_cids: vec![0x00C3, 0x00D7],
         dpi_min: 200,
         dpi_max: 8000,
         dpi_inferred: false,
         dpi_source_kind: None,
         connected,
+        battery,
         battery_level,
         current_dpi: effective_current_dpi.clamp(200, 8000),
         fingerprint,
@@ -1573,6 +1607,16 @@ fn generic_logitech_support() -> DeviceSupportMatrix {
             "Add a catalog entry before exposing remapping or tuning controls for this model.".to_string(),
         ],
     }
+}
+
+fn support_with_runtime_battery(
+    mut support: DeviceSupportMatrix,
+    battery: Option<&DeviceBatteryInfo>,
+) -> DeviceSupportMatrix {
+    if battery.is_some() {
+        support.supports_battery_status = true;
+    }
+    support
 }
 
 fn non_empty_name(value: Option<&str>) -> Option<String> {
@@ -1819,7 +1863,7 @@ mod tests {
             .iter()
             .find(|device| device.key == "mx_master_3s")
             .unwrap();
-        assert_eq!(device.ui_layout, "mx_master");
+        assert_eq!(device.ui_layout, "mx_master_3s");
         assert_eq!(clamp_dpi(Some(device), 9000), 8000);
         assert_eq!(clamp_dpi(Some(device), 100), 200);
     }
@@ -1831,7 +1875,11 @@ mod tests {
             Some("MX Master 3 Mac"),
             Some("Bluetooth Low Energy"),
             Some("iokit"),
-            Some(100),
+            Some(DeviceBatteryInfo {
+                kind: DeviceBatteryKind::Percentage,
+                percentage: Some(100),
+                label: "100%".to_string(),
+            }),
             1000,
             DeviceFingerprint::default(),
         );
@@ -1877,7 +1925,11 @@ mod tests {
             Some("MX Master 3 Mac"),
             Some("Bluetooth Low Energy"),
             Some("iokit"),
-            Some(100),
+            Some(DeviceBatteryInfo {
+                kind: DeviceBatteryKind::Percentage,
+                percentage: Some(100),
+                label: "100%".to_string(),
+            }),
             1000,
             DeviceFingerprint::default(),
         );

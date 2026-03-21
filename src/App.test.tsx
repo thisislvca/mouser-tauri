@@ -1199,6 +1199,32 @@ describe("App", () => {
     });
   });
 
+  it("shows unsupported Logitech actions as disabled options", async () => {
+    currentBootstrap = {
+      ...makeBootstrap(),
+      availableActions: [
+        ...makeBootstrap().availableActions,
+        {
+          id: "card_global_presets_osx_smart_zoom",
+          label: "Smart Zoom",
+          category: "Logitech",
+          supported: false,
+        },
+      ],
+    };
+    const { user } = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Buttons" }));
+    await user.click(await screen.findByTestId("hotspot-card-middle"));
+    await user.click(screen.getByRole("combobox", { name: "Middle button" }));
+
+    const option = await screen.findByTestId(
+      "select-option-card_global_presets_osx_smart_zoom",
+    );
+    expect(option).toHaveAttribute("data-disabled");
+    expect(option).toHaveTextContent("Unsupported");
+  });
+
   it("shows a generic controls matrix for partial-support devices without overlays", async () => {
     currentBootstrap = makeAnywhereBootstrap();
     const { user } = renderApp();

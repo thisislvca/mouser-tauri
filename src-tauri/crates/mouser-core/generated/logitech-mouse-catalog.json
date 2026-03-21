@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-03-21T01:35:42.699Z",
+  "generatedAt": "2026-03-21T07:31:23.302Z",
   "devices": [
     {
       "key": "m185",
@@ -44,12 +44,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -100,12 +101,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -152,12 +154,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -202,12 +205,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -352,12 +356,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -568,12 +573,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -782,12 +788,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -995,12 +1002,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -1160,12 +1168,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -1290,12 +1299,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -1446,12 +1456,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -1553,12 +1564,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 540,
@@ -1643,12 +1655,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -1734,12 +1747,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -1900,12 +1914,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -2060,12 +2075,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -2244,12 +2260,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -2470,12 +2487,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 1000,
@@ -2627,12 +2645,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -2798,12 +2817,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -2970,12 +2990,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -3142,12 +3163,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -3313,11 +3335,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
         "supportsDpiConfiguration": true,
         "hasInteractiveLayout": true,
-        "notes": []
+        "notes": [
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
+        ]
       },
       "dpiMin": 200,
       "dpiMax": 4000,
@@ -3470,11 +3494,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
         "supportsDpiConfiguration": true,
         "hasInteractiveLayout": true,
-        "notes": []
+        "notes": [
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
+        ]
       },
       "dpiMin": 200,
       "dpiMax": 4000,
@@ -3616,12 +3642,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -3766,12 +3793,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 512,
@@ -4061,11 +4089,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
         "supportsDpiConfiguration": true,
         "hasInteractiveLayout": true,
-        "notes": []
+        "notes": [
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
+        ]
       },
       "dpiMin": 200,
       "dpiMax": 4000,
@@ -4354,11 +4384,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
         "supportsDpiConfiguration": true,
         "hasInteractiveLayout": true,
-        "notes": []
+        "notes": [
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
+        ]
       },
       "dpiMin": 200,
       "dpiMax": 4000,
@@ -4622,11 +4654,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
         "supportsDpiConfiguration": true,
         "hasInteractiveLayout": true,
-        "notes": []
+        "notes": [
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
+        ]
       },
       "dpiMin": 200,
       "dpiMax": 8000,
@@ -4827,12 +4861,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -5098,11 +5133,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
         "supportsDpiConfiguration": true,
         "hasInteractiveLayout": true,
-        "notes": []
+        "notes": [
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
+        ]
       },
       "dpiMin": 200,
       "dpiMax": 8000,
@@ -5304,12 +5341,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -5600,12 +5638,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -5895,12 +5934,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -6005,11 +6045,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
         "supportsDpiConfiguration": true,
         "hasInteractiveLayout": true,
-        "notes": []
+        "notes": [
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
+        ]
       },
       "dpiMin": 200,
       "dpiMax": 4000,
@@ -6154,12 +6196,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -6305,12 +6348,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -6512,12 +6556,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 100,
@@ -6585,12 +6630,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -6635,12 +6681,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -6762,12 +6809,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -6890,12 +6938,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
@@ -7037,12 +7086,13 @@
         }
       ],
       "support": {
-        "level": "full",
-        "supportsBatteryStatus": true,
-        "supportsDpiConfiguration": true,
+        "level": "partial",
+        "supportsBatteryStatus": false,
+        "supportsDpiConfiguration": false,
         "hasInteractiveLayout": true,
         "notes": [
-          "DPI range is inferred for this model and should be verified against official Logitech specs."
+          "DPI range is inferred for this model and should be verified against official Logitech specs.",
+          "Battery telemetry is discovered at runtime and is not yet catalog-verified for this model."
         ]
       },
       "dpiMin": 400,
