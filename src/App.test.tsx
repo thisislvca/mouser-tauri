@@ -25,6 +25,31 @@ const DEFAULT_DEVICE_SETTINGS: NonNullable<AppConfig["deviceDefaults"]> = {
   gestureCooldownMs: 500,
   manualLayoutOverride: null,
 };
+const FULL_SUPPORT = {
+  level: "full" as const,
+  supportsBatteryStatus: true,
+  supportsDpiConfiguration: true,
+  hasInteractiveLayout: true,
+  notes: [] as string[],
+};
+const PARTIAL_SUPPORT = {
+  level: "partial" as const,
+  supportsBatteryStatus: true,
+  supportsDpiConfiguration: true,
+  hasInteractiveLayout: false,
+  notes: [
+    "This family currently uses a generic controls view while the dedicated overlay is still missing.",
+  ],
+};
+const EXPERIMENTAL_SUPPORT = {
+  level: "experimental" as const,
+  supportsBatteryStatus: false,
+  supportsDpiConfiguration: false,
+  hasInteractiveLayout: false,
+  notes: [
+    "The backend detected this Logitech device, but Mouser does not have a verified support entry for it yet.",
+  ],
+};
 let systemPrefersDark = false;
 const matchMediaListeners = new Set<(event: MediaQueryListEvent) => void>();
 
@@ -275,6 +300,7 @@ function makeBootstrap(): BootstrapPayload {
       supportedControls: config.profiles[0].bindings.map(
         (binding) => binding.control,
       ),
+      support: FULL_SUPPORT,
       gestureCids: [195, 215],
       dpiMin: 200,
       dpiMax: 8000,
@@ -413,6 +439,7 @@ function makeBootstrap(): BootstrapPayload {
         supportedControls: config.profiles[0].bindings.map(
           (binding) => binding.control,
         ),
+        support: FULL_SUPPORT,
         dpiMin: 200,
         dpiMax: 8000,
       },
@@ -424,9 +451,17 @@ function makeBootstrap(): BootstrapPayload {
         gestureCids: [195],
         uiLayout: "generic_mouse",
         imageAsset: "/assets/icons/mouse-simple.svg",
-        supportedControls: config.profiles[0].bindings.map(
-          (binding) => binding.control,
-        ),
+        supportedControls: [
+          "middle",
+          "back",
+          "forward",
+          "gesture_press",
+          "gesture_left",
+          "gesture_right",
+          "gesture_up",
+          "gesture_down",
+        ],
+        support: PARTIAL_SUPPORT,
         dpiMin: 200,
         dpiMax: 8000,
       },
@@ -529,6 +564,8 @@ function makeGenericMouseBootstrap(): BootstrapPayload {
             displayName: "Generic Mouse",
             uiLayout: "generic_mouse",
             imageAsset: "/assets/icons/mouse-simple.svg",
+            supportedControls: [],
+            support: EXPERIMENTAL_SUPPORT,
           }
         : device,
     ),
@@ -540,6 +577,8 @@ function makeGenericMouseBootstrap(): BootstrapPayload {
             displayName: "Generic Mouse",
             uiLayout: "generic_mouse",
             imageAsset: "/assets/icons/mouse-simple.svg",
+            supportedControls: [],
+            support: EXPERIMENTAL_SUPPORT,
           }
         : device,
     ),
@@ -550,9 +589,83 @@ function makeGenericMouseBootstrap(): BootstrapPayload {
           displayName: "Generic Mouse",
           uiLayout: "generic_mouse",
           imageAsset: "/assets/icons/mouse-simple.svg",
+          supportedControls: [],
+          support: EXPERIMENTAL_SUPPORT,
         }
       : null,
   };
+  return next;
+}
+
+function makeAnywhereBootstrap(): BootstrapPayload {
+  const next = makeBootstrap();
+  const supportedDevice = next.supportedDevices.find(
+    (device) => device.key === "mx_anywhere_3s",
+  );
+  if (!supportedDevice) {
+    throw new Error("missing mx_anywhere_3s fixture");
+  }
+
+  const managedId = "mx_anywhere_3s-2";
+  const managedDevice: NonNullable<AppConfig["managedDevices"]>[number] = {
+    id: managedId,
+    modelKey: supportedDevice.key,
+    displayName: supportedDevice.displayName,
+    nickname: null,
+    profileId: null,
+    identityKey: "mock:mx_anywhere_3s:1",
+    settings: normalizeDeviceSettings(next.config.deviceDefaults),
+    createdAtMs: 2,
+    lastSeenAtMs: 2,
+    lastSeenTransport: "Bluetooth Low Energy",
+  };
+  const liveDevice: DeviceInfo = {
+    key: managedId,
+    modelKey: supportedDevice.key,
+    displayName: supportedDevice.displayName,
+    nickname: null,
+    productId: supportedDevice.productIds[0] ?? null,
+    productName: supportedDevice.displayName,
+    transport: "Bluetooth Low Energy",
+    source: "hidapi",
+    uiLayout: supportedDevice.uiLayout,
+    imageAsset: supportedDevice.imageAsset,
+    supportedControls: supportedDevice.supportedControls,
+    support: supportedDevice.support,
+    gestureCids: supportedDevice.gestureCids,
+    dpiMin: supportedDevice.dpiMin,
+    dpiMax: supportedDevice.dpiMax,
+    connected: true,
+    batteryLevel: 67,
+    currentDpi: 1200,
+    fingerprint: {
+      identityKey: "mock:mx_anywhere_3s:1",
+      serialNumber: null,
+      hidPath: null,
+      interfaceNumber: null,
+      usagePage: null,
+      usage: null,
+      locationId: null,
+    },
+  };
+
+  next.config = {
+    ...next.config,
+    managedDevices: [managedDevice],
+  };
+  next.engineSnapshot = {
+    ...next.engineSnapshot,
+    devices: [liveDevice],
+    detectedDevices: [liveDevice],
+    activeDeviceKey: managedId,
+    activeDevice: liveDevice,
+    engineStatus: {
+      ...next.engineSnapshot.engineStatus,
+      selectedDeviceKey: managedId,
+      connected: true,
+    },
+  };
+
   return next;
 }
 
@@ -708,6 +821,7 @@ describe("App", () => {
         uiLayout: supportedDevice.uiLayout,
         imageAsset: supportedDevice.imageAsset,
         supportedControls: supportedDevice.supportedControls,
+        support: supportedDevice.support,
         gestureCids: supportedDevice.gestureCids,
         dpiMin: supportedDevice.dpiMin,
         dpiMax: supportedDevice.dpiMax,
@@ -994,6 +1108,33 @@ describe("App", () => {
         ]),
       );
     });
+  });
+
+  it("shows a generic controls matrix for partial-support devices without overlays", async () => {
+    currentBootstrap = makeAnywhereBootstrap();
+    const { user } = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Buttons" }));
+
+    expect(await screen.findByText("MX Anywhere 3S Controls")).toBeInTheDocument();
+    expect(
+      screen.getByText(/generic controls view while the dedicated overlay is still missing/i),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Gesture button/i }));
+    expect(await screen.findByTestId("buttons-editor-sheet")).toBeInTheDocument();
+  });
+
+  it("keeps experimental devices read-only in the buttons view", async () => {
+    currentBootstrap = makeGenericMouseBootstrap();
+    const { user } = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Buttons" }));
+
+    expect(
+      await screen.findByText("No remappable controls yet"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("hotspot-card-middle")).not.toBeInTheDocument();
   });
 
   it("saves device tuning changes through the debounced DPI controls", async () => {

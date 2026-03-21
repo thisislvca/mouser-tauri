@@ -507,6 +507,24 @@ pub struct ManagedDevice {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub enum DeviceSupportLevel {
+    Full,
+    Partial,
+    Experimental,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSupportMatrix {
+    pub level: DeviceSupportLevel,
+    pub supports_battery_status: bool,
+    pub supports_dpi_configuration: bool,
+    pub has_interactive_layout: bool,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct KnownDeviceSpec {
     pub key: String,
     pub display_name: String,
@@ -516,6 +534,7 @@ pub struct KnownDeviceSpec {
     pub ui_layout: String,
     pub image_asset: String,
     pub supported_controls: Vec<LogicalControl>,
+    pub support: DeviceSupportMatrix,
     pub dpi_min: u16,
     pub dpi_max: u16,
 }
@@ -589,6 +608,7 @@ pub struct DeviceInfo {
     pub ui_layout: String,
     pub image_asset: String,
     pub supported_controls: Vec<LogicalControl>,
+    pub support: DeviceSupportMatrix,
     pub gesture_cids: Vec<u16>,
     pub dpi_min: u16,
     pub dpi_max: u16,
@@ -800,6 +820,28 @@ pub fn normalize_bindings(bindings: Vec<Binding>) -> Vec<Binding> {
         .collect()
 }
 
+pub fn profile_for_supported_controls(
+    profile: &Profile,
+    supported_controls: &[LogicalControl],
+) -> Profile {
+    let supported = supported_controls.iter().copied().collect::<BTreeSet<_>>();
+    let bindings = normalize_bindings(
+        profile
+            .bindings
+            .iter()
+            .filter(|binding| supported.contains(&binding.control))
+            .cloned()
+            .collect(),
+    );
+
+    Profile {
+        id: profile.id.clone(),
+        label: profile.label.clone(),
+        app_matchers: profile.app_matchers.clone(),
+        bindings,
+    }
+}
+
 pub fn default_action_catalog() -> Vec<ActionDefinition> {
     default_action_catalog_ref().to_vec()
 }
@@ -960,6 +1002,33 @@ pub fn known_device_specs() -> Vec<KnownDeviceSpec> {
 pub fn known_device_specs_ref() -> &'static [KnownDeviceSpec] {
     static KNOWN_DEVICE_SPECS: OnceLock<Vec<KnownDeviceSpec>> = OnceLock::new();
     KNOWN_DEVICE_SPECS.get_or_init(|| {
+        const MX_MASTER_CONTROLS: &[LogicalControl] = &[
+            LogicalControl::Middle,
+            LogicalControl::GesturePress,
+            LogicalControl::GestureLeft,
+            LogicalControl::GestureRight,
+            LogicalControl::GestureUp,
+            LogicalControl::GestureDown,
+            LogicalControl::Back,
+            LogicalControl::Forward,
+            LogicalControl::HscrollLeft,
+            LogicalControl::HscrollRight,
+        ];
+        const MX_ANYWHERE_CONTROLS: &[LogicalControl] = &[
+            LogicalControl::Middle,
+            LogicalControl::GesturePress,
+            LogicalControl::GestureLeft,
+            LogicalControl::GestureRight,
+            LogicalControl::GestureUp,
+            LogicalControl::GestureDown,
+            LogicalControl::Back,
+            LogicalControl::Forward,
+        ];
+        const MX_VERTICAL_CONTROLS: &[LogicalControl] = &[
+            LogicalControl::Middle,
+            LogicalControl::Back,
+            LogicalControl::Forward,
+        ];
         vec![
             known_device(KnownDeviceSeed {
                 key: "mx_master_3s",
@@ -969,6 +1038,12 @@ pub fn known_device_specs_ref() -> &'static [KnownDeviceSpec] {
                 gesture_cids: &[0x00C3, 0x00D7],
                 ui_layout: "mx_master",
                 image_asset: "/assets/mouse.png",
+                supported_controls: MX_MASTER_CONTROLS,
+                support_level: DeviceSupportLevel::Full,
+                supports_battery_status: true,
+                supports_dpi_configuration: true,
+                has_interactive_layout: true,
+                notes: &[],
                 dpi_range: (200, 8000),
             }),
             known_device(KnownDeviceSeed {
@@ -983,6 +1058,12 @@ pub fn known_device_specs_ref() -> &'static [KnownDeviceSpec] {
                 gesture_cids: &[0x00C3, 0x00D7],
                 ui_layout: "mx_master",
                 image_asset: "/assets/mouse.png",
+                supported_controls: MX_MASTER_CONTROLS,
+                support_level: DeviceSupportLevel::Full,
+                supports_battery_status: true,
+                supports_dpi_configuration: true,
+                has_interactive_layout: true,
+                notes: &[],
                 dpi_range: (200, 8000),
             }),
             known_device(KnownDeviceSeed {
@@ -993,6 +1074,12 @@ pub fn known_device_specs_ref() -> &'static [KnownDeviceSpec] {
                 gesture_cids: &[0x00C3, 0x00D7],
                 ui_layout: "mx_master",
                 image_asset: "/assets/mouse.png",
+                supported_controls: MX_MASTER_CONTROLS,
+                support_level: DeviceSupportLevel::Full,
+                supports_battery_status: true,
+                supports_dpi_configuration: true,
+                has_interactive_layout: true,
+                notes: &[],
                 dpi_range: (200, 4000),
             }),
             known_device(KnownDeviceSeed {
@@ -1003,6 +1090,12 @@ pub fn known_device_specs_ref() -> &'static [KnownDeviceSpec] {
                 gesture_cids: &[0x00C3, 0x00D7],
                 ui_layout: "mx_master",
                 image_asset: "/assets/mouse.png",
+                supported_controls: MX_MASTER_CONTROLS,
+                support_level: DeviceSupportLevel::Full,
+                supports_battery_status: true,
+                supports_dpi_configuration: true,
+                has_interactive_layout: true,
+                notes: &[],
                 dpi_range: (200, 4000),
             }),
             known_device(KnownDeviceSeed {
@@ -1016,6 +1109,15 @@ pub fn known_device_specs_ref() -> &'static [KnownDeviceSpec] {
                 gesture_cids: &[0x00C3, 0x00D7],
                 ui_layout: "mx_vertical",
                 image_asset: "/assets/icons/mouse-simple.svg",
+                supported_controls: MX_VERTICAL_CONTROLS,
+                support_level: DeviceSupportLevel::Partial,
+                supports_battery_status: true,
+                supports_dpi_configuration: true,
+                has_interactive_layout: false,
+                notes: &[
+                    "This family currently uses a generic controls view while the dedicated overlay is still missing.",
+                    "Only the validated button set is exposed in the support matrix for now.",
+                ],
                 dpi_range: (200, 4000),
             }),
             known_device(KnownDeviceSeed {
@@ -1026,6 +1128,14 @@ pub fn known_device_specs_ref() -> &'static [KnownDeviceSpec] {
                 gesture_cids: &[0x00C3],
                 ui_layout: "mx_anywhere",
                 image_asset: "/assets/icons/mouse-simple.svg",
+                supported_controls: MX_ANYWHERE_CONTROLS,
+                support_level: DeviceSupportLevel::Partial,
+                supports_battery_status: true,
+                supports_dpi_configuration: true,
+                has_interactive_layout: false,
+                notes: &[
+                    "Remapping is available through the support matrix, but this family still needs a dedicated visual overlay.",
+                ],
                 dpi_range: (200, 8000),
             }),
             known_device(KnownDeviceSeed {
@@ -1036,6 +1146,14 @@ pub fn known_device_specs_ref() -> &'static [KnownDeviceSpec] {
                 gesture_cids: &[0x00C3],
                 ui_layout: "mx_anywhere",
                 image_asset: "/assets/icons/mouse-simple.svg",
+                supported_controls: MX_ANYWHERE_CONTROLS,
+                support_level: DeviceSupportLevel::Partial,
+                supports_battery_status: true,
+                supports_dpi_configuration: true,
+                has_interactive_layout: false,
+                notes: &[
+                    "Remapping is available through the support matrix, but this family still needs a dedicated visual overlay.",
+                ],
                 dpi_range: (200, 4000),
             }),
             known_device(KnownDeviceSeed {
@@ -1046,6 +1164,14 @@ pub fn known_device_specs_ref() -> &'static [KnownDeviceSpec] {
                 gesture_cids: &[0x00C3],
                 ui_layout: "mx_anywhere",
                 image_asset: "/assets/icons/mouse-simple.svg",
+                supported_controls: MX_ANYWHERE_CONTROLS,
+                support_level: DeviceSupportLevel::Partial,
+                supports_battery_status: true,
+                supports_dpi_configuration: true,
+                has_interactive_layout: false,
+                notes: &[
+                    "Remapping is available through the support matrix, but this family still needs a dedicated visual overlay.",
+                ],
                 dpi_range: (200, 4000),
             }),
         ]
@@ -1194,7 +1320,12 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
             source: Some("mock-catalog".to_string()),
             ui_layout: "mx_master".to_string(),
             image_asset: "/assets/mouse.png".to_string(),
-            supported_controls: LogicalControl::all(),
+            supported_controls: known_device_spec_by_key("mx_master_3s")
+                .map(|spec| spec.supported_controls)
+                .unwrap_or_else(LogicalControl::all),
+            support: known_device_spec_by_key("mx_master_3s")
+                .map(|spec| spec.support)
+                .unwrap_or_else(generic_logitech_support),
             gesture_cids: vec![0x00C3, 0x00D7],
             dpi_min: 200,
             dpi_max: 8000,
@@ -1214,7 +1345,12 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
             source: Some("mock-catalog".to_string()),
             ui_layout: "mx_anywhere".to_string(),
             image_asset: "/assets/icons/mouse-simple.svg".to_string(),
-            supported_controls: LogicalControl::all(),
+            supported_controls: known_device_spec_by_key("mx_anywhere_3s")
+                .map(|spec| spec.supported_controls)
+                .unwrap_or_else(LogicalControl::all),
+            support: known_device_spec_by_key("mx_anywhere_3s")
+                .map(|spec| spec.support)
+                .unwrap_or_else(generic_logitech_support),
             gesture_cids: vec![0x00C3],
             dpi_min: 200,
             dpi_max: 8000,
@@ -1234,7 +1370,8 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
             source: Some("mock-catalog".to_string()),
             ui_layout: "generic_mouse".to_string(),
             image_asset: "/assets/icons/mouse-simple.svg".to_string(),
-            supported_controls: LogicalControl::all(),
+            supported_controls: Vec::new(),
+            support: generic_logitech_support(),
             gesture_cids: vec![0x00C3, 0x00D7],
             dpi_min: 200,
             dpi_max: 8000,
@@ -1294,6 +1431,7 @@ pub fn build_connected_device_info(
             ui_layout: spec.ui_layout,
             image_asset: spec.image_asset,
             supported_controls: spec.supported_controls,
+            support: spec.support,
             gesture_cids: spec.gesture_cids,
             dpi_min: spec.dpi_min,
             dpi_max: spec.dpi_max,
@@ -1326,7 +1464,8 @@ pub fn build_connected_device_info(
         source: source.map(str::to_string),
         ui_layout: "generic_mouse".to_string(),
         image_asset: "/assets/icons/mouse-simple.svg".to_string(),
-        supported_controls: LogicalControl::all(),
+        supported_controls: Vec::new(),
+        support: generic_logitech_support(),
         gesture_cids: vec![0x00C3, 0x00D7],
         dpi_min: 200,
         dpi_max: 8000,
@@ -1364,6 +1503,7 @@ pub fn build_managed_device_info(managed: &ManagedDevice, live: Option<&DeviceIn
             ui_layout: spec.ui_layout,
             image_asset: spec.image_asset,
             supported_controls: spec.supported_controls,
+            support: spec.support,
             gesture_cids: spec.gesture_cids,
             dpi_min: spec.dpi_min,
             dpi_max: spec.dpi_max,
@@ -1385,7 +1525,8 @@ pub fn build_managed_device_info(managed: &ManagedDevice, live: Option<&DeviceIn
         source,
         ui_layout: "generic_mouse".to_string(),
         image_asset: "/assets/icons/mouse-simple.svg".to_string(),
-        supported_controls: LogicalControl::all(),
+        supported_controls: Vec::new(),
+        support: generic_logitech_support(),
         gesture_cids: vec![0x00C3, 0x00D7],
         dpi_min: 200,
         dpi_max: 8000,
@@ -1487,6 +1628,12 @@ struct KnownDeviceSeed<'a> {
     gesture_cids: &'a [u16],
     ui_layout: &'a str,
     image_asset: &'a str,
+    supported_controls: &'a [LogicalControl],
+    support_level: DeviceSupportLevel,
+    supports_battery_status: bool,
+    supports_dpi_configuration: bool,
+    has_interactive_layout: bool,
+    notes: &'a [&'a str],
     dpi_range: (u16, u16),
 }
 
@@ -1548,9 +1695,29 @@ fn known_device(spec: KnownDeviceSeed<'_>) -> KnownDeviceSpec {
         gesture_cids: spec.gesture_cids.to_vec(),
         ui_layout: spec.ui_layout.to_string(),
         image_asset: spec.image_asset.to_string(),
-        supported_controls: LogicalControl::all(),
+        supported_controls: spec.supported_controls.to_vec(),
+        support: DeviceSupportMatrix {
+            level: spec.support_level,
+            supports_battery_status: spec.supports_battery_status,
+            supports_dpi_configuration: spec.supports_dpi_configuration,
+            has_interactive_layout: spec.has_interactive_layout,
+            notes: spec.notes.iter().map(|note| (*note).to_string()).collect(),
+        },
         dpi_min: spec.dpi_range.0,
         dpi_max: spec.dpi_range.1,
+    }
+}
+
+fn generic_logitech_support() -> DeviceSupportMatrix {
+    DeviceSupportMatrix {
+        level: DeviceSupportLevel::Experimental,
+        supports_battery_status: false,
+        supports_dpi_configuration: false,
+        has_interactive_layout: false,
+        notes: vec![
+            "The backend detected this Logitech device, but Mouser does not have a verified support entry for it yet.".to_string(),
+            "Add a catalog entry before exposing remapping or tuning controls for this model.".to_string(),
+        ],
     }
 }
 
@@ -1835,6 +2002,23 @@ mod tests {
     }
 
     #[test]
+    fn connected_device_info_uses_experimental_matrix_for_unknown_models() {
+        let device = build_connected_device_info(
+            Some(0xBEEF),
+            Some("Mystery Logitech Device"),
+            Some("USB"),
+            Some("hidapi"),
+            None,
+            1000,
+            DeviceFingerprint::default(),
+        );
+
+        assert_eq!(device.support.level, DeviceSupportLevel::Experimental);
+        assert!(device.supported_controls.is_empty());
+        assert!(!device.support.supports_dpi_configuration);
+    }
+
+    #[test]
     fn managed_device_info_prefers_live_product_name_without_nickname() {
         let managed = ManagedDevice {
             id: "mx_master_3-1".to_string(),
@@ -1862,6 +2046,38 @@ mod tests {
 
         assert_eq!(merged.display_name, "MX Master 3 Mac");
         assert_eq!(merged.product_name.as_deref(), Some("MX Master 3 Mac"));
+    }
+
+    #[test]
+    fn profile_filter_for_supported_controls_disables_unsupported_bindings() {
+        let profile = default_profile();
+        let filtered = profile_for_supported_controls(
+            &profile,
+            &[
+                LogicalControl::Middle,
+                LogicalControl::Back,
+                LogicalControl::Forward,
+            ],
+        );
+
+        assert_eq!(
+            filtered
+                .binding_for(LogicalControl::Back)
+                .map(|binding| binding.action_id.as_str()),
+            Some("browser_back")
+        );
+        assert_eq!(
+            filtered
+                .binding_for(LogicalControl::GestureLeft)
+                .map(|binding| binding.action_id.as_str()),
+            Some("none")
+        );
+        assert_eq!(
+            filtered
+                .binding_for(LogicalControl::HscrollLeft)
+                .map(|binding| binding.action_id.as_str()),
+            Some("none")
+        );
     }
 
     #[test]

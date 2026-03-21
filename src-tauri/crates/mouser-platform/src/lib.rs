@@ -464,6 +464,7 @@ impl StaticDeviceCatalog {
                     ui_layout: spec.ui_layout,
                     image_asset: spec.image_asset,
                     supported_controls: spec.supported_controls,
+                    support: spec.support,
                     gesture_cids: spec.gesture_cids,
                     dpi_min: spec.dpi_min,
                     dpi_max: spec.dpi_max,

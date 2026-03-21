@@ -77,6 +77,7 @@ import type {
   AppMatcherKind,
   Binding,
   BootstrapPayload,
+  DeviceSupportLevel,
   DebugEventRecord,
   DeviceInfo,
   DeviceLayout,
@@ -135,6 +136,24 @@ const CONTROL_LABELS: Record<LogicalControl, string> = {
   hscroll_right: "Thumb wheel right",
 };
 
+const GESTURE_CONTROLS: LogicalControl[] = [
+  "gesture_press",
+  "gesture_left",
+  "gesture_right",
+  "gesture_up",
+  "gesture_down",
+];
+
+const HSCROLL_CONTROLS: LogicalControl[] = ["hscroll_left", "hscroll_right"];
+
+const PRIMARY_CONTROL_ORDER: LogicalControl[] = [
+  "middle",
+  "back",
+  "forward",
+  "gesture_press",
+  "hscroll_left",
+];
+
 type AppSelectOption = {
   label: string;
   value: string;
@@ -175,6 +194,112 @@ function samePhysicalDevice(left: DeviceInfo, right: DeviceInfo) {
 
 function isMxMasterFamilyDevice(device: DeviceInfo | null | undefined) {
   return device?.modelKey.startsWith("mx_master") ?? false;
+}
+
+function supportLevelLabel(level: DeviceSupportLevel) {
+  switch (level) {
+    case "full":
+      return "Verified";
+    case "partial":
+      return "Partial";
+    case "experimental":
+      return "Experimental";
+  }
+
+  return "Experimental";
+}
+
+function supportLevelTone(level: DeviceSupportLevel): "success" | "warning" | "neutral" {
+  switch (level) {
+    case "full":
+      return "success";
+    case "partial":
+      return "warning";
+    case "experimental":
+      return "neutral";
+  }
+
+  return "neutral";
+}
+
+function supportsControl(
+  supportedControls: LogicalControl[],
+  control: LogicalControl,
+) {
+  return supportedControls.includes(control);
+}
+
+function supportsAnyControl(
+  supportedControls: LogicalControl[],
+  controls: LogicalControl[],
+) {
+  return controls.some((control) => supportsControl(supportedControls, control));
+}
+
+function primaryControlsForDevice(supportedControls: LogicalControl[]) {
+  const visible = new Set<LogicalControl>();
+  const ordered: LogicalControl[] = [];
+
+  for (const control of PRIMARY_CONTROL_ORDER) {
+    if (control === "gesture_press") {
+      if (supportsAnyControl(supportedControls, GESTURE_CONTROLS)) {
+        visible.add(control);
+        ordered.push(control);
+      }
+      continue;
+    }
+
+    if (control === "hscroll_left") {
+      if (supportsAnyControl(supportedControls, HSCROLL_CONTROLS)) {
+        visible.add(control);
+        ordered.push(control);
+      }
+      continue;
+    }
+
+    if (supportsControl(supportedControls, control)) {
+      visible.add(control);
+      ordered.push(control);
+    }
+  }
+
+  for (const control of supportedControls) {
+    if (!visible.has(control)) {
+      ordered.push(control);
+    }
+  }
+
+  return ordered;
+}
+
+function notesForSupport(
+  support: { notes: string[] },
+  layout?: DeviceLayout | null,
+) {
+  const notes = [...support.notes];
+  const layoutNote = layout?.note?.trim();
+  if (layoutNote && !notes.includes(layoutNote)) {
+    notes.push(layoutNote);
+  }
+  return notes;
+}
+
+function supportedHotspotsForLayout(
+  layout: DeviceLayout,
+  supportedControls: LogicalControl[],
+) {
+  return layout.hotspots.filter((hotspot) =>
+    supportedControls.includes(hotspot.control),
+  );
+}
+
+function controlSummaryLabel(supportedControls: LogicalControl[]) {
+  const primaryControls = primaryControlsForDevice(supportedControls);
+  if (primaryControls.length === 0) {
+    return "No remappable controls exposed yet";
+  }
+
+  return primaryControls.map((control) => editorTitleFor(control)).join(", ");
 }
 
 function normalizeDeviceSettings(
@@ -1145,24 +1270,36 @@ function ButtonsView(props: {
   const [selectedControl, setSelectedControl] = useState<LogicalControl | null>(
     null,
   );
-  const selectedHotspot =
-    props.activeLayout.hotspots.find(
-      (hotspot) => hotspot.control === selectedControl,
-    ) ?? null;
+  const activeDevice = props.activeDevice;
+  const visibleHotspots = activeDevice
+    ? supportedHotspotsForLayout(
+        props.activeLayout,
+        activeDevice.supportedControls,
+      )
+    : [];
+  const fallbackControls = activeDevice
+    ? primaryControlsForDevice(activeDevice.supportedControls)
+    : [];
+  const supportNotes = activeDevice
+    ? notesForSupport(activeDevice.support, props.activeLayout)
+    : [];
+  const hasInteractiveMatrix =
+    props.activeLayout.interactive && visibleHotspots.length > 0;
+  const visibleControls = hasInteractiveMatrix
+    ? visibleHotspots.map((hotspot) => hotspot.control)
+    : fallbackControls;
 
   useEffect(() => {
-    if (!props.activeDevice) {
+    if (!activeDevice) {
       setSelectedControl(null);
       return;
     }
 
-    const visibleControls = new Set(
-      props.activeLayout.hotspots.map((hotspot) => hotspot.control),
-    );
+    const visibleControlSet = new Set(visibleControls);
     setSelectedControl((current) =>
-      current && visibleControls.has(current) ? current : null,
+      current && visibleControlSet.has(current) ? current : null,
     );
-  }, [props.activeDevice, props.activeLayout]);
+  }, [activeDevice, visibleControls]);
 
   const setBinding = (control: LogicalControl, actionId: string) => {
     props.updateSelectedProfile((nextProfile) => {
@@ -1172,34 +1309,54 @@ function ButtonsView(props: {
 
   return (
     <div className="relative min-h-[calc(100vh-120px)]">
-      {props.activeDevice ? (
+      {activeDevice ? (
         <>
-          <ButtonsWorkbench
-            actionLookup={props.actionLookup}
-            activeDevice={props.activeDevice}
-            layout={props.activeLayout}
-            profile={props.profile}
-            selectedControl={selectedControl}
-            onSelectControl={setSelectedControl}
-          />
+          {hasInteractiveMatrix ? (
+            <ButtonsWorkbench
+              actionLookup={props.actionLookup}
+              activeDevice={activeDevice}
+              hotspots={visibleHotspots}
+              layout={props.activeLayout}
+              notes={supportNotes}
+              profile={props.profile}
+              selectedControl={selectedControl}
+              onSelectControl={setSelectedControl}
+            />
+          ) : fallbackControls.length > 0 ? (
+            <ButtonsMatrixList
+              actionLookup={props.actionLookup}
+              controls={fallbackControls}
+              deviceName={activeDevice.displayName}
+              notes={supportNotes}
+              profile={props.profile}
+              selectedControl={selectedControl}
+              onSelectControl={setSelectedControl}
+            />
+          ) : (
+            <EmptyStage
+              body={`${activeDevice.displayName} is recognized, but Mouser does not expose a validated remapping matrix for it yet. Add the supported controls in the catalog before enabling button editing for this model.`}
+              title="No remappable controls yet"
+            />
+          )}
 
           <AnimatePresence initial={false}>
-            {selectedHotspot && (
+            {selectedControl && (
               <motion.aside
                 animate={{ opacity: 1, x: 0 }}
                 className="fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l border-border-soft bg-surface px-8 pb-8 pt-20 backdrop-blur-xl"
                 exit={{ opacity: 0, x: 24 }}
                 initial={{ opacity: 0, x: 24 }}
-                key={selectedHotspot.control}
+                key={selectedControl}
                 transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
               >
                 <ButtonsControlSheet
                   actionLookup={props.actionLookup}
-                  control={selectedHotspot.control}
+                  control={selectedControl}
                   groupedActions={props.groupedActions}
                   mappingEngineReady={props.mappingEngineReady}
                   platformCapabilities={props.platformCapabilities}
                   profile={props.profile}
+                  supportedControls={activeDevice.supportedControls}
                   setBinding={setBinding}
                   onClose={() => setSelectedControl(null)}
                 />
@@ -1495,6 +1652,9 @@ function AddDeviceModal(props: {
             {props.supportedDevices.map((device) => {
               const addedCount = managedCounts.get(device.key) ?? 0;
               const isDetected = props.detectedModelKeys.has(device.key);
+              const supportTone = supportLevelTone(device.support.level);
+              const supportLabel = supportLevelLabel(device.support.level);
+              const supportNotes = notesForSupport(device.support);
               return (
                 <div
                   className="rounded-[28px] border border-border bg-card-muted p-5"
@@ -1509,21 +1669,49 @@ function AddDeviceModal(props: {
                         DPI {device.dpiMin}-{device.dpiMax}
                       </p>
                     </div>
-                    {isDetected ? (
-                      <StatusPill tone="success" value="Detected" />
-                    ) : addedCount > 0 ? (
-                      <StatusPill
-                        tone="neutral"
-                        value={`Added ${addedCount}`}
-                      />
-                    ) : (
-                      <StatusPill tone="neutral" value="Supported" />
-                    )}
+                    <div className="flex flex-col items-end gap-2">
+                      {isDetected ? (
+                        <StatusPill tone="success" value="Detected" />
+                      ) : addedCount > 0 ? (
+                        <StatusPill
+                          tone="neutral"
+                          value={`Added ${addedCount}`}
+                        />
+                      ) : (
+                        <StatusPill tone="neutral" value="Catalog" />
+                      )}
+                      <StatusPill tone={supportTone} value={supportLabel} />
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <StatusPill
+                      tone={device.supportedControls.length > 0 ? "accent" : "neutral"}
+                      value={
+                        device.supportedControls.length > 0
+                          ? `${primaryControlsForDevice(device.supportedControls).length} control groups`
+                          : "No control matrix yet"
+                      }
+                    />
+                    {device.support.supportsDpiConfiguration ? (
+                      <StatusPill tone="accent" value="DPI tuning" />
+                    ) : null}
+                    {device.support.supportsBatteryStatus ? (
+                      <StatusPill tone="accent" value="Battery" />
+                    ) : null}
+                    <StatusPill
+                      tone={device.support.hasInteractiveLayout ? "accent" : "neutral"}
+                      value={
+                        device.support.hasInteractiveLayout
+                          ? "Interactive overlay"
+                          : "Generic UI"
+                      }
+                    />
                   </div>
 
                   <div className="mt-5 flex items-center justify-between gap-3">
                     <p className="text-xs text-muted-foreground">
-                      {device.aliases[0] ?? "Supported in Mouser"}
+                      {supportNotes[0] ?? device.aliases[0] ?? "Supported in Mouser"}
                     </p>
                     <Button
                       onClick={() => {
@@ -1891,12 +2079,26 @@ function DeviceDetailView(props: {
   updateDeviceNickname: (deviceKey: string, nickname: string | null) => void;
 }) {
   const activeDevice = props.activeDevice;
+  const supportNotes = activeDevice
+    ? notesForSupport(activeDevice.support, props.activeLayout)
+    : [];
+  const supportsDpiConfiguration =
+    activeDevice?.support.supportsDpiConfiguration ?? false;
+  const supportsBatteryStatus =
+    activeDevice?.support.supportsBatteryStatus ?? false;
+  const supportsGestureControls = activeDevice
+    ? supportsAnyControl(activeDevice.supportedControls, GESTURE_CONTROLS)
+    : false;
+  const supportsHorizontalScroll = activeDevice
+    ? supportsAnyControl(activeDevice.supportedControls, HSCROLL_CONTROLS)
+    : false;
   const deviceSettings = normalizeDeviceSettings(
     props.activeManagedDevice?.settings ?? props.config.deviceDefaults,
   );
   const showThumbWheelTrackpadToggle =
     props.platformCapabilities.platform === "macos" &&
-    isMxMasterFamilyDevice(activeDevice);
+    isMxMasterFamilyDevice(activeDevice) &&
+    supportsHorizontalScroll;
   const dpiMin = activeDevice?.dpiMin ?? 200;
   const dpiMax = activeDevice?.dpiMax ?? 8000;
   const configuredDpi = snapDpi(deviceSettings.dpi, dpiMin, dpiMax);
@@ -2070,6 +2272,10 @@ function DeviceDetailView(props: {
           </div>
         </div>
 
+        {supportNotes.length > 0 ? (
+          <SupportNotesPanel notes={supportNotes} />
+        ) : null}
+
         <Panel title={`${activeDevice.displayName} Tuning`}>
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Nickname (optional)">
@@ -2109,68 +2315,79 @@ function DeviceDetailView(props: {
               <Label className="text-sm font-medium text-foreground">
                 DPI
               </Label>
-              <div className="rounded-[24px] bg-card-muted p-5 ring-1 ring-border">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium text-foreground">
-                      Pointer speed
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Drag to choose a DPI, then pause briefly to apply it.
-                      {activeDevice.connected
-                        ? ` The device is currently reporting ${liveDpi} DPI.`
-                        : " Changes will apply once the device reconnects."}
-                    </p>
+              {supportsDpiConfiguration ? (
+                <div className="rounded-[24px] bg-card-muted p-5 ring-1 ring-border">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-foreground">
+                        Pointer speed
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Drag to choose a DPI, then pause briefly to apply it.
+                        {activeDevice.connected
+                          ? ` The device is currently reporting ${liveDpi} DPI.`
+                          : " Changes will apply once the device reconnects."}
+                      </p>
+                    </div>
+                    <div className="rounded-full bg-card px-3 py-1.5 text-sm font-semibold text-foreground ring-1 ring-border">
+                      {dpiDraft} DPI
+                    </div>
                   </div>
-                  <div className="rounded-full bg-card px-3 py-1.5 text-sm font-semibold text-foreground ring-1 ring-border">
-                    {dpiDraft} DPI
-                  </div>
-                </div>
 
-                <div className="mt-5 flex items-center gap-3">
-                  <span className="w-12 text-xs text-muted-foreground">
-                    {activeDevice.dpiMin}
-                  </span>
-                  <Slider
-                    aria-label="Pointer speed"
-                    className="flex-1"
-                    data-testid="dpi-slider"
-                    max={activeDevice.dpiMax}
-                    min={activeDevice.dpiMin}
-                    step={50}
-                    value={[dpiDraft]}
-                    onValueChange={(values) => {
-                      const nextValue = values[0];
-                      if (nextValue != null) {
-                        queueDpiChange(nextValue);
-                      }
-                    }}
-                  />
-                  <span className="w-12 text-right text-xs text-muted-foreground">
-                    {activeDevice.dpiMax}
-                  </span>
-                </div>
-
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  {availableDpiPresets.map((preset) => (
-                    <Button
-                      key={preset}
-                      data-testid={`dpi-preset-${preset}`}
-                      size="sm"
-                      type="button"
-                      variant={dpiDraft === preset ? "default" : "outline"}
-                      onClick={() => queueDpiChange(preset)}
-                    >
-                      {preset}
-                    </Button>
-                  ))}
-                  {pendingDpi != null ? (
-                    <span className="text-xs text-muted-foreground">
-                      Applying {pendingDpi} DPI...
+                  <div className="mt-5 flex items-center gap-3">
+                    <span className="w-12 text-xs text-muted-foreground">
+                      {activeDevice.dpiMin}
                     </span>
-                  ) : null}
+                    <Slider
+                      aria-label="Pointer speed"
+                      className="flex-1"
+                      data-testid="dpi-slider"
+                      max={activeDevice.dpiMax}
+                      min={activeDevice.dpiMin}
+                      step={50}
+                      value={[dpiDraft]}
+                      onValueChange={(values) => {
+                        const nextValue = values[0];
+                        if (nextValue != null) {
+                          queueDpiChange(nextValue);
+                        }
+                      }}
+                    />
+                    <span className="w-12 text-right text-xs text-muted-foreground">
+                      {activeDevice.dpiMax}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    {availableDpiPresets.map((preset) => (
+                      <Button
+                        key={preset}
+                        data-testid={`dpi-preset-${preset}`}
+                        size="sm"
+                        type="button"
+                        variant={dpiDraft === preset ? "default" : "outline"}
+                        onClick={() => queueDpiChange(preset)}
+                      >
+                        {preset}
+                      </Button>
+                    ))}
+                    {pendingDpi != null ? (
+                      <span className="text-xs text-muted-foreground">
+                        Applying {pendingDpi} DPI...
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <Card className="bg-card-muted shadow-none ring-1 ring-border">
+                  <CardContent className="px-4 py-4">
+                    <p className="text-sm font-medium text-foreground">
+                      DPI tuning is not part of the validated support matrix for
+                      this device yet.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
             </div>
 
             <Field label="Manual layout override">
@@ -2187,15 +2404,17 @@ function DeviceDetailView(props: {
               />
             </Field>
 
-            <SwitchRow
-              checked={deviceSettings.invertHorizontalScroll}
-              label="Invert thumb wheel"
-              onChange={(value) =>
-                updateManagedDeviceSettings((settings) => {
-                  settings.invertHorizontalScroll = value;
-                })
-              }
-            />
+            {supportsHorizontalScroll ? (
+              <SwitchRow
+                checked={deviceSettings.invertHorizontalScroll}
+                label="Invert thumb wheel"
+                onChange={(value) =>
+                  updateManagedDeviceSettings((settings) => {
+                    settings.invertHorizontalScroll = value;
+                  })
+                }
+              />
+            ) : null}
             <SwitchRow
               checked={deviceSettings.invertVerticalScroll}
               label="Invert vertical scroll"
@@ -2244,58 +2463,62 @@ function DeviceDetailView(props: {
                 />
               </Field>
             ) : null}
-            <Field label="Gesture threshold">
-              <Input
-                type="number"
-                value={deviceSettings.gestureThreshold}
-                onChange={(event) =>
-                  updateManagedDeviceSettings((settings) => {
-                    settings.gestureThreshold = Number(
-                      event.currentTarget.value,
-                    );
-                  })
-                }
-              />
-            </Field>
-            <Field label="Gesture deadzone">
-              <Input
-                type="number"
-                value={deviceSettings.gestureDeadzone}
-                onChange={(event) =>
-                  updateManagedDeviceSettings((settings) => {
-                    settings.gestureDeadzone = Number(
-                      event.currentTarget.value,
-                    );
-                  })
-                }
-              />
-            </Field>
-            <Field label="Gesture timeout (ms)">
-              <Input
-                type="number"
-                value={deviceSettings.gestureTimeoutMs}
-                onChange={(event) =>
-                  updateManagedDeviceSettings((settings) => {
-                    settings.gestureTimeoutMs = Number(
-                      event.currentTarget.value,
-                    );
-                  })
-                }
-              />
-            </Field>
-            <Field label="Gesture cooldown (ms)">
-              <Input
-                type="number"
-                value={deviceSettings.gestureCooldownMs}
-                onChange={(event) =>
-                  updateManagedDeviceSettings((settings) => {
-                    settings.gestureCooldownMs = Number(
-                      event.currentTarget.value,
-                    );
-                  })
-                }
-              />
-            </Field>
+            {supportsGestureControls ? (
+              <>
+                <Field label="Gesture threshold">
+                  <Input
+                    type="number"
+                    value={deviceSettings.gestureThreshold}
+                    onChange={(event) =>
+                      updateManagedDeviceSettings((settings) => {
+                        settings.gestureThreshold = Number(
+                          event.currentTarget.value,
+                        );
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="Gesture deadzone">
+                  <Input
+                    type="number"
+                    value={deviceSettings.gestureDeadzone}
+                    onChange={(event) =>
+                      updateManagedDeviceSettings((settings) => {
+                        settings.gestureDeadzone = Number(
+                          event.currentTarget.value,
+                        );
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="Gesture timeout (ms)">
+                  <Input
+                    type="number"
+                    value={deviceSettings.gestureTimeoutMs}
+                    onChange={(event) =>
+                      updateManagedDeviceSettings((settings) => {
+                        settings.gestureTimeoutMs = Number(
+                          event.currentTarget.value,
+                        );
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="Gesture cooldown (ms)">
+                  <Input
+                    type="number"
+                    value={deviceSettings.gestureCooldownMs}
+                    onChange={(event) =>
+                      updateManagedDeviceSettings((settings) => {
+                        settings.gestureCooldownMs = Number(
+                          event.currentTarget.value,
+                        );
+                      })
+                    }
+                  />
+                </Field>
+              </>
+            ) : null}
           </div>
         </Panel>
       </div>
@@ -2303,10 +2526,25 @@ function DeviceDetailView(props: {
       <Panel title="Status">
         <div className="space-y-3">
           <CapabilityRow
-            label="Live DPI"
-            value={activeDevice.connected ? `${liveDpi}` : "Not connected"}
+            label="Support"
+            value={supportLevelLabel(activeDevice.support.level)}
           />
-          <CapabilityRow label="Configured DPI" value={`${configuredDpi}`} />
+          <CapabilityRow
+            label="Live DPI"
+            value={
+              supportsDpiConfiguration
+                ? activeDevice.connected
+                  ? `${liveDpi}`
+                  : "Not connected"
+                : "Not validated yet"
+            }
+          />
+          <CapabilityRow
+            label="Configured DPI"
+            value={
+              supportsDpiConfiguration ? `${configuredDpi}` : "Not available"
+            }
+          />
           <CapabilityRow
             label="Transport"
             value={activeDevice.transport ?? "Unknown"}
@@ -2314,14 +2552,20 @@ function DeviceDetailView(props: {
           <CapabilityRow
             label="Battery"
             value={
-              activeDevice.batteryLevel != null
+              supportsBatteryStatus && activeDevice.batteryLevel != null
                 ? `${activeDevice.batteryLevel}%`
-                : "N/A"
+                : supportsBatteryStatus
+                  ? "N/A"
+                  : "Not validated yet"
             }
           />
           <CapabilityRow
             label="Layout family"
             value={props.activeLayout.label}
+          />
+          <CapabilityRow
+            label="Remappable controls"
+            value={controlSummaryLabel(activeDevice.supportedControls)}
           />
           <CapabilityRow
             label="Assigned profile"
@@ -2859,6 +3103,27 @@ function Panel(props: {
   );
 }
 
+function SupportNotesPanel(props: { notes: string[]; className?: string }) {
+  if (props.notes.length === 0) {
+    return null;
+  }
+
+  return (
+    <Card className={cn("bg-card-muted shadow-none ring-1 ring-border", props.className)}>
+      <CardContent className="px-4 py-4">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+          Support Notes
+        </p>
+        <ul className="mt-3 space-y-2 text-sm leading-6 text-muted-foreground">
+          {props.notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
 function Field(props: { label: string; children: ReactNode }) {
   return (
     <div className="space-y-2.5">
@@ -2967,7 +3232,9 @@ function SwitchRow(props: {
 
 function ButtonsWorkbench(props: {
   activeDevice: DeviceInfo;
+  hotspots: DeviceLayout["hotspots"];
   layout: DeviceLayout;
+  notes: string[];
   profile: Profile;
   actionLookup: Map<string, ActionDefinition>;
   selectedControl: LogicalControl | null;
@@ -2988,6 +3255,9 @@ function ButtonsWorkbench(props: {
 
   return (
     <div className="relative" ref={workbenchRef}>
+      {props.notes.length > 0 ? (
+        <SupportNotesPanel className="mb-6" notes={props.notes} />
+      ) : null}
       <div className="relative mx-auto min-h-[720px] min-w-full px-4 py-6 sm:px-8">
         <div
           className="relative mx-auto"
@@ -3006,7 +3276,7 @@ function ButtonsWorkbench(props: {
             }}
           />
 
-          {props.layout.hotspots.map((hotspot) => {
+          {props.hotspots.map((hotspot) => {
             const isSelected = props.selectedControl === hotspot.control;
             const summary = stageHotspotSummary(
               props.profile,
@@ -3095,6 +3365,65 @@ function ButtonsWorkbench(props: {
   );
 }
 
+function ButtonsMatrixList(props: {
+  controls: LogicalControl[];
+  deviceName: string;
+  notes: string[];
+  profile: Profile;
+  actionLookup: Map<string, ActionDefinition>;
+  selectedControl: LogicalControl | null;
+  onSelectControl: (control: LogicalControl) => void;
+}) {
+  return (
+    <div className="space-y-6">
+      {props.notes.length > 0 ? <SupportNotesPanel notes={props.notes} /> : null}
+      <Panel
+        title={`${props.deviceName} Controls`}
+        subtitle="This device does not have a dedicated visual overlay yet, so Mouser exposes its validated controls as a generic matrix."
+      >
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {props.controls.map((control) => {
+            const selected = props.selectedControl === control;
+            return (
+              <button
+                className={cn(
+                  "rounded-[24px] border px-5 py-5 text-left transition",
+                  selected
+                    ? "border-border-strong bg-card shadow-[0_12px_28px_rgba(15,23,42,0.18)]"
+                    : "border-border bg-card-muted hover:border-border-strong hover:bg-card hover:shadow-[0_12px_28px_rgba(15,23,42,0.16)]",
+                )}
+                key={control}
+                onClick={() => props.onSelectControl(control)}
+                type="button"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold text-foreground">
+                    {editorTitleFor(control)}
+                  </p>
+                  <StatusPill
+                    tone={selected ? "accent" : "neutral"}
+                    value={selected ? "Editing" : "Supported"}
+                  />
+                </div>
+                <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                  {stageHotspotSummary(
+                    props.profile,
+                    control,
+                    props.actionLookup,
+                  )}
+                </p>
+                <p className="mt-4 text-xs leading-5 text-muted-foreground">
+                  {editorDescriptionFor(control)}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
 function ButtonsControlSheet(props: {
   control: LogicalControl;
   profile: Profile;
@@ -3102,10 +3431,14 @@ function ButtonsControlSheet(props: {
   groupedActions: Array<[string, ActionDefinition[]]>;
   mappingEngineReady: boolean;
   platformCapabilities: BootstrapPayload["platformCapabilities"];
+  supportedControls: LogicalControl[];
   setBinding: (control: LogicalControl, actionId: string) => void;
   onClose: () => void;
 }) {
-  const controls = editorControlsFor(props.control);
+  const controls = editorControlsFor(props.control).filter((control) =>
+    props.supportedControls.includes(control),
+  );
+  const visibleControls = controls.length > 0 ? controls : [props.control];
   const title = editorTitleFor(props.control);
   const description = editorDescriptionFor(props.control);
   const gestureControl = props.control.startsWith("gesture_");
@@ -3160,7 +3493,7 @@ function ButtonsControlSheet(props: {
 
       <ScrollArea className="mt-5 flex-1 pr-1">
         <div className="space-y-4">
-          {controls.map((control) => (
+          {visibleControls.map((control) => (
             <SheetActionField
               actionLookup={props.actionLookup}
               control={control}

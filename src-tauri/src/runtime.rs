@@ -9,10 +9,10 @@ use mouser_core::{
     active_device_with_layout, build_engine_snapshot, build_managed_device_info, clamp_dpi,
     default_action_catalog, default_app_catalog, default_app_discovery_snapshot,
     known_device_spec_by_key, known_device_specs, manual_layout_choices, normalize_app_match_value,
-    AppConfig, AppDiscoverySnapshot, AppIdentity, AppMatcher, AppMatcherKind, BootstrapPayload,
-    CatalogApp, DebugEvent, DebugEventKind, DeviceInfo, DeviceSettings, DiscoveredApp,
-    EngineSnapshot, EngineSnapshotState, InstalledApp, ManagedDevice, PlatformCapabilities,
-    Profile,
+    profile_for_supported_controls, AppConfig, AppDiscoverySnapshot, AppIdentity, AppMatcher,
+    AppMatcherKind, BootstrapPayload, CatalogApp, DebugEvent, DebugEventKind, DeviceInfo,
+    DeviceSettings, DiscoveredApp, EngineSnapshot, EngineSnapshotState, InstalledApp,
+    ManagedDevice, PlatformCapabilities, Profile,
 };
 use mouser_platform::{
     current_platform_name, host_hidapi_available, host_iokit_available,
@@ -764,6 +764,11 @@ impl AppRuntime {
         let Some(profile) = self.active_profile().cloned() else {
             return;
         };
+        let resolution = self.device_resolution();
+        let filtered_profile = self
+            .active_device_from_resolution(&resolution)
+            .map(|device| profile_for_supported_controls(&profile, &device.supported_controls))
+            .unwrap_or(profile);
         let hook_settings = HookBackendSettings::from_app_and_device(
             &self.config.settings,
             self.selected_device_settings(),
@@ -771,9 +776,9 @@ impl AppRuntime {
                 .map(|device| device.model_key.as_str()),
         );
 
-        if let Err(error) = self
-            .hook_backend
-            .configure(&hook_settings, &profile, self.enabled)
+        if let Err(error) =
+            self.hook_backend
+                .configure(&hook_settings, &filtered_profile, self.enabled)
         {
             self.push_debug(
                 DebugEventKind::Warning,
@@ -1510,6 +1515,13 @@ mod tests {
             ui_layout: "mx_master".to_string(),
             image_asset: "/assets/mouse.png".to_string(),
             supported_controls: Vec::new(),
+            support: mouser_core::DeviceSupportMatrix {
+                level: mouser_core::DeviceSupportLevel::Experimental,
+                supports_battery_status: false,
+                supports_dpi_configuration: false,
+                has_interactive_layout: false,
+                notes: Vec::new(),
+            },
             gesture_cids: vec![0x00C3, 0x00D7],
             dpi_min: 200,
             dpi_max: 8000,

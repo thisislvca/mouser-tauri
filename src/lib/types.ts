@@ -11,6 +11,8 @@ export type {
   DebugEvent as DebugEventRecord,
   DebugEventKind,
   DeviceFingerprint,
+  DeviceSupportLevel,
+  DeviceSupportMatrix,
   DeviceSettings,
   DiscoveredApp,
   DeviceHotspot,
