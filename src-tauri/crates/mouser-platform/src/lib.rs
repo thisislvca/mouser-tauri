@@ -14,8 +14,9 @@ use mouser_core::{
     clamp_dpi, default_config, default_device_settings, default_known_apps_ref,
     default_layouts_ref, default_profile_bindings, known_device_specs_ref,
     legacy_default_profile_bindings_v3, normalize_app_match_value, normalize_bindings, AppConfig,
-    AppIdentity, AppMatcherKind, Binding, DebugEventKind, DeviceFingerprint, DeviceInfo,
-    DeviceLayout, DeviceSettings, InstalledApp, KnownApp, LogicalControl, Profile, Settings,
+    AppIdentity, AppMatcherKind, Binding, DebugEventKind, DeviceControlSpec, DeviceFingerprint,
+    DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp, KnownApp, LogicalControl, Profile,
+    Settings,
 };
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -54,20 +55,23 @@ pub struct HookBackendSettings {
     pub gesture_timeout_ms: u32,
     pub gesture_cooldown_ms: u32,
     pub debug_mode: bool,
+    pub device_model_key: Option<String>,
+    pub device_controls: Vec<DeviceControlSpec>,
 }
 
 impl HookBackendSettings {
     pub fn from_app_and_device(
         settings: &Settings,
         device_settings: &DeviceSettings,
-        device_model_key: Option<&str>,
+        active_device: Option<&DeviceInfo>,
     ) -> Self {
+        let device_model_key = active_device.map(|device| device.model_key.clone());
         Self {
             invert_horizontal_scroll: device_settings.invert_horizontal_scroll,
             invert_vertical_scroll: device_settings.invert_vertical_scroll,
             macos_thumb_wheel_simulate_trackpad: cfg!(target_os = "macos")
                 && device_settings.macos_thumb_wheel_simulate_trackpad
-                && supports_macos_thumb_wheel_trackpad_model(device_model_key),
+                && supports_macos_thumb_wheel_trackpad_model(device_model_key.as_deref()),
             macos_thumb_wheel_trackpad_hold_timeout_ms: device_settings
                 .macos_thumb_wheel_trackpad_hold_timeout_ms,
             gesture_threshold: device_settings.gesture_threshold,
@@ -75,6 +79,10 @@ impl HookBackendSettings {
             gesture_timeout_ms: device_settings.gesture_timeout_ms,
             gesture_cooldown_ms: device_settings.gesture_cooldown_ms,
             debug_mode: settings.debug_mode,
+            device_controls: active_device
+                .map(|device| device.controls.clone())
+                .unwrap_or_default(),
+            device_model_key,
         }
     }
 }
@@ -464,10 +472,13 @@ impl StaticDeviceCatalog {
                     ui_layout: spec.ui_layout,
                     image_asset: spec.image_asset,
                     supported_controls: spec.supported_controls,
+                    controls: spec.controls,
                     support: spec.support,
                     gesture_cids: spec.gesture_cids,
                     dpi_min: spec.dpi_min,
                     dpi_max: spec.dpi_max,
+                    dpi_inferred: spec.dpi_inferred,
+                    dpi_source_kind: spec.dpi_source_kind,
                     connected: false,
                     battery_level: None,
                     current_dpi: 1000,

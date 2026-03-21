@@ -1,7 +1,9 @@
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
 
 use mouser_core::LogicalControl;
 
+#[cfg(target_os = "linux")]
 pub(crate) fn ordered_gesture_candidates(
     gesture_cids: &[u16],
     default_gesture_cids: &[u16],

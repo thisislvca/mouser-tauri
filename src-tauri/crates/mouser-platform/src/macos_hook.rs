@@ -10,8 +10,7 @@ use crate::{HookBackend, HookBackendEvent, HookBackendSettings, HookCapabilities
 use mouser_core::Profile;
 #[cfg(target_os = "macos")]
 use mouser_core::{
-    build_connected_device_info, hydrate_identity_key, Binding, DebugEventKind, DeviceFingerprint,
-    LogicalControl,
+    Binding, DebugEventKind, DeviceControlCaptureKind, DeviceControlSpec, LogicalControl,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -60,7 +59,7 @@ impl HookBackend for MacOsHookBackend {
 
 #[cfg(target_os = "macos")]
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     panic::{self, AssertUnwindSafe},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -107,8 +106,6 @@ const THUMB_WHEEL_TRACKPAD_MARKER: i64 = 0x4D575450;
 const FEAT_REPROG_V4: u16 = 0x1B04;
 #[cfg(target_os = "macos")]
 const DEVICE_INDICES: [u8; 7] = [0xFF, 1, 2, 3, 4, 5, 6];
-#[cfg(target_os = "macos")]
-const DEFAULT_GESTURE_CIDS: [u16; 2] = [0x00C3, 0x00D7];
 #[cfg(target_os = "macos")]
 const GESTURE_DIVERT_FLAGS: u8 = 0x03;
 #[cfg(target_os = "macos")]
@@ -175,6 +172,15 @@ struct MacOsHookConfig {
     gesture_timeout_ms: u32,
     gesture_cooldown_ms: u32,
     bindings: BTreeMap<LogicalControl, String>,
+    device_controls: Vec<DeviceControlSpec>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReprogRoute {
+    control: LogicalControl,
+    cids: Vec<u16>,
+    rawxy_enabled: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -194,6 +200,7 @@ impl MacOsHookConfig {
             gesture_timeout_ms: settings.gesture_timeout_ms,
             gesture_cooldown_ms: settings.gesture_cooldown_ms,
             bindings: bindings_map(&profile.bindings),
+            device_controls: settings.device_controls.clone(),
         }
     }
 
@@ -248,7 +255,11 @@ impl MacOsHookConfig {
     }
 
     fn gesture_capture_requested(&self) -> bool {
-        self.enabled
+        !self.reprog_routes().is_empty()
+    }
+
+    fn gesture_route(&self) -> Option<ReprogRoute> {
+        let gesture_requested = self.enabled
             && [
                 LogicalControl::GesturePress,
                 LogicalControl::GestureLeft,
@@ -257,7 +268,44 @@ impl MacOsHookConfig {
                 LogicalControl::GestureDown,
             ]
             .into_iter()
-            .any(|control| self.action_for(control).is_some())
+            .any(|control| self.handles_control(control));
+        if !gesture_requested {
+            return None;
+        }
+
+        self.device_controls.iter().find_map(|control| {
+            (control.control == LogicalControl::GesturePress && !control.reprog_cids.is_empty())
+                .then(|| ReprogRoute {
+                    control: LogicalControl::GesturePress,
+                    cids: control.reprog_cids.clone(),
+                    rawxy_enabled: self.gesture_direction_enabled(),
+                })
+        })
+    }
+
+    fn reprog_routes(&self) -> Vec<ReprogRoute> {
+        let mut routes = Vec::new();
+
+        if let Some(route) = self.gesture_route() {
+            routes.push(route);
+        }
+
+        for control in &self.device_controls {
+            if control.capture_kind != DeviceControlCaptureKind::ReprogButton
+                || !self.handles_control(control.control)
+                || control.reprog_cids.is_empty()
+            {
+                continue;
+            }
+
+            routes.push(ReprogRoute {
+                control: control.control,
+                cids: control.reprog_cids.clone(),
+                rawxy_enabled: false,
+            });
+        }
+
+        routes
     }
 }
 
@@ -1079,9 +1127,9 @@ struct GestureSession {
     device: MacOsNativeHidDevice,
     dev_idx: u8,
     feature_idx: u8,
-    gesture_cid: u16,
-    rawxy_enabled: bool,
-    held: bool,
+    routes: Vec<ReprogRoute>,
+    active_cids: BTreeSet<u16>,
+    gesture_active: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -1096,7 +1144,7 @@ impl GestureSession {
         }
 
         if function == 1 {
-            if !self.rawxy_enabled || !self.held || params.len() < 4 {
+            if !self.rawxy_enabled() || !self.gesture_active || params.len() < 4 {
                 return;
             }
 
@@ -1112,40 +1160,76 @@ impl GestureSession {
             return;
         }
 
-        let gesture_now = params
-            .chunks_exact(2)
-            .take_while(|pair| pair[0] != 0 || pair[1] != 0)
-            .any(|pair| u16::from(pair[0]) << 8 | u16::from(pair[1]) == self.gesture_cid);
+        let active_cids = collect_active_cids(&params);
+        let config = shared.current_config();
 
-        if gesture_now && !self.held {
-            self.held = true;
-            shared.hid_gesture_down();
-        } else if !gesture_now && self.held {
-            self.held = false;
+        for cid in active_cids.difference(&self.active_cids).copied() {
+            if self.gesture_cid_active(cid) {
+                if !self.gesture_active {
+                    self.gesture_active = true;
+                    shared.hid_gesture_down();
+                }
+                continue;
+            }
+
+            if let Some(control) = self.control_for_cid(cid) {
+                shared.dispatch_control_action(config.as_ref(), control);
+            }
+        }
+
+        let gesture_now = active_cids.iter().any(|cid| self.gesture_cid_active(*cid));
+        if !gesture_now && self.gesture_active {
+            self.gesture_active = false;
             shared.hid_gesture_up();
         }
+
+        self.active_cids = active_cids;
+    }
+
+    fn gesture_cid_active(&self, cid: u16) -> bool {
+        self.routes.iter().any(|route| {
+            route.control == LogicalControl::GesturePress && route.cids.contains(&cid)
+        })
+    }
+
+    fn control_for_cid(&self, cid: u16) -> Option<LogicalControl> {
+        self.routes.iter().find_map(|route| {
+            (route.control != LogicalControl::GesturePress && route.cids.contains(&cid))
+                .then_some(route.control)
+        })
+    }
+
+    fn rawxy_enabled(&self) -> bool {
+        self.routes
+            .iter()
+            .any(|route| route.control == LogicalControl::GesturePress && route.rawxy_enabled)
     }
 
     fn shutdown(&mut self) {
-        let flags = if self.rawxy_enabled {
-            GESTURE_UNDIVERT_RAWXY_FLAGS
-        } else {
-            GESTURE_UNDIVERT_FLAGS
-        };
-        let _ = hidpp::write_request(
-            &self.device,
-            self.dev_idx,
-            self.feature_idx,
-            3,
-            &[
-                ((self.gesture_cid >> 8) & 0xFF) as u8,
-                (self.gesture_cid & 0xFF) as u8,
-                flags,
-                0x00,
-                0x00,
-            ],
-        );
-        self.held = false;
+        for route in &self.routes {
+            let flags = if route.rawxy_enabled {
+                GESTURE_UNDIVERT_RAWXY_FLAGS
+            } else {
+                GESTURE_UNDIVERT_FLAGS
+            };
+            for cid in &route.cids {
+                let _ = hidpp::write_request(
+                    &self.device,
+                    self.dev_idx,
+                    self.feature_idx,
+                    3,
+                    &[
+                        ((cid >> 8) & 0xFF) as u8,
+                        (cid & 0xFF) as u8,
+                        flags,
+                        0x00,
+                        0x00,
+                    ],
+                );
+            }
+        }
+        self.gesture_active = false;
+        self.active_cids.clear();
     }
 }
 
@@ -1303,95 +1387,99 @@ fn initialize_gesture_session(
     info: MacOsIoKitInfo,
     device: MacOsNativeHidDevice,
 ) -> Result<GestureSession, PlatformError> {
-    let transport = iokit_transport_label(info.transport.as_deref());
-    let mut fingerprint = DeviceFingerprint {
-        identity_key: None,
-        serial_number: info.serial_number.clone(),
-        hid_path: None,
-        interface_number: None,
-        usage_page: Some(info.usage_page as u16),
-        usage: Some(info.usage as u16),
-        location_id: info.location_id,
-    };
-    hydrate_identity_key(Some(info.product_id), &mut fingerprint);
-    let device_info = build_connected_device_info(
-        Some(info.product_id),
-        info.product_string.as_deref(),
-        transport.as_deref(),
-        Some("iokit"),
-        None,
-        1000,
-        fingerprint,
-    );
-    let gesture_candidates = gesture_candidates_for(&device_info.gesture_cids);
+    let routes = shared.current_config().reprog_routes();
+    if routes.is_empty() {
+        return Err(PlatformError::Message(
+            "no active Logitech REPROG routes configured".to_string(),
+        ));
+    }
 
     for dev_idx in DEVICE_INDICES {
         let Some(feature_idx) = find_hidpp_feature(&device, dev_idx, FEAT_REPROG_V4, 250)? else {
             continue;
         };
 
-        for gesture_cid in &gesture_candidates {
-            if set_gesture_reporting(
-                &device,
+        if try_initialize_reprog_session(shared, &device, dev_idx, feature_idx, &routes)? {
+            return Ok(GestureSession {
+                info,
+                device,
                 dev_idx,
                 feature_idx,
-                *gesture_cid,
-                GESTURE_RAWXY_FLAGS,
-                250,
-            )?
-            .is_some()
-            {
-                shared.push_gesture_debug(format!(
-                    "Diverted gesture cid 0x{:04X} with RawXY via devIdx=0x{:02X}",
-                    gesture_cid, dev_idx
-                ));
-                return Ok(GestureSession {
-                    info,
-                    device,
-                    dev_idx,
-                    feature_idx,
-                    gesture_cid: *gesture_cid,
-                    rawxy_enabled: true,
-                    held: false,
-                });
-            }
-
-            if set_gesture_reporting(
-                &device,
-                dev_idx,
-                feature_idx,
-                *gesture_cid,
-                GESTURE_DIVERT_FLAGS,
-                250,
-            )?
-            .is_some()
-            {
-                shared.push_gesture_debug(format!(
-                    "Diverted gesture cid 0x{:04X} via devIdx=0x{:02X}",
-                    gesture_cid, dev_idx
-                ));
-                return Ok(GestureSession {
-                    info,
-                    device,
-                    dev_idx,
-                    feature_idx,
-                    gesture_cid: *gesture_cid,
-                    rawxy_enabled: false,
-                    held: false,
-                });
-            }
+                routes: routes.clone(),
+                active_cids: BTreeSet::new(),
+                gesture_active: false,
+            });
         }
     }
 
     Err(PlatformError::Message(format!(
-        "gesture diversion failed for pid 0x{:04X}",
+        "logitech reprog diversion failed for pid 0x{:04X}",
         info.product_id
     )))
 }
 
 #[cfg(target_os = "macos")]
-fn gesture_candidates_for(gesture_cids: &[u16]) -> Vec<u16> {
-    gesture::ordered_gesture_candidates(gesture_cids, &DEFAULT_GESTURE_CIDS)
+fn try_initialize_reprog_session(
+    shared: &MacOsHookShared,
+    device: &MacOsNativeHidDevice,
+    dev_idx: u8,
+    feature_idx: u8,
+    routes: &[ReprogRoute],
+) -> Result<bool, PlatformError> {
+    let mut diverted = Vec::new();
+
+    for route in routes {
+        for cid in &route.cids {
+            let flags = if route.rawxy_enabled {
+                GESTURE_RAWXY_FLAGS
+            } else {
+                GESTURE_DIVERT_FLAGS
+            };
+            if set_gesture_reporting(&device, dev_idx, feature_idx, *cid, flags, 250)?.is_some() {
+                diverted.push((route.control, *cid, route.rawxy_enabled));
+                shared.push_gesture_debug(format!(
+                    "Diverted cid 0x{:04X} for {} via devIdx=0x{:02X} rawxy={}",
+                    cid,
+                    route.control.label(),
+                    dev_idx,
+                    route.rawxy_enabled
+                ));
+            } else {
+                for (_, diverted_cid, diverted_rawxy) in &diverted {
+                    let reset_flags = if *diverted_rawxy {
+                        GESTURE_UNDIVERT_RAWXY_FLAGS
+                    } else {
+                        GESTURE_UNDIVERT_FLAGS
+                    };
+                    let _ = hidpp::write_request(
+                        device,
+                        dev_idx,
+                        feature_idx,
+                        3,
+                        &[
+                            ((diverted_cid >> 8) & 0xFF) as u8,
+                            (diverted_cid & 0xFF) as u8,
+                            reset_flags,
+                            0x00,
+                            0x00,
+                        ],
+                    );
+                }
+                return Ok(false);
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+#[cfg(target_os = "macos")]
+fn collect_active_cids(params: &[u8]) -> BTreeSet<u16> {
+    params
+        .chunks_exact(2)
+        .take_while(|pair| pair[0] != 0 || pair[1] != 0)
+        .map(|pair| u16::from(pair[0]) << 8 | u16::from(pair[1]))
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -1409,14 +1497,6 @@ fn iokit_open_candidates(info: &MacOsIoKitInfo) -> Vec<MacOsIoKitInfo> {
         });
     }
     candidates
-}
-
-#[cfg(target_os = "macos")]
-fn iokit_transport_label(transport: Option<&str>) -> Option<String> {
-    transport.map(|value| match value {
-        "Bluetooth" => "Bluetooth Low Energy".to_string(),
-        other => other.to_string(),
-    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1771,9 +1851,16 @@ fn execute_action(action_id: &str) -> Result<(), PlatformError> {
         "paste" => send_key_combo(&[KeyCode::COMMAND, KeyCode::ANSI_V]),
         "cut" => send_key_combo(&[KeyCode::COMMAND, KeyCode::ANSI_X]),
         "undo" => send_key_combo(&[KeyCode::COMMAND, KeyCode::ANSI_Z]),
+        "redo" => send_key_combo(&[KeyCode::COMMAND, KeyCode::SHIFT, KeyCode::ANSI_Z]),
         "select_all" => send_key_combo(&[KeyCode::COMMAND, KeyCode::ANSI_A]),
         "save" => send_key_combo(&[KeyCode::COMMAND, KeyCode::ANSI_S]),
         "find" => send_key_combo(&[KeyCode::COMMAND, KeyCode::ANSI_F]),
+        "screen_capture" => {
+            send_key_combo(&[KeyCode::COMMAND, KeyCode::SHIFT, KeyCode::ANSI_4])
+        }
+        "emoji_picker" => {
+            send_key_combo(&[KeyCode::CONTROL, KeyCode::COMMAND, KeyCode::SPACE])
+        }
         "volume_up" => send_media_key(NX_VOL_UP),
         "volume_down" => send_media_key(NX_VOL_DOWN),
         "volume_mute" => send_media_key(NX_MUTE),

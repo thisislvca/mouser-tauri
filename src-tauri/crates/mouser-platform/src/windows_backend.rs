@@ -16,8 +16,8 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use mouser_core::{
     build_connected_device_info, default_config, hydrate_identity_key, AppDiscoverySource,
-    AppIdentity, DebugEventKind, DeviceFingerprint, DeviceInfo, InstalledApp, LogicalControl,
-    Profile,
+    AppIdentity, DebugEventKind, DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint,
+    DeviceInfo, InstalledApp, LogicalControl, Profile,
 };
 use serde_json::Value as JsonValue;
 
@@ -124,10 +124,18 @@ struct WindowsHookConfig {
     invert_vertical_scroll: bool,
     debug_mode: bool,
     bindings: HashMap<LogicalControl, String>,
+    device_controls: Vec<DeviceControlSpec>,
     gesture_threshold: u16,
     gesture_deadzone: u16,
     gesture_timeout_ms: u32,
     gesture_cooldown_ms: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReprogRoute {
+    control: LogicalControl,
+    cids: Vec<u16>,
+    rawxy_enabled: bool,
 }
 
 impl WindowsHookConfig {
@@ -142,6 +150,7 @@ impl WindowsHookConfig {
                 .iter()
                 .map(|binding| (binding.control, binding.action_id.clone()))
                 .collect(),
+            device_controls: settings.device_controls.clone(),
             gesture_threshold: settings.gesture_threshold.max(5),
             gesture_deadzone: settings.gesture_deadzone,
             gesture_timeout_ms: settings.gesture_timeout_ms.max(250),
@@ -172,7 +181,11 @@ impl WindowsHookConfig {
     }
 
     fn gesture_capture_requested(&self) -> bool {
-        self.enabled
+        !self.reprog_routes().is_empty()
+    }
+
+    fn gesture_route(&self) -> Option<ReprogRoute> {
+        let gesture_requested = self.enabled
             && [
                 LogicalControl::GesturePress,
                 LogicalControl::GestureLeft,
@@ -181,10 +194,44 @@ impl WindowsHookConfig {
                 LogicalControl::GestureDown,
             ]
             .into_iter()
-            .any(|control| {
-                self.action_for(control)
-                    .is_some_and(|action_id| action_id != "none")
-            })
+            .any(|control| self.handles_control(control));
+        if !gesture_requested {
+            return None;
+        }
+
+        self.device_controls.iter().find_map(|control| {
+            (control.control == LogicalControl::GesturePress && !control.reprog_cids.is_empty())
+                .then(|| ReprogRoute {
+                    control: LogicalControl::GesturePress,
+                    cids: control.reprog_cids.clone(),
+                    rawxy_enabled: self.gesture_direction_enabled(),
+                })
+        })
+    }
+
+    fn reprog_routes(&self) -> Vec<ReprogRoute> {
+        let mut routes = Vec::new();
+
+        if let Some(route) = self.gesture_route() {
+            routes.push(route);
+        }
+
+        for control in &self.device_controls {
+            if control.capture_kind != DeviceControlCaptureKind::ReprogButton
+                || !self.handles_control(control.control)
+                || control.reprog_cids.is_empty()
+            {
+                continue;
+            }
+
+            routes.push(ReprogRoute {
+                control: control.control,
+                cids: control.reprog_cids.clone(),
+                rawxy_enabled: false,
+            });
+        }
+
+        routes
     }
 }
 
@@ -1343,9 +1390,9 @@ struct GestureSession {
     device: HidDevice,
     dev_idx: u8,
     feature_idx: u8,
-    gesture_cid: u16,
-    rawxy_enabled: bool,
-    held: bool,
+    routes: Vec<ReprogRoute>,
+    active_cids: BTreeSet<u16>,
+    gesture_active: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -1360,7 +1407,7 @@ impl GestureSession {
         }
 
         if function == 1 {
-            if !self.rawxy_enabled || !self.held || params.len() < 4 {
+            if !self.rawxy_enabled() || !self.gesture_active || params.len() < 4 {
                 return;
             }
 
@@ -1376,40 +1423,76 @@ impl GestureSession {
             return;
         }
 
-        let gesture_now = params
-            .chunks_exact(2)
-            .take_while(|pair| pair[0] != 0 || pair[1] != 0)
-            .any(|pair| u16::from(pair[0]) << 8 | u16::from(pair[1]) == self.gesture_cid);
+        let active_cids = collect_active_cids(params);
+        let config = shared.current_config();
 
-        if gesture_now && !self.held {
-            self.held = true;
-            shared.hid_gesture_down();
-        } else if !gesture_now && self.held {
-            self.held = false;
+        for cid in active_cids.difference(&self.active_cids).copied() {
+            if self.gesture_cid_active(cid) {
+                if !self.gesture_active {
+                    self.gesture_active = true;
+                    shared.hid_gesture_down();
+                }
+                continue;
+            }
+
+            if let Some(control) = self.control_for_cid(cid) {
+                shared.dispatch_control_action(config.as_ref(), control);
+            }
+        }
+
+        let gesture_now = active_cids.iter().any(|cid| self.gesture_cid_active(*cid));
+        if !gesture_now && self.gesture_active {
+            self.gesture_active = false;
             shared.hid_gesture_up();
         }
+
+        self.active_cids = active_cids;
+    }
+
+    fn gesture_cid_active(&self, cid: u16) -> bool {
+        self.routes.iter().any(|route| {
+            route.control == LogicalControl::GesturePress && route.cids.contains(&cid)
+        })
+    }
+
+    fn control_for_cid(&self, cid: u16) -> Option<LogicalControl> {
+        self.routes.iter().find_map(|route| {
+            (route.control != LogicalControl::GesturePress && route.cids.contains(&cid))
+                .then_some(route.control)
+        })
+    }
+
+    fn rawxy_enabled(&self) -> bool {
+        self.routes
+            .iter()
+            .any(|route| route.control == LogicalControl::GesturePress && route.rawxy_enabled)
     }
 
     fn shutdown(&mut self) {
-        let flags = if self.rawxy_enabled {
-            GESTURE_UNDIVERT_RAWXY_FLAGS
-        } else {
-            GESTURE_UNDIVERT_FLAGS
-        };
-        let _ = hidpp::write_request(
-            &self.device,
-            self.dev_idx,
-            self.feature_idx,
-            3,
-            &[
-                ((self.gesture_cid >> 8) & 0xFF) as u8,
-                (self.gesture_cid & 0xFF) as u8,
-                flags,
-                0x00,
-                0x00,
-            ],
-        );
-        self.held = false;
+        for route in &self.routes {
+            let flags = if route.rawxy_enabled {
+                GESTURE_UNDIVERT_RAWXY_FLAGS
+            } else {
+                GESTURE_UNDIVERT_FLAGS
+            };
+            for cid in &route.cids {
+                let _ = hidpp::write_request(
+                    &self.device,
+                    self.dev_idx,
+                    self.feature_idx,
+                    3,
+                    &[
+                        ((cid >> 8) & 0xFF) as u8,
+                        (cid & 0xFF) as u8,
+                        flags,
+                        0x00,
+                        0x00,
+                    ],
+                );
+            }
+        }
+        self.gesture_active = false;
+        self.active_cids.clear();
     }
 }
 
@@ -1440,87 +1523,103 @@ fn initialize_gesture_session(
     info: &HidDeviceInfo,
     device: HidDevice,
 ) -> Result<GestureSession, PlatformError> {
-    let fingerprint = fingerprint_from_hid_info(info);
-    let device_info = build_connected_device_info(
-        Some(info.product_id()),
-        info.product_string(),
-        Some(transport_label(info.bus_type())),
-        Some("hidapi"),
-        None,
-        1000,
-        fingerprint,
-    );
-    let gesture_candidates = gesture_candidates_for(&device_info.gesture_cids);
+    let routes = shared.current_config().reprog_routes();
+    if routes.is_empty() {
+        return Err(PlatformError::Message(
+            "no active Logitech REPROG routes configured".to_string(),
+        ));
+    }
 
     for dev_idx in DEVICE_INDICES {
         let Some(feature_idx) = find_hidpp_feature(&device, dev_idx, FEAT_REPROG_V4, 250)? else {
             continue;
         };
 
-        for gesture_cid in &gesture_candidates {
-            if set_gesture_reporting(
-                &device,
-                dev_idx,
-                feature_idx,
-                *gesture_cid,
-                GESTURE_RAWXY_FLAGS,
-                250,
-            )?
-            .is_some()
-            {
-                shared.push_gesture_debug(format!(
-                    "Diverted gesture cid 0x{:04X} with RawXY via devIdx=0x{:02X}",
-                    gesture_cid, dev_idx
-                ));
-                return Ok(GestureSession {
-                    product_id: info.product_id(),
-                    product_name: info.product_string().map(str::to_string),
-                    device,
-                    dev_idx,
-                    feature_idx,
-                    gesture_cid: *gesture_cid,
-                    rawxy_enabled: true,
-                    held: false,
-                });
-            }
-
-            if set_gesture_reporting(
-                &device,
-                dev_idx,
-                feature_idx,
-                *gesture_cid,
-                GESTURE_DIVERT_FLAGS,
-                250,
-            )?
-            .is_some()
-            {
-                shared.push_gesture_debug(format!(
-                    "Diverted gesture cid 0x{:04X} via devIdx=0x{:02X}",
-                    gesture_cid, dev_idx
-                ));
-                return Ok(GestureSession {
-                    product_id: info.product_id(),
-                    product_name: info.product_string().map(str::to_string),
-                    device,
-                    dev_idx,
-                    feature_idx,
-                    gesture_cid: *gesture_cid,
-                    rawxy_enabled: false,
-                    held: false,
-                });
-            }
+        if let Some(session) =
+            try_initialize_reprog_session(shared, info, device, dev_idx, feature_idx, &routes)?
+        {
+            return Ok(session);
         }
     }
 
     Err(PlatformError::Message(format!(
-        "gesture diversion failed for pid 0x{:04X}",
+        "logitech reprog diversion failed for pid 0x{:04X}",
         info.product_id()
     )))
 }
 
 #[cfg(target_os = "windows")]
-fn gesture_candidates_for(gesture_cids: &[u16]) -> Vec<u16> {
-    gesture::ordered_gesture_candidates(gesture_cids, &DEFAULT_GESTURE_CIDS)
+fn try_initialize_reprog_session(
+    shared: &WindowsHookShared,
+    info: &HidDeviceInfo,
+    device: HidDevice,
+    dev_idx: u8,
+    feature_idx: u8,
+    routes: &[ReprogRoute],
+) -> Result<Option<GestureSession>, PlatformError> {
+    let mut diverted = Vec::new();
+
+    for route in routes {
+        for cid in &route.cids {
+            let flags = if route.rawxy_enabled {
+                GESTURE_RAWXY_FLAGS
+            } else {
+                GESTURE_DIVERT_FLAGS
+            };
+            if set_gesture_reporting(&device, dev_idx, feature_idx, *cid, flags, 250)?.is_some() {
+                diverted.push((route.control, *cid, route.rawxy_enabled));
+                shared.push_gesture_debug(format!(
+                    "Diverted cid 0x{:04X} for {} via devIdx=0x{:02X} rawxy={}",
+                    cid,
+                    route.control.label(),
+                    dev_idx,
+                    route.rawxy_enabled
+                ));
+            } else {
+                for (_, diverted_cid, diverted_rawxy) in &diverted {
+                    let reset_flags = if *diverted_rawxy {
+                        GESTURE_UNDIVERT_RAWXY_FLAGS
+                    } else {
+                        GESTURE_UNDIVERT_FLAGS
+                    };
+                    let _ = hidpp::write_request(
+                        &device,
+                        dev_idx,
+                        feature_idx,
+                        3,
+                        &[
+                            ((diverted_cid >> 8) & 0xFF) as u8,
+                            (diverted_cid & 0xFF) as u8,
+                            reset_flags,
+                            0x00,
+                            0x00,
+                        ],
+                    );
+                }
+                return Ok(None);
+            }
+        }
+    }
+
+    Ok(Some(GestureSession {
+        product_id: info.product_id(),
+        product_name: info.product_string().map(str::to_string),
+        device,
+        dev_idx,
+        feature_idx,
+        routes: routes.to_vec(),
+        active_cids: BTreeSet::new(),
+        gesture_active: false,
+    }))
+}
+
+#[cfg(target_os = "windows")]
+fn collect_active_cids(params: &[u8]) -> BTreeSet<u16> {
+    params
+        .chunks_exact(2)
+        .take_while(|pair| pair[0] != 0 || pair[1] != 0)
+        .map(|pair| u16::from(pair[0]) << 8 | u16::from(pair[1]))
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -2555,9 +2654,12 @@ fn execute_action(action_id: &str) -> Result<(), PlatformError> {
         "paste" => vec![VK_CONTROL as u16, b'V' as u16],
         "cut" => vec![VK_CONTROL as u16, b'X' as u16],
         "undo" => vec![VK_CONTROL as u16, b'Z' as u16],
+        "redo" => vec![VK_CONTROL as u16, b'Y' as u16],
         "select_all" => vec![VK_CONTROL as u16, b'A' as u16],
         "save" => vec![VK_CONTROL as u16, b'S' as u16],
         "find" => vec![VK_CONTROL as u16, b'F' as u16],
+        "screen_capture" => vec![VK_LWIN as u16, VK_SHIFT as u16, b'S' as u16],
+        "emoji_picker" => vec![VK_LWIN as u16, VK_OEM_PERIOD as u16],
         "volume_up" => vec![VK_VOLUME_UP as u16],
         "volume_down" => vec![VK_VOLUME_DOWN as u16],
         "volume_mute" => vec![VK_VOLUME_MUTE as u16],

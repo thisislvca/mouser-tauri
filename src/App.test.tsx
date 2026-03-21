@@ -168,6 +168,7 @@ const apiMocks = vi.hoisted(() => ({
   devicesUpdateSettings: vi.fn(),
   devicesUpdateProfile: vi.fn(),
   devicesUpdateNickname: vi.fn(),
+  devicesResetToFactory: vi.fn(),
   devicesRemove: vi.fn(),
   devicesSelect: vi.fn(),
   devicesSelectMock: vi.fn(),
@@ -194,6 +195,7 @@ vi.mock("./lib/api", () => ({
   devicesUpdateSettings: apiMocks.devicesUpdateSettings,
   devicesUpdateProfile: apiMocks.devicesUpdateProfile,
   devicesUpdateNickname: apiMocks.devicesUpdateNickname,
+  devicesResetToFactory: apiMocks.devicesResetToFactory,
   devicesRemove: apiMocks.devicesRemove,
   devicesSelect: apiMocks.devicesSelect,
   devicesSelectMock: apiMocks.devicesSelectMock,
@@ -367,15 +369,26 @@ function makeBootstrap(): BootstrapPayload {
   return {
     config,
     availableActions: [
-      { id: "alt_tab", label: "Alt + Tab", category: "Navigation" },
-      { id: "browser_back", label: "Browser Back", category: "Browser" },
+      {
+        id: "alt_tab",
+        label: "Alt + Tab",
+        category: "Navigation",
+        supported: true,
+      },
+      {
+        id: "browser_back",
+        label: "Browser Back",
+        category: "Browser",
+        supported: true,
+      },
       {
         id: "browser_forward",
         label: "Browser Forward",
         category: "Browser",
+        supported: true,
       },
-      { id: "copy", label: "Copy", category: "Editing" },
-      { id: "none", label: "Do Nothing", category: "Other" },
+      { id: "copy", label: "Copy", category: "Editing", supported: true },
+      { id: "none", label: "Do Nothing", category: "Other", supported: true },
     ],
     knownApps: [
       {
@@ -710,6 +723,7 @@ describe("App", () => {
     apiMocks.devicesUpdateSettings.mockReset();
     apiMocks.devicesUpdateProfile.mockReset();
     apiMocks.devicesUpdateNickname.mockReset();
+    apiMocks.devicesResetToFactory.mockReset();
     apiMocks.devicesRemove.mockReset();
     apiMocks.devicesSelect.mockReset();
     apiMocks.devicesSelectMock.mockReset();
@@ -973,6 +987,81 @@ describe("App", () => {
         return currentBootstrap;
       },
     );
+    apiMocks.devicesResetToFactory.mockImplementation(async (deviceKey: string) => {
+      const managedDevice = currentBootstrap.config.managedDevices?.find(
+        (device) => device.id === deviceKey,
+      );
+      if (!managedDevice) {
+        return currentBootstrap;
+      }
+
+      const defaultProfileId = `device_${managedDevice.modelKey}`;
+      const defaultProfile = {
+        id: defaultProfileId,
+        label: `${managedDevice.displayName} Defaults`,
+        appMatchers: [],
+        bindings: [
+          { control: "middle" as const, actionId: "none" },
+          { control: "back" as const, actionId: "browser_back" },
+          { control: "forward" as const, actionId: "browser_forward" },
+        ],
+      };
+      const nextProfiles = currentBootstrap.config.profiles.some(
+        (profile) => profile.id === defaultProfileId,
+      )
+        ? currentBootstrap.config.profiles.map((profile) =>
+            profile.id === defaultProfileId ? defaultProfile : profile,
+          )
+        : [...currentBootstrap.config.profiles, defaultProfile];
+      const nextSettings = { ...DEFAULT_DEVICE_SETTINGS };
+
+      currentBootstrap = {
+        ...currentBootstrap,
+        config: {
+          ...currentBootstrap.config,
+          activeProfileId:
+            currentBootstrap.engineSnapshot.engineStatus.selectedDeviceKey ===
+            deviceKey
+              ? defaultProfileId
+              : currentBootstrap.config.activeProfileId,
+          profiles: nextProfiles,
+          managedDevices: (currentBootstrap.config.managedDevices ?? []).map(
+            (device) =>
+              device.id === deviceKey
+                ? {
+                    ...device,
+                    profileId: defaultProfileId,
+                    settings: nextSettings,
+                  }
+                : device,
+          ),
+        },
+        engineSnapshot: {
+          ...currentBootstrap.engineSnapshot,
+          devices: currentBootstrap.engineSnapshot.devices.map((device) =>
+            device.key === deviceKey
+              ? { ...device, currentDpi: nextSettings.dpi }
+              : device,
+          ),
+          activeDevice:
+            currentBootstrap.engineSnapshot.activeDevice?.key === deviceKey
+              ? {
+                  ...currentBootstrap.engineSnapshot.activeDevice,
+                  currentDpi: nextSettings.dpi,
+                }
+              : currentBootstrap.engineSnapshot.activeDevice,
+          engineStatus: {
+            ...currentBootstrap.engineSnapshot.engineStatus,
+            activeProfileId:
+              currentBootstrap.engineSnapshot.engineStatus.selectedDeviceKey ===
+              deviceKey
+                ? defaultProfileId
+                : currentBootstrap.engineSnapshot.engineStatus.activeProfileId,
+          },
+        },
+      };
+      return currentBootstrap;
+    });
     apiMocks.devicesRemove.mockImplementation(async (deviceKey: string) => {
       currentBootstrap = {
         ...currentBootstrap,
@@ -1096,7 +1185,7 @@ describe("App", () => {
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("combobox", { name: "Middle button" }));
-    await user.click(await screen.findByRole("option", { name: "Copy" }));
+    await user.click(await screen.findByTestId("select-option-copy"));
 
     await waitFor(() => {
       expect(apiMocks.profilesUpdate).toHaveBeenCalled();
@@ -1167,6 +1256,20 @@ describe("App", () => {
       expect(apiMocks.devicesUpdateProfile).toHaveBeenCalledWith(
         "mx_master_3s",
         "vscode",
+      );
+    });
+  });
+
+  it("resets the selected device to factory defaults", async () => {
+    const { user } = renderApp();
+
+    await user.click(await screen.findByTestId("device-layout-card"));
+    await user.click(await screen.findByRole("button", { name: "Factory reset" }));
+
+    await waitFor(() => {
+      expect(apiMocks.devicesResetToFactory).toHaveBeenCalled();
+      expect(apiMocks.devicesResetToFactory.mock.calls[0]?.[0]).toBe(
+        "mx_master_3s",
       );
     });
   });

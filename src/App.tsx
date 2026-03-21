@@ -10,6 +10,7 @@ import {
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  ArrowCounterClockwise,
   CaretLeft,
   BugBeetle,
   GearSix,
@@ -59,6 +60,7 @@ import {
   debugClearLog,
   deviceDefaultsUpdate,
   devicesAdd,
+  devicesResetToFactory,
   devicesRemove,
   devicesSelect,
   devicesUpdateNickname,
@@ -77,6 +79,7 @@ import type {
   AppMatcherKind,
   Binding,
   BootstrapPayload,
+  DeviceControlSpec,
   DeviceSupportLevel,
   DebugEventRecord,
   DeviceInfo,
@@ -134,6 +137,12 @@ const CONTROL_LABELS: Record<LogicalControl, string> = {
   forward: "Forward button",
   hscroll_left: "Thumb wheel left",
   hscroll_right: "Thumb wheel right",
+  smartshift_toggle: "SmartShift toggle",
+  mission_control_button: "Mission Control button",
+  smart_zoom_button: "Smart Zoom button",
+  precision_mode_button: "Precision mode button",
+  dpi_button: "DPI button",
+  emoji_button: "Emoji button",
 };
 
 const GESTURE_CONTROLS: LogicalControl[] = [
@@ -152,12 +161,20 @@ const PRIMARY_CONTROL_ORDER: LogicalControl[] = [
   "forward",
   "gesture_press",
   "hscroll_left",
+  "smartshift_toggle",
+  "mission_control_button",
+  "smart_zoom_button",
+  "precision_mode_button",
+  "dpi_button",
+  "emoji_button",
 ];
 
 type AppSelectOption = {
   label: string;
   value: string;
   group?: string;
+  disabled?: boolean;
+  badge?: string;
 };
 
 const EMPTY_SELECT_VALUE = "__empty__";
@@ -668,6 +685,10 @@ function App() {
     }) => devicesUpdateNickname(deviceKey, nickname),
     onSuccess: setBootstrapQueryData,
   });
+  const resetDeviceToFactoryMutation = useMutation({
+    mutationFn: devicesResetToFactory,
+    onSuccess: setBootstrapQueryData,
+  });
   const createProfileMutation = useMutation({
     mutationFn: profilesCreate,
     onSuccess: setBootstrapQueryData,
@@ -856,6 +877,7 @@ function App() {
     updateDeviceSettingsMutation.isPending ||
     updateDeviceProfileMutation.isPending ||
     updateDeviceNicknameMutation.isPending ||
+    resetDeviceToFactoryMutation.isPending ||
     createProfileMutation.isPending ||
     updateProfileMutation.isPending ||
     deleteProfileMutation.isPending ||
@@ -907,7 +929,9 @@ function App() {
   const actionLookup = new Map(
     availableActions.map((action) => [action.id, action]),
   );
-  const groupedActions = groupActions(availableActions);
+  const groupedActions = groupActions(
+    availableActions.filter((action) => action.supported),
+  );
   const runtimeEvents =
     eventLog.length > 0 ? eventLog : engineSnapshot.engineStatus.debugLog;
 
@@ -1065,6 +1089,22 @@ function App() {
 
             <div className="flex items-center gap-2">
               {isMutating && <StatusPill tone="accent" value="Applying" />}
+              {activeManagedDevice ? (
+                <Button
+                  disabled={resetDeviceToFactoryMutation.isPending}
+                  onClick={() =>
+                    resetDeviceToFactoryMutation.mutate(activeManagedDevice.id)
+                  }
+                  size="sm"
+                  title="Restore this mouse to the imported Logitech default profile and baseline Mouser tuning."
+                  variant="outline"
+                >
+                  <ArrowCounterClockwise className="mr-2 h-4 w-4" />
+                  {resetDeviceToFactoryMutation.isPending
+                    ? "Resetting..."
+                    : "Factory reset"}
+                </Button>
+              ) : null}
               {config.profiles.slice(0, 5).map((profile) => {
                 const app = resolveProfileApp(
                   profile,
@@ -1315,6 +1355,7 @@ function ButtonsView(props: {
             <ButtonsWorkbench
               actionLookup={props.actionLookup}
               activeDevice={activeDevice}
+              controlSpecs={activeDevice.controls ?? []}
               hotspots={visibleHotspots}
               layout={props.activeLayout}
               notes={supportNotes}
@@ -1326,6 +1367,7 @@ function ButtonsView(props: {
             <ButtonsMatrixList
               actionLookup={props.actionLookup}
               controls={fallbackControls}
+              controlSpecs={activeDevice.controls ?? []}
               deviceName={activeDevice.displayName}
               notes={supportNotes}
               profile={props.profile}
@@ -1352,6 +1394,7 @@ function ButtonsView(props: {
                 <ButtonsControlSheet
                   actionLookup={props.actionLookup}
                   control={selectedControl}
+                  controlSpecs={activeDevice.controls ?? []}
                   groupedActions={props.groupedActions}
                   mappingEngineReady={props.mappingEngineReady}
                   platformCapabilities={props.platformCapabilities}
@@ -3154,6 +3197,8 @@ function AppSelect(props: {
     new Map<string, AppSelectOption[]>(),
   );
   const selectValue = props.value === "" ? EMPTY_SELECT_VALUE : props.value;
+  const optionTestId = (value: string) =>
+    `select-option-${(value || "empty").replace(/[^a-z0-9_-]+/gi, "-")}`;
 
   return (
     <Select
@@ -3172,22 +3217,36 @@ function AppSelect(props: {
               <SelectLabel>{group}</SelectLabel>
               {options.map((option) => (
                 <SelectItem
+                  data-testid={optionTestId(option.value)}
+                  disabled={option.disabled}
                   key={option.value || EMPTY_SELECT_VALUE}
                   value={
                     option.value === "" ? EMPTY_SELECT_VALUE : option.value
                   }
                 >
-                  {option.label}
+                  <span>{option.label}</span>
+                  {option.badge ? (
+                    <Badge className="ml-auto" variant="outline">
+                      {option.badge}
+                    </Badge>
+                  ) : null}
                 </SelectItem>
               ))}
             </SelectGroup>
           ) : (
             options.map((option) => (
               <SelectItem
+                data-testid={optionTestId(option.value)}
+                disabled={option.disabled}
                 key={option.value || EMPTY_SELECT_VALUE}
                 value={option.value === "" ? EMPTY_SELECT_VALUE : option.value}
               >
-                {option.label}
+                <span>{option.label}</span>
+                {option.badge ? (
+                  <Badge className="ml-auto" variant="outline">
+                    {option.badge}
+                  </Badge>
+                ) : null}
               </SelectItem>
             ))
           ),
@@ -3237,31 +3296,64 @@ function ButtonsWorkbench(props: {
   notes: string[];
   profile: Profile;
   actionLookup: Map<string, ActionDefinition>;
+  controlSpecs: DeviceControlSpec[];
   selectedControl: LogicalControl | null;
   onSelectControl: (control: LogicalControl) => void;
 }) {
   const workbenchRef = useRef<HTMLDivElement | null>(null);
   const workbenchSize = useElementSize(workbenchRef);
+  const viewportSize = useViewportSize();
+  const controlSpecLookup = new Map(
+    props.controlSpecs.map((spec) => [spec.control, spec]),
+  );
   const minCanvasWidth = props.layout.imageWidth + 220;
   const maxCanvasWidth = props.layout.imageWidth + 520;
-  const canvasWidth = clamp(
-    workbenchSize.width || props.layout.imageWidth + 360,
+  const naturalCanvasWidth = clamp(
+    props.layout.imageWidth + 420,
     minCanvasWidth,
     maxCanvasWidth,
   );
-  const canvasHeight = props.layout.imageHeight + 320;
-  const imageLeft = (canvasWidth - props.layout.imageWidth) / 2;
-  const imageTop = 124;
+  const naturalCanvasHeight = props.layout.imageHeight + 320;
+  const horizontalPadding = workbenchSize.width >= 640 ? 64 : 32;
+  const availableWidth = Math.max(
+    (workbenchSize.width || naturalCanvasWidth) - horizontalPadding,
+    280,
+  );
+  const availableHeight = Math.max(
+    (viewportSize.height || naturalCanvasHeight + 220) - 220,
+    460,
+  );
+  const canvasScale = clamp(
+    Math.min(
+      availableWidth / naturalCanvasWidth,
+      availableHeight / naturalCanvasHeight,
+      1,
+    ),
+    0.4,
+    1,
+  );
+  const stageWidth = availableWidth;
+  const imageWidth = props.layout.imageWidth * canvasScale;
+  const imageHeight = props.layout.imageHeight * canvasScale;
+  const imageTop = Math.max(72, 124 * canvasScale);
+  const imageLeft = (stageWidth - imageWidth) / 2;
+  const stageHeight = Math.max(
+    imageTop + imageHeight + Math.max(104, 196 * canvasScale),
+    520,
+  );
 
   return (
     <div className="relative" ref={workbenchRef}>
       {props.notes.length > 0 ? (
         <SupportNotesPanel className="mb-6" notes={props.notes} />
       ) : null}
-      <div className="relative mx-auto min-h-[720px] min-w-full px-4 py-6 sm:px-8">
+      <div
+        className="relative mx-auto min-w-full overflow-hidden px-4 py-6 sm:px-8"
+        style={{ minHeight: stageHeight + 48 }}
+      >
         <div
           className="relative mx-auto"
-          style={{ width: canvasWidth, height: canvasHeight }}
+          style={{ width: stageWidth, height: stageHeight }}
         >
           <img
             alt={props.layout.label}
@@ -3269,10 +3361,10 @@ function ButtonsWorkbench(props: {
             data-testid="device-layout-image"
             src={props.layout.imageAsset}
             style={{
-              height: props.layout.imageHeight,
+              height: imageHeight,
               left: imageLeft,
               top: imageTop,
-              width: props.layout.imageWidth,
+              width: imageWidth,
             }}
           />
 
@@ -3282,21 +3374,22 @@ function ButtonsWorkbench(props: {
               props.profile,
               hotspot.control,
               props.actionLookup,
+              controlSpecLookup,
             );
-            const pointX = imageLeft + hotspot.normX * props.layout.imageWidth;
-            const pointY = imageTop + hotspot.normY * props.layout.imageHeight;
+            const pointX = imageLeft + hotspot.normX * imageWidth;
+            const pointY = imageTop + hotspot.normY * imageHeight;
             const cardMetrics = stageCardMetrics(hotspot.control);
-            const rawLabelX = pointX + hotspot.labelOffX;
-            const rawLabelY = pointY + hotspot.labelOffY;
+            const rawLabelX = pointX + hotspot.labelOffX * canvasScale;
+            const rawLabelY = pointY + hotspot.labelOffY * canvasScale;
             const labelX = clamp(
               rawLabelX,
               20,
-              canvasWidth - cardMetrics.width - 20,
+              stageWidth - cardMetrics.width - 20,
             );
             const labelY = clamp(
               rawLabelY,
               28,
-              canvasHeight - cardMetrics.height - 28,
+              stageHeight - cardMetrics.height - 28,
             );
             const labelSide = labelX >= pointX ? "right" : "left";
             const connector = connectorStyle(
@@ -3371,9 +3464,14 @@ function ButtonsMatrixList(props: {
   notes: string[];
   profile: Profile;
   actionLookup: Map<string, ActionDefinition>;
+  controlSpecs: DeviceControlSpec[];
   selectedControl: LogicalControl | null;
   onSelectControl: (control: LogicalControl) => void;
 }) {
+  const controlSpecLookup = new Map(
+    props.controlSpecs.map((spec) => [spec.control, spec]),
+  );
+
   return (
     <div className="space-y-6">
       {props.notes.length > 0 ? <SupportNotesPanel notes={props.notes} /> : null}
@@ -3410,6 +3508,7 @@ function ButtonsMatrixList(props: {
                     props.profile,
                     control,
                     props.actionLookup,
+                    controlSpecLookup,
                   )}
                 </p>
                 <p className="mt-4 text-xs leading-5 text-muted-foreground">
@@ -3431,10 +3530,14 @@ function ButtonsControlSheet(props: {
   groupedActions: Array<[string, ActionDefinition[]]>;
   mappingEngineReady: boolean;
   platformCapabilities: BootstrapPayload["platformCapabilities"];
+  controlSpecs: DeviceControlSpec[];
   supportedControls: LogicalControl[];
   setBinding: (control: LogicalControl, actionId: string) => void;
   onClose: () => void;
 }) {
+  const controlSpecLookup = new Map(
+    props.controlSpecs.map((spec) => [spec.control, spec]),
+  );
   const controls = editorControlsFor(props.control).filter((control) =>
     props.supportedControls.includes(control),
   );
@@ -3486,7 +3589,12 @@ function ButtonsControlSheet(props: {
       <Card className="mt-2 bg-card-muted shadow-none ring-1 ring-border">
         <CardContent className="px-5 py-4">
           <p className="text-base leading-8 text-foreground">
-            {summarizeHotspot(props.profile, props.control, props.actionLookup)}
+            {summarizeHotspot(
+              props.profile,
+              props.control,
+              props.actionLookup,
+              controlSpecLookup,
+            )}
           </p>
         </CardContent>
       </Card>
@@ -3497,6 +3605,9 @@ function ButtonsControlSheet(props: {
             <SheetActionField
               actionLookup={props.actionLookup}
               control={control}
+              controlSpec={props.controlSpecs.find(
+                (spec) => spec.control === control,
+              )}
               groupedActions={props.groupedActions}
               key={control}
               label={sheetFieldLabelFor(control)}
@@ -3515,19 +3626,15 @@ function SheetActionField(props: {
   label: string;
   profile: Profile;
   actionLookup: Map<string, ActionDefinition>;
+  controlSpec?: DeviceControlSpec;
   groupedActions: Array<[string, ActionDefinition[]]>;
   onChange: (actionId: string) => void;
 }) {
   const currentBinding = bindingFor(props.profile, props.control);
-  const actionOptions = props.groupedActions.flatMap(([group, actions]) =>
-    actions.map(
-      (action) =>
-        ({
-          group,
-          label: action.label,
-          value: action.id,
-        }) satisfies AppSelectOption,
-    ),
+  const actionOptions = actionOptionsForControl(
+    props.controlSpec,
+    props.groupedActions,
+    props.actionLookup,
   );
 
   return (
@@ -3538,7 +3645,12 @@ function SheetActionField(props: {
             {props.label}
           </p>
           <Badge variant="default">
-            {actionFor(props.profile, props.control, props.actionLookup)}
+            {describeControlAction(
+              props.profile,
+              props.control,
+              props.actionLookup,
+              props.controlSpec,
+            )}
           </Badge>
         </div>
         <AppSelect
@@ -3548,6 +3660,11 @@ function SheetActionField(props: {
           options={actionOptions}
           value={currentBinding.actionId}
         />
+        {factoryDefaultSummary(props.controlSpec) ? (
+          <p className="mt-3 text-xs leading-5 text-muted-foreground">
+            {factoryDefaultSummary(props.controlSpec)}
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -3681,6 +3798,28 @@ function useElementSize<T extends HTMLElement>(ref: RefObject<T | null>) {
   return size;
 }
 
+function useViewportSize() {
+  const [size, setSize] = useState(() => ({
+    width: typeof window === "undefined" ? 0 : window.innerWidth,
+    height: typeof window === "undefined" ? 0 : window.innerHeight,
+  }));
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const updateSize = () => {
+      setSize({ width: window.innerWidth, height: window.innerHeight });
+    };
+
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
+  }, []);
+
+  return size;
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
@@ -3766,6 +3905,17 @@ function editorDescriptionFor(control: LogicalControl) {
     return "Horizontal scroll is split into left and right actions. Keep both directions together so the thumb wheel stays predictable.";
   }
 
+  if (
+    control === "smartshift_toggle" ||
+    control === "mission_control_button" ||
+    control === "smart_zoom_button" ||
+    control === "precision_mode_button" ||
+    control === "dpi_button" ||
+    control === "emoji_button"
+  ) {
+    return "This Logitech-specific control comes from the imported device catalog. Recommended Logitech actions are shown first, and Logitech-only actions Mouser cannot execute stay visible but disabled.";
+  }
+
   return "Adjust the action for this control on the active profile. Changes save immediately and apply to the currently selected app profile.";
 }
 
@@ -3773,35 +3923,60 @@ function stageHotspotSummary(
   profile: Profile,
   control: LogicalControl,
   actionLookup: Map<string, ActionDefinition>,
+  controlSpecLookup: Map<LogicalControl, DeviceControlSpec>,
 ) {
   if (control === "hscroll_left") {
     const left = compactStageActionLabel(
-      actionFor(profile, "hscroll_left", actionLookup),
+      describeControlAction(
+        profile,
+        "hscroll_left",
+        actionLookup,
+        controlSpecLookup.get("hscroll_left"),
+      ),
     );
     const right = compactStageActionLabel(
-      actionFor(profile, "hscroll_right", actionLookup),
+      describeControlAction(
+        profile,
+        "hscroll_right",
+        actionLookup,
+        controlSpecLookup.get("hscroll_right"),
+      ),
     );
     return `L ${left} / R ${right}`;
   }
 
   if (control === "gesture_press") {
     const tap = compactStageActionLabel(
-      actionFor(profile, "gesture_press", actionLookup),
+      describeControlAction(
+        profile,
+        "gesture_press",
+        actionLookup,
+        controlSpecLookup.get("gesture_press"),
+      ),
     );
     const swipeConfigured = [
       "gesture_left",
       "gesture_right",
       "gesture_up",
       "gesture_down",
-    ].some(
-      (gestureControl) =>
-        actionFor(profile, gestureControl as LogicalControl, actionLookup) !==
-        "Do Nothing (Pass-through)",
+    ].some((gestureControl) =>
+      hasConfiguredOrFactoryDefaultAction(
+        profile,
+        gestureControl as LogicalControl,
+        controlSpecLookup.get(gestureControl as LogicalControl),
+      ),
     );
     return swipeConfigured ? `Tap ${tap} + swipes` : `Tap ${tap}`;
   }
 
-  return compactStageActionLabel(actionFor(profile, control, actionLookup));
+  return compactStageActionLabel(
+    describeControlAction(
+      profile,
+      control,
+      actionLookup,
+      controlSpecLookup.get(control),
+    ),
+  );
 }
 
 function compactStageActionLabel(label: string) {
@@ -3838,29 +4013,52 @@ function summarizeHotspot(
   profile: Profile,
   control: LogicalControl,
   actionLookup: Map<string, ActionDefinition>,
+  controlSpecLookup?: Map<LogicalControl, DeviceControlSpec>,
 ) {
   if (control === "hscroll_left") {
-    const left = actionFor(profile, "hscroll_left", actionLookup);
-    const right = actionFor(profile, "hscroll_right", actionLookup);
+    const left = describeControlAction(
+      profile,
+      "hscroll_left",
+      actionLookup,
+      controlSpecLookup?.get("hscroll_left"),
+    );
+    const right = describeControlAction(
+      profile,
+      "hscroll_right",
+      actionLookup,
+      controlSpecLookup?.get("hscroll_right"),
+    );
     return `Left: ${left} | Right: ${right}`;
   }
 
   if (control === "gesture_press") {
-    const tap = actionFor(profile, "gesture_press", actionLookup);
+    const tap = describeControlAction(
+      profile,
+      "gesture_press",
+      actionLookup,
+      controlSpecLookup?.get("gesture_press"),
+    );
     const swipeConfigured = [
       "gesture_left",
       "gesture_right",
       "gesture_up",
       "gesture_down",
-    ].some(
-      (gestureControl) =>
-        actionFor(profile, gestureControl as LogicalControl, actionLookup) !==
-        "Do Nothing (Pass-through)",
+    ].some((gestureControl) =>
+      hasConfiguredOrFactoryDefaultAction(
+        profile,
+        gestureControl as LogicalControl,
+        controlSpecLookup?.get(gestureControl as LogicalControl),
+      ),
     );
     return swipeConfigured ? `Tap: ${tap} | Swipes configured` : `Tap: ${tap}`;
   }
 
-  return actionFor(profile, control, actionLookup);
+  return describeControlAction(
+    profile,
+    control,
+    actionLookup,
+    controlSpecLookup?.get(control),
+  );
 }
 
 function actionFor(
@@ -3870,6 +4068,42 @@ function actionFor(
 ) {
   const actionId = bindingFor(profile, control).actionId;
   return actionLookup.get(actionId)?.label ?? "Do Nothing (Pass-through)";
+}
+
+function factoryDefaultSummary(controlSpec?: DeviceControlSpec) {
+  const label = controlSpec?.factoryDefaultLabel?.trim();
+  if (!label) {
+    return null;
+  }
+
+  const source = controlSpec?.factoryDefaultSource;
+
+  return `${source === "recommendation" ? "Suggested default" : "Factory default"}: ${label}`;
+}
+
+function describeControlAction(
+  profile: Profile,
+  control: LogicalControl,
+  actionLookup: Map<string, ActionDefinition>,
+  controlSpec?: DeviceControlSpec,
+) {
+  const currentAction = actionFor(profile, control, actionLookup);
+  if (currentAction !== "Do Nothing (Pass-through)") {
+    return currentAction;
+  }
+
+  return factoryDefaultSummary(controlSpec) ?? currentAction;
+}
+
+function hasConfiguredOrFactoryDefaultAction(
+  profile: Profile,
+  control: LogicalControl,
+  controlSpec?: DeviceControlSpec,
+) {
+  return (
+    bindingFor(profile, control).actionId !== "none" ||
+    Boolean(controlSpec?.factoryDefaultLabel)
+  );
 }
 
 function bindingFor(profile: Profile, control: LogicalControl): Binding {
@@ -3946,6 +4180,47 @@ function groupActions(actions: ActionDefinition[]) {
     groups.set(action.category, next);
   }
   return [...groups.entries()];
+}
+
+function actionOptionsForControl(
+  controlSpec: DeviceControlSpec | undefined,
+  groupedActions: Array<[string, ActionDefinition[]]>,
+  actionLookup: Map<string, ActionDefinition>,
+) {
+  const options: AppSelectOption[] = [];
+  const seen = new Set<string>();
+
+  for (const actionId of controlSpec?.recommendedActionIds ?? []) {
+    const action = actionLookup.get(actionId);
+    if (!action) {
+      continue;
+    }
+
+    seen.add(action.id);
+    options.push({
+      group: "Recommended",
+      label: action.label,
+      value: action.id,
+      disabled: !action.supported,
+      badge: action.supported ? "Recommended" : "Unsupported",
+    });
+  }
+
+  for (const [group, actions] of groupedActions) {
+    for (const action of actions) {
+      if (seen.has(action.id)) {
+        continue;
+      }
+
+      options.push({
+        group,
+        label: action.label,
+        value: action.id,
+      });
+    }
+  }
+
+  return options;
 }
 
 function buildImportRequest(

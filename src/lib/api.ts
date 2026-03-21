@@ -88,6 +88,10 @@ export async function devicesUpdateNickname(
   return unwrap(await commands.devicesUpdateNickname(deviceKey, nickname));
 }
 
+export async function devicesResetToFactory(deviceKey: string) {
+  return unwrap(await commands.devicesResetToFactory(deviceKey));
+}
+
 export async function devicesRemove(deviceKey: string) {
   return unwrap(await commands.devicesRemove(deviceKey));
 }

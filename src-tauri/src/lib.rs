@@ -222,6 +222,18 @@ fn devices_update_nickname(
 
 #[tauri::command]
 #[specta::specta]
+fn devices_reset_to_factory(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_key: String,
+) -> Result<BootstrapPayload, String> {
+    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
+        runtime.reset_managed_device_to_factory_defaults(&device_key)
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
 fn devices_list(state: State<'_, AppState>) -> CommandResult<Vec<DeviceInfo>> {
     with_runtime(&state, AppRuntime::devices)
 }
@@ -781,6 +793,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             devices_update_settings,
             devices_update_profile,
             devices_update_nickname,
+            devices_reset_to_factory,
             devices_remove,
             devices_select,
             devices_select_mock,

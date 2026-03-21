@@ -8,9 +8,10 @@ use std::{
 use mouser_core::{
     active_device_with_layout, build_engine_snapshot, build_managed_device_info, clamp_dpi,
     default_action_catalog, default_app_catalog, default_app_discovery_snapshot,
-    known_device_spec_by_key, known_device_specs, manual_layout_choices, normalize_app_match_value,
+    default_device_settings, known_device_spec_by_key, known_device_specs, manual_layout_choices,
+    normalize_app_match_value, normalize_bindings, normalize_device_settings,
     profile_for_supported_controls, AppConfig, AppDiscoverySnapshot, AppIdentity, AppMatcher,
-    AppMatcherKind, BootstrapPayload, CatalogApp, DebugEvent, DebugEventKind, DeviceInfo,
+    AppMatcherKind, Binding, BootstrapPayload, CatalogApp, DebugEvent, DebugEventKind, DeviceInfo,
     DeviceSettings, DiscoveredApp, EngineSnapshot, EngineSnapshotState, InstalledApp,
     ManagedDevice, PlatformCapabilities, Profile,
 };
@@ -367,6 +368,52 @@ impl AppRuntime {
             format!("Updated nickname for device `{device_key}`"),
         );
         self.log_device_inventory("Device library");
+    }
+
+    pub fn reset_managed_device_to_factory_defaults(&mut self, device_key: &str) {
+        let Some(device) = self
+            .config
+            .managed_devices
+            .iter()
+            .find(|device| device.id == device_key)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(spec) = known_device_spec_by_key(&device.model_key) else {
+            return;
+        };
+
+        let profile = model_default_profile(&spec);
+        let profile_id = profile.id.clone();
+        let display_name = device.display_name.clone();
+        let mut settings = default_device_settings();
+        normalize_device_settings(Some(&spec.key), &mut settings);
+
+        let mut updated = false;
+        self.apply_config_edit(|config| {
+            config.upsert_profile(profile);
+            let Some(device) = config
+                .managed_devices
+                .iter_mut()
+                .find(|device| device.id == device_key)
+            else {
+                return;
+            };
+            device.profile_id = Some(profile_id.clone());
+            device.settings = settings;
+            updated = true;
+        });
+        if !updated {
+            return;
+        }
+
+        self.push_debug(
+            DebugEventKind::Info,
+            format!("Reset `{display_name}` to factory defaults"),
+        );
+        self.log_active_profile_snapshot("Factory reset bindings");
+        self.log_dpi_state("Factory reset DPI");
     }
 
     pub fn apply_imported_config(&mut self, config: AppConfig) {
@@ -769,11 +816,11 @@ impl AppRuntime {
             .active_device_from_resolution(&resolution)
             .map(|device| profile_for_supported_controls(&profile, &device.supported_controls))
             .unwrap_or(profile);
+        let active_device = self.active_device_from_resolution(&resolution);
         let hook_settings = HookBackendSettings::from_app_and_device(
             &self.config.settings,
             self.selected_device_settings(),
-            self.selected_managed_device()
-                .map(|device| device.model_key.as_str()),
+            active_device.as_ref(),
         );
 
         if let Err(error) =
@@ -1046,13 +1093,14 @@ impl AppRuntime {
 
     fn add_managed_device_record(&mut self, model_key: &str) -> Option<String> {
         let spec = known_device_spec_by_key(model_key)?;
+        let profile_id = self.ensure_model_default_profile(&spec);
         let id = self.next_managed_device_id(model_key);
         let device = ManagedDevice {
             id: id.clone(),
             model_key: spec.key,
             display_name: spec.display_name,
             nickname: None,
-            profile_id: None,
+            profile_id: Some(profile_id),
             identity_key: None,
             settings: self.config.device_defaults.clone(),
             created_at_ms: now_ms(),
@@ -1062,6 +1110,16 @@ impl AppRuntime {
         self.config.managed_devices.push(device);
 
         Some(id)
+    }
+
+    fn ensure_model_default_profile(&mut self, spec: &mouser_core::KnownDeviceSpec) -> String {
+        let profile_id = model_default_profile_id(&spec.key);
+        if self.config.profile_by_id(&profile_id).is_some() {
+            return profile_id;
+        }
+
+        self.config.upsert_profile(model_default_profile(spec));
+        profile_id
     }
 
     fn next_managed_device_id(&self, model_key: &str) -> String {
@@ -1381,6 +1439,29 @@ fn live_matches_managed_device(managed: &ManagedDevice, live: &DeviceInfo) -> bo
     }
 }
 
+fn model_default_profile_id(model_key: &str) -> String {
+    format!("device_{model_key}")
+}
+
+fn model_default_profile(spec: &mouser_core::KnownDeviceSpec) -> Profile {
+    let bindings = normalize_bindings(
+        spec.controls
+            .iter()
+            .map(|control| Binding {
+                control: control.control,
+                action_id: control.default_action_id.clone(),
+            })
+            .collect(),
+    );
+
+    Profile {
+        id: model_default_profile_id(&spec.key),
+        label: format!("{} Defaults", spec.display_name),
+        app_matchers: Vec::new(),
+        bindings,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1515,6 +1596,7 @@ mod tests {
             ui_layout: "mx_master".to_string(),
             image_asset: "/assets/mouse.png".to_string(),
             supported_controls: Vec::new(),
+            controls: Vec::new(),
             support: mouser_core::DeviceSupportMatrix {
                 level: mouser_core::DeviceSupportLevel::Experimental,
                 supports_battery_status: false,
@@ -1525,6 +1607,8 @@ mod tests {
             gesture_cids: vec![0x00C3, 0x00D7],
             dpi_min: 200,
             dpi_max: 8000,
+            dpi_inferred: false,
+            dpi_source_kind: None,
             connected: true,
             battery_level: Some(80),
             current_dpi: 1000,
@@ -1563,5 +1647,71 @@ mod tests {
         let events = runtime.debug_events_since(cursor);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].message, "latest");
+    }
+
+    #[test]
+    fn reset_managed_device_to_factory_defaults_restores_model_profile_and_settings() {
+        let mut runtime = test_runtime();
+        runtime.config.managed_devices.push(ManagedDevice {
+            id: "mx_master_3s-1".to_string(),
+            model_key: "mx_master_3s".to_string(),
+            display_name: "MX Master 3S".to_string(),
+            nickname: Some("Desk Mouse".to_string()),
+            profile_id: Some("custom".to_string()),
+            identity_key: None,
+            settings: DeviceSettings {
+                dpi: 2400,
+                invert_horizontal_scroll: true,
+                invert_vertical_scroll: true,
+                macos_thumb_wheel_simulate_trackpad: true,
+                macos_thumb_wheel_trackpad_hold_timeout_ms: 900,
+                gesture_threshold: 90,
+                gesture_deadzone: 70,
+                gesture_timeout_ms: 5000,
+                gesture_cooldown_ms: 900,
+                manual_layout_override: Some("generic_mouse".to_string()),
+            },
+            created_at_ms: 1,
+            last_seen_at_ms: None,
+            last_seen_transport: None,
+        });
+        runtime.config.upsert_profile(Profile {
+            id: "custom".to_string(),
+            label: "Custom".to_string(),
+            app_matchers: Vec::new(),
+            bindings: vec![Binding {
+                control: mouser_core::LogicalControl::Back,
+                action_id: "mission_control".to_string(),
+            }],
+        });
+
+        runtime.reset_managed_device_to_factory_defaults("mx_master_3s-1");
+
+        let device = runtime
+            .config
+            .managed_devices
+            .iter()
+            .find(|device| device.id == "mx_master_3s-1")
+            .unwrap();
+        assert_eq!(device.profile_id.as_deref(), Some("device_mx_master_3s"));
+        assert_eq!(device.settings, default_device_settings());
+        assert_eq!(device.nickname.as_deref(), Some("Desk Mouse"));
+
+        let profile = runtime
+            .config
+            .profile_by_id("device_mx_master_3s")
+            .expect("expected seeded profile");
+        assert_eq!(
+            profile
+                .binding_for(mouser_core::LogicalControl::GestureLeft)
+                .map(|binding| binding.action_id.as_str()),
+            Some("space_left")
+        );
+        assert_eq!(
+            profile
+                .binding_for(mouser_core::LogicalControl::GesturePress)
+                .map(|binding| binding.action_id.as_str()),
+            Some("mission_control")
+        );
     }
 }
