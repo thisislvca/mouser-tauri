@@ -8,7 +8,8 @@ use mouser_core::{
     active_device_with_layout, build_engine_snapshot, build_managed_device_info, clamp_dpi,
     default_action_catalog, default_app_discovery_snapshot, default_config, default_device_catalog,
     default_known_apps, default_layouts, manual_layout_choices, AppConfig, AppIdentity,
-    BootstrapPayload, DebugEvent, DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout,
+    BootstrapPayload, DebugEvent, DebugEventKind, DeviceAttributionStatus, DeviceFingerprint,
+    DeviceInfo, DeviceLayout, DeviceMatchKind, DeviceRoutingEntry, DeviceRoutingSnapshot,
     DeviceSettings, EngineSnapshot, EngineSnapshotState, KnownApp, ManagedDevice,
     PlatformCapabilities, Profile,
 };
@@ -255,6 +256,7 @@ impl MockRuntime {
 
     pub fn engine_snapshot(&self) -> EngineSnapshot {
         let devices = self.managed_device_infos();
+        let device_routing = self.device_routing_snapshot();
         let manual_layout_override = self
             .selected_managed_device()
             .and_then(|managed| managed.settings.manual_layout_override);
@@ -274,6 +276,7 @@ impl MockRuntime {
         build_engine_snapshot(
             devices,
             self.detected_devices.clone(),
+            device_routing,
             self.selected_device_key.clone(),
             active_device,
             EngineSnapshotState {
@@ -326,6 +329,54 @@ impl MockRuntime {
                 build_managed_device_info(&device, live)
             })
             .collect()
+    }
+
+    fn device_routing_snapshot(&self) -> DeviceRoutingSnapshot {
+        let config = self.config();
+        let mut entries = self
+            .detected_devices
+            .iter()
+            .map(|live| {
+                let managed = config.managed_devices.iter().find(|device| {
+                    device.model_key == live.model_key
+                        && device.identity_key.as_deref() == live.fingerprint.identity_key.as_deref()
+                });
+                let managed_device_key = managed.map(|device| device.id.clone());
+                DeviceRoutingEntry {
+                    live_device_key: live.key.clone(),
+                    live_model_key: live.model_key.clone(),
+                    live_display_name: live.display_name.clone(),
+                    live_identity_key: live.fingerprint.identity_key.clone(),
+                    managed_device_key: managed_device_key.clone(),
+                    managed_display_name: managed.map(|device| device.display_name.clone()),
+                    device_profile_id: managed.and_then(|device| device.profile_id.clone()),
+                    resolved_profile_id: managed.map(|device| {
+                        config.resolved_profile_id(
+                            device.profile_id.as_deref(),
+                            self.frontmost_app.as_ref(),
+                        )
+                    }),
+                    match_kind: managed
+                        .map(|_| DeviceMatchKind::Identity)
+                        .unwrap_or(DeviceMatchKind::Unmanaged),
+                    is_active_target: managed_device_key
+                        .as_deref()
+                        .is_some_and(|device_key| Some(device_key) == self.selected_device_key.as_deref()),
+                    hook_eligible: managed.is_some(),
+                    attribution_status: managed
+                        .map(|_| DeviceAttributionStatus::Ready)
+                        .unwrap_or(DeviceAttributionStatus::Unmanaged),
+                    source_hints: live
+                        .fingerprint
+                        .identity_key
+                        .iter()
+                        .cloned()
+                        .collect(),
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.live_device_key.cmp(&right.live_device_key));
+        DeviceRoutingSnapshot { entries }
     }
 
     fn sync_active_profile(&mut self) -> bool {

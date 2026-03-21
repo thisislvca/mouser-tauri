@@ -27,6 +27,7 @@ export function useRuntimeEvents() {
       const listeners = await Promise.all([
         events.appDiscoveryChangedEvent.listen(scheduleInvalidate),
         events.deviceChangedEvent.listen(scheduleInvalidate),
+        events.deviceRoutingChangedEvent.listen(scheduleInvalidate),
         events.profileChangedEvent.listen(scheduleInvalidate),
         events.engineStatusChangedEvent.listen(scheduleInvalidate),
         events.debugEventEnvelope.listen((event: { payload: DebugEvent }) => {

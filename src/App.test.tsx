@@ -154,6 +154,53 @@ function normalizeDeviceSettings(
   };
 }
 
+function buildDeviceRouting(
+  devices: DeviceInfo[],
+  config: AppConfig,
+): BootstrapPayload["engineSnapshot"]["deviceRouting"] {
+  return {
+    entries: devices.map((device) => {
+      const managedDevice = config.managedDevices?.find((managed) => {
+        const managedIdentity = normalizedIdentityKey(managed.identityKey);
+        const liveIdentity = normalizedIdentityKey(device.fingerprint?.identityKey);
+        if (managedIdentity != null && liveIdentity != null) {
+          return managedIdentity === liveIdentity;
+        }
+        if (managedIdentity != null || liveIdentity != null) {
+          return false;
+        }
+        return managed.modelKey === device.modelKey;
+      });
+      return {
+        liveDeviceKey: device.key,
+        liveModelKey: device.modelKey,
+        liveDisplayName: device.displayName,
+        liveIdentityKey: device.fingerprint?.identityKey ?? null,
+        managedDeviceKey: managedDevice?.id ?? null,
+        managedDisplayName: managedDevice?.displayName ?? null,
+        deviceProfileId: managedDevice?.profileId ?? null,
+        resolvedProfileId:
+          managedDevice?.profileId ?? config.activeProfileId ?? null,
+        matchKind: managedDevice
+          ? managedDevice.identityKey
+            ? "identity"
+            : "model_fallback"
+          : "unmanaged",
+        isActiveTarget: managedDevice?.id === "mx_master_3s",
+        hookEligible: managedDevice != null,
+        attributionStatus: managedDevice
+          ? managedDevice.identityKey
+            ? "ready"
+            : "model_fallback"
+          : "unmanaged",
+        sourceHints: device.fingerprint?.identityKey
+          ? [device.fingerprint.identityKey]
+          : [],
+      };
+    }),
+  };
+}
+
 const apiMocks = vi.hoisted(() => ({
   bootstrapLoad: vi.fn(),
   configSave: vi.fn(),
@@ -175,6 +222,7 @@ const apiMocks = vi.hoisted(() => ({
   importLegacyConfig: vi.fn(),
   debugClearLog: vi.fn(),
   deviceChangedListen: vi.fn(async () => () => undefined),
+  deviceRoutingChangedListen: vi.fn(async () => () => undefined),
   appDiscoveryChangedListen: vi.fn(async () => () => undefined),
   profileChangedListen: vi.fn(async () => () => undefined),
   engineStatusChangedListen: vi.fn(async () => () => undefined),
@@ -204,6 +252,7 @@ vi.mock("./lib/api", () => ({
   events: {
     appDiscoveryChangedEvent: { listen: apiMocks.appDiscoveryChangedListen },
     deviceChangedEvent: { listen: apiMocks.deviceChangedListen },
+    deviceRoutingChangedEvent: { listen: apiMocks.deviceRoutingChangedListen },
     profileChangedEvent: { listen: apiMocks.profileChangedListen },
     engineStatusChangedEvent: { listen: apiMocks.engineStatusChangedListen },
     debugEventEnvelope: { listen: apiMocks.debugEventListen },
@@ -483,6 +532,7 @@ function makeBootstrap(): BootstrapPayload {
     engineSnapshot: {
       devices,
       detectedDevices: devices,
+      deviceRouting: buildDeviceRouting(devices, config),
       activeDeviceKey: "mx_master_3s",
       activeDevice: devices[0],
       engineStatus: {
@@ -731,6 +781,7 @@ describe("App", () => {
     apiMocks.debugClearLog.mockReset();
     apiMocks.appDiscoveryChangedListen.mockClear();
     apiMocks.deviceChangedListen.mockClear();
+    apiMocks.deviceRoutingChangedListen.mockClear();
     apiMocks.profileChangedListen.mockClear();
     apiMocks.engineStatusChangedListen.mockClear();
     apiMocks.debugEventListen.mockClear();

@@ -1,13 +1,16 @@
 mod runtime;
 
 use std::{
+    collections::BTreeMap,
     sync::{mpsc, Mutex, MutexGuard},
     time::Duration,
 };
 
 use mouser_core::{
     AppConfig, AppDiscoverySnapshot, AppIdentity, BootstrapPayload, DebugEvent, DebugEventKind,
-    DeviceInfo, DeviceSettings, EngineSnapshot, LegacyImportReport, Profile, Settings,
+    DeviceInfo, DeviceRoutingChange, DeviceRoutingChangeKind, DeviceRoutingEntry,
+    DeviceRoutingEvent, DeviceRoutingSnapshot, DeviceSettings, EngineSnapshot, LegacyImportReport,
+    Profile, Settings,
 };
 use mouser_import::{import_legacy_config as import_legacy_payload, ImportSource};
 #[cfg(target_os = "macos")]
@@ -87,6 +90,11 @@ struct AppDiscoveryChangedEvent(pub AppDiscoverySnapshot);
 #[serde(rename_all = "camelCase")]
 #[tauri_specta(event_name = "debug_event")]
 struct DebugEventEnvelope(pub DebugEvent);
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, SpectaEvent)]
+#[serde(rename_all = "camelCase")]
+#[tauri_specta(event_name = "device_routing_changed")]
+struct DeviceRoutingChangedEvent(pub DeviceRoutingEvent);
 
 #[tauri::command]
 #[specta::specta]
@@ -311,7 +319,7 @@ fn debug_clear_log(app: AppHandle, state: State<'_, AppState>) -> Result<EngineS
         runtime.clear_debug_log();
         runtime.bootstrap_payload()
     })?;
-    emit_runtime_events(&app, &payload, &[], false)?;
+    emit_runtime_events(&app, &payload, &[], false, None)?;
     Ok(payload.engine_snapshot)
 }
 
@@ -343,17 +351,34 @@ fn mutate_runtime_and_emit<T>(
     state: &State<'_, AppState>,
     f: impl FnOnce(&mut AppRuntime) -> T,
 ) -> Result<(T, BootstrapPayload), String> {
-    let (result, payload, debug_events, app_discovery_changed) =
+    let (result, payload, debug_events, app_discovery_changed, device_routing_event) =
         with_runtime_mut(state, |runtime| {
             let previous_debug_cursor = runtime.debug_event_cursor();
             let previous_app_discovery = runtime.app_discovery_snapshot();
+            let previous_device_routing = runtime.device_routing_snapshot();
             let result = f(runtime);
             let payload = runtime.bootstrap_payload();
             let debug_events = runtime.debug_events_since(previous_debug_cursor);
             let app_discovery_changed = payload.app_discovery != previous_app_discovery;
-            (result, payload, debug_events, app_discovery_changed)
+            let device_routing_event = build_device_routing_event(
+                &previous_device_routing,
+                &payload.engine_snapshot.device_routing,
+            );
+            (
+                result,
+                payload,
+                debug_events,
+                app_discovery_changed,
+                device_routing_event,
+            )
         })?;
-    emit_runtime_events(app, &payload, &debug_events, app_discovery_changed)?;
+    emit_runtime_events(
+        app,
+        &payload,
+        &debug_events,
+        app_discovery_changed,
+        device_routing_event.as_ref(),
+    )?;
     Ok((result, payload))
 }
 
@@ -383,14 +408,36 @@ fn emit_runtime_updates_if_changed(
     f: impl FnOnce(&mut AppRuntime) -> runtime::RuntimeUpdateEffect,
 ) -> Result<(), String> {
     let result = with_manager_runtime(app, |runtime| {
+        let previous_device_routing = runtime.device_routing_snapshot();
         let effect = f(runtime);
         let payload = effect.payload_changed.then(|| runtime.bootstrap_payload());
-        (payload, effect.debug_events, effect.app_discovery_changed)
+        let device_routing_event = payload.as_ref().and_then(|payload| {
+            build_device_routing_event(
+                &previous_device_routing,
+                &payload.engine_snapshot.device_routing,
+            )
+        });
+        (
+            payload,
+            effect.debug_events,
+            effect.app_discovery_changed,
+            device_routing_event,
+        )
     })?;
 
-    let (payload, debug_events, app_discovery_changed) = result;
+    let (payload, debug_events, app_discovery_changed, device_routing_event) = result;
     if let Some(payload) = payload {
-        emit_runtime_events(app, &payload, &debug_events, app_discovery_changed)?;
+        emit_runtime_events(
+            app,
+            &payload,
+            &debug_events,
+            app_discovery_changed,
+            device_routing_event.as_ref(),
+        )?;
+    } else if let Some(device_routing_event) = device_routing_event {
+        DeviceRoutingChangedEvent(device_routing_event)
+            .emit(app)
+            .map_err(|error| error.to_string())?;
     } else if !debug_events.is_empty() {
         emit_debug_events(app, &debug_events)?;
     }
@@ -403,12 +450,19 @@ fn emit_runtime_events(
     payload: &BootstrapPayload,
     debug_events: &[DebugEvent],
     app_discovery_changed: bool,
+    device_routing_event: Option<&DeviceRoutingEvent>,
 ) -> Result<(), String> {
     sync_tray_menu(app, payload)?;
 
     DeviceChangedEvent(payload.engine_snapshot.active_device.clone())
         .emit(app)
         .map_err(|error| error.to_string())?;
+
+    if let Some(device_routing_event) = device_routing_event {
+        DeviceRoutingChangedEvent(device_routing_event.clone())
+            .emit(app)
+            .map_err(|error| error.to_string())?;
+    }
 
     ProfileChangedEvent {
         active_profile_id: payload
@@ -444,6 +498,85 @@ fn emit_debug_events(app: &AppHandle, debug_events: &[DebugEvent]) -> Result<(),
     Ok(())
 }
 
+fn build_device_routing_event(
+    previous: &DeviceRoutingSnapshot,
+    next: &DeviceRoutingSnapshot,
+) -> Option<DeviceRoutingEvent> {
+    if previous == next {
+        return None;
+    }
+
+    let previous_by_key = previous
+        .entries
+        .iter()
+        .map(|entry| (entry.live_device_key.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
+    let next_by_key = next
+        .entries
+        .iter()
+        .map(|entry| (entry.live_device_key.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut changes = Vec::new();
+
+    for (live_device_key, next_entry) in &next_by_key {
+        match previous_by_key.get(live_device_key) {
+            None => changes.push(device_routing_change(
+                DeviceRoutingChangeKind::Connected,
+                next_entry,
+            )),
+            Some(previous_entry) => {
+                if previous_entry.managed_device_key != next_entry.managed_device_key
+                    || previous_entry.match_kind != next_entry.match_kind
+                {
+                    changes.push(device_routing_change(
+                        DeviceRoutingChangeKind::Reassigned,
+                        next_entry,
+                    ));
+                }
+                if previous_entry.is_active_target != next_entry.is_active_target {
+                    changes.push(device_routing_change(
+                        DeviceRoutingChangeKind::ActiveTargetChanged,
+                        next_entry,
+                    ));
+                }
+                if previous_entry.resolved_profile_id != next_entry.resolved_profile_id {
+                    changes.push(device_routing_change(
+                        DeviceRoutingChangeKind::ResolvedProfileChanged,
+                        next_entry,
+                    ));
+                }
+            }
+        }
+    }
+
+    for (live_device_key, previous_entry) in &previous_by_key {
+        if !next_by_key.contains_key(live_device_key) {
+            changes.push(device_routing_change(
+                DeviceRoutingChangeKind::Disconnected,
+                previous_entry,
+            ));
+        }
+    }
+
+    Some(DeviceRoutingEvent {
+        snapshot: next.clone(),
+        changes,
+    })
+}
+
+fn device_routing_change(
+    kind: DeviceRoutingChangeKind,
+    entry: &DeviceRoutingEntry,
+) -> DeviceRoutingChange {
+    DeviceRoutingChange {
+        kind,
+        live_device_key: entry.live_device_key.clone(),
+        managed_device_key: entry.managed_device_key.clone(),
+        resolved_profile_id: entry.resolved_profile_id.clone(),
+        match_kind: Some(entry.match_kind),
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn push_runtime_debug_event(app: &AppHandle, kind: DebugEventKind, message: impl Into<String>) {
     let message = message.into();
@@ -455,7 +588,7 @@ fn push_runtime_debug_event(app: &AppHandle, kind: DebugEventKind, message: impl
     }) else {
         return;
     };
-    let _ = emit_runtime_events(app, &payload, &debug_events, false);
+    let _ = emit_runtime_events(app, &payload, &debug_events, false, None);
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -714,7 +847,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                     }) else {
                         return;
                     };
-                    let _ = emit_runtime_events(app, &payload, &debug_events, false);
+                    let _ = emit_runtime_events(app, &payload, &debug_events, false, None);
                 }
                 TRAY_TOGGLE_DEBUG_ID => {
                     let Ok((payload, debug_events, debug_mode)) =
@@ -731,7 +864,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                     else {
                         return;
                     };
-                    let _ = emit_runtime_events(app, &payload, &debug_events, false);
+                    let _ = emit_runtime_events(app, &payload, &debug_events, false, None);
                     if debug_mode {
                         show_main_window(app);
                     }
@@ -802,6 +935,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         ])
         .events(collect_events![
             DeviceChangedEvent,
+            DeviceRoutingChangedEvent,
             ProfileChangedEvent,
             EngineStatusChangedEvent,
             AppDiscoveryChangedEvent,
@@ -859,4 +993,90 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running mouser-tauri");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mouser_core::{DeviceAttributionStatus, DeviceMatchKind};
+
+    fn routing_entry(
+        live_device_key: &str,
+        managed_device_key: Option<&str>,
+        resolved_profile_id: Option<&str>,
+        match_kind: DeviceMatchKind,
+        is_active_target: bool,
+    ) -> DeviceRoutingEntry {
+        DeviceRoutingEntry {
+            live_device_key: live_device_key.to_string(),
+            live_model_key: "mx_master_3s".to_string(),
+            live_display_name: "MX Master 3S".to_string(),
+            live_identity_key: Some(format!("serial:{live_device_key}")),
+            managed_device_key: managed_device_key.map(str::to_string),
+            managed_display_name: managed_device_key.map(|_| "MX Master 3S".to_string()),
+            device_profile_id: managed_device_key.map(|_| "device_mx_master_3s".to_string()),
+            resolved_profile_id: resolved_profile_id.map(str::to_string),
+            match_kind,
+            is_active_target,
+            hook_eligible: managed_device_key.is_some(),
+            attribution_status: match match_kind {
+                DeviceMatchKind::Identity => DeviceAttributionStatus::Ready,
+                DeviceMatchKind::ModelFallback => DeviceAttributionStatus::ModelFallback,
+                DeviceMatchKind::Unmanaged => DeviceAttributionStatus::Unmanaged,
+            },
+            source_hints: vec![format!("serial:{live_device_key}")],
+        }
+    }
+
+    #[test]
+    fn build_device_routing_event_reports_connected_devices() {
+        let previous = DeviceRoutingSnapshot::default();
+        let next = DeviceRoutingSnapshot {
+            entries: vec![routing_entry(
+                "live-device",
+                Some("mx-master"),
+                Some("device_mx_master_3s"),
+                DeviceMatchKind::Identity,
+                true,
+            )],
+        };
+
+        let event = build_device_routing_event(&previous, &next).expect("expected routing event");
+        assert_eq!(event.changes.len(), 1);
+        assert_eq!(event.changes[0].kind, DeviceRoutingChangeKind::Connected);
+        assert_eq!(event.changes[0].live_device_key, "live-device");
+    }
+
+    #[test]
+    fn build_device_routing_event_reports_target_and_profile_changes() {
+        let previous = DeviceRoutingSnapshot {
+            entries: vec![routing_entry(
+                "live-device",
+                Some("mx-master"),
+                Some("default"),
+                DeviceMatchKind::Identity,
+                false,
+            )],
+        };
+        let next = DeviceRoutingSnapshot {
+            entries: vec![routing_entry(
+                "live-device",
+                Some("mx-master"),
+                Some("vscode"),
+                DeviceMatchKind::Identity,
+                true,
+            )],
+        };
+
+        let event = build_device_routing_event(&previous, &next).expect("expected routing event");
+        assert_eq!(event.changes.len(), 2);
+        assert!(event
+            .changes
+            .iter()
+            .any(|change| change.kind == DeviceRoutingChangeKind::ActiveTargetChanged));
+        assert!(event
+            .changes
+            .iter()
+            .any(|change| change.kind == DeviceRoutingChangeKind::ResolvedProfileChanged));
+    }
 }
