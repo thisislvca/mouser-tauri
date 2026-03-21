@@ -5,13 +5,15 @@ use crate::hidpp::{self, HidppMessage};
 #[cfg(target_os = "macos")]
 use crate::macos_iokit::{enumerate_iokit_infos, MacOsIoKitInfo, MacOsNativeHidDevice};
 #[cfg(target_os = "macos")]
-use crate::{horizontal_scroll_control, push_bounded_hook_event};
+use crate::push_bounded_hook_event;
 use crate::{HookBackend, HookBackendEvent, HookBackendSettings, HookCapabilities, PlatformError};
-use mouser_core::Profile;
+#[cfg(target_os = "macos")]
+use crate::HookDeviceRoute;
 #[cfg(target_os = "macos")]
 use mouser_core::{
     hydrate_identity_key, resolve_known_device, Binding, DebugEventKind,
-    DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint, LogicalControl,
+    DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint, DeviceInfo, DeviceSettings,
+    LogicalControl,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -47,10 +49,15 @@ impl HookBackend for MacOsHookBackend {
     fn configure(
         &self,
         _settings: &HookBackendSettings,
-        _profile: &Profile,
         _enabled: bool,
     ) -> Result<(), PlatformError> {
         Ok(())
+    }
+
+    fn execute_action(&self, _action_id: &str) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported(
+            "macOS actions are only available on macOS",
+        ))
     }
 
     fn drain_events(&self) -> Vec<HookBackendEvent> {
@@ -64,7 +71,7 @@ use std::{
     panic::{self, AssertUnwindSafe},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Condvar, Mutex, RwLock,
+        mpsc, Arc, Mutex, RwLock,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -81,10 +88,9 @@ use core_foundation::{
 use core_graphics::{
     event::{
         CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions,
-        CGEventTapPlacement, CGEventType, CallbackResult, EventField, KeyCode, ScrollEventUnit,
+        CGEventTapPlacement, CGEventType, CallbackResult, EventField, KeyCode,
     },
     event_source::{CGEventSource, CGEventSourceStateID},
-    geometry::CGPoint,
 };
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
@@ -93,16 +99,6 @@ use objc2_core_graphics::{CGEvent as ObjcCGEvent, CGEventTapLocation as ObjcCGEv
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSPoint;
 
-#[cfg(target_os = "macos")]
-const BTN_MIDDLE: i64 = 2;
-#[cfg(target_os = "macos")]
-const BTN_BACK: i64 = 3;
-#[cfg(target_os = "macos")]
-const BTN_FORWARD: i64 = 4;
-#[cfg(target_os = "macos")]
-const SCROLL_INVERT_MARKER: i64 = 0x4D4F5553;
-#[cfg(target_os = "macos")]
-const THUMB_WHEEL_TRACKPAD_MARKER: i64 = 0x4D575450;
 #[cfg(target_os = "macos")]
 const FEAT_REPROG_V4: u16 = 0x1B04;
 #[cfg(target_os = "macos")]
@@ -132,19 +128,6 @@ const SYMBOLIC_HOTKEY_SPACE_LEFT: u32 = 79;
 #[cfg(target_os = "macos")]
 const SYMBOLIC_HOTKEY_SPACE_RIGHT: u32 = 81;
 #[cfg(target_os = "macos")]
-const SCROLL_WHEEL_EVENT_SCROLL_PHASE_FIELD: u32 = 99;
-#[cfg(target_os = "macos")]
-const SCROLL_WHEEL_EVENT_MOMENTUM_PHASE_FIELD: u32 = 123;
-#[cfg(target_os = "macos")]
-const SCROLL_WHEEL_TRACKPAD_POLL_INTERVAL_MS: u64 = 8;
-#[cfg(target_os = "macos")]
-const SCROLL_WHEEL_TRACKPAD_SMOOTHING_FACTOR: f64 = 0.45;
-#[cfg(target_os = "macos")]
-const SCROLL_WHEEL_TRACKPAD_MIN_STEP: f64 = 1.0;
-#[cfg(target_os = "macos")]
-const SCROLL_WHEEL_TRACKPAD_MAX_STEP: f64 = 12.0;
-
-#[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn CoreDockSendNotification(notification_name: CFStringRef, unknown: i32) -> i32;
@@ -161,19 +144,18 @@ unsafe extern "C" {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Default, PartialEq, Eq)]
 struct MacOsHookConfig {
-    profile_id: String,
     enabled: bool,
     debug_mode: bool,
-    device_model_key: Option<String>,
-    device_identity_key: Option<String>,
-    invert_vertical_scroll: bool,
-    invert_horizontal_scroll: bool,
-    macos_thumb_wheel_simulate_trackpad: bool,
-    macos_thumb_wheel_trackpad_hold_timeout_ms: u32,
-    gesture_threshold: u16,
-    gesture_deadzone: u16,
-    gesture_timeout_ms: u32,
-    gesture_cooldown_ms: u32,
+    routes: Vec<MacOsDeviceRoute>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, PartialEq, Eq)]
+struct MacOsDeviceRoute {
+    managed_device_key: String,
+    resolved_profile_id: String,
+    live_device: DeviceInfo,
+    device_settings: DeviceSettings,
     bindings: BTreeMap<LogicalControl, String>,
     device_controls: Vec<DeviceControlSpec>,
 }
@@ -188,24 +170,42 @@ struct ReprogRoute {
 
 #[cfg(target_os = "macos")]
 impl MacOsHookConfig {
-    fn from_runtime(settings: &HookBackendSettings, profile: &Profile, enabled: bool) -> Self {
+    fn from_runtime(settings: &HookBackendSettings, enabled: bool) -> Self {
         Self {
-            profile_id: profile.id.clone(),
             enabled,
             debug_mode: settings.debug_mode,
-            device_model_key: settings.device_model_key.clone(),
-            device_identity_key: settings.device_identity_key.clone(),
-            invert_vertical_scroll: settings.invert_vertical_scroll,
-            invert_horizontal_scroll: settings.invert_horizontal_scroll,
-            macos_thumb_wheel_simulate_trackpad: settings.macos_thumb_wheel_simulate_trackpad,
-            macos_thumb_wheel_trackpad_hold_timeout_ms: settings
-                .macos_thumb_wheel_trackpad_hold_timeout_ms,
-            gesture_threshold: settings.gesture_threshold,
-            gesture_deadzone: settings.gesture_deadzone,
-            gesture_timeout_ms: settings.gesture_timeout_ms,
-            gesture_cooldown_ms: settings.gesture_cooldown_ms,
-            bindings: bindings_map(&profile.bindings),
-            device_controls: settings.device_controls.clone(),
+            routes: settings
+                .routes
+                .iter()
+                .cloned()
+                .map(MacOsDeviceRoute::from_runtime)
+                .collect(),
+        }
+    }
+
+    fn summary(&self) -> String {
+        self.routes
+            .iter()
+            .map(MacOsDeviceRoute::summary)
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    fn gesture_capture_requested(&self) -> bool {
+        self.enabled && self.routes.iter().any(MacOsDeviceRoute::gesture_capture_requested)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl MacOsDeviceRoute {
+    fn from_runtime(route: HookDeviceRoute) -> Self {
+        Self {
+            managed_device_key: route.managed_device_key,
+            resolved_profile_id: route.resolved_profile_id,
+            device_controls: route.live_device.controls.clone(),
+            bindings: bindings_map(&route.bindings),
+            live_device: route.live_device,
+            device_settings: route.device_settings,
         }
     }
 
@@ -216,36 +216,8 @@ impl MacOsHookConfig {
             .filter(|action_id| *action_id != "none")
     }
 
-    fn summary(&self) -> String {
-        [
-            LogicalControl::Back,
-            LogicalControl::Forward,
-            LogicalControl::Middle,
-            LogicalControl::HscrollLeft,
-            LogicalControl::HscrollRight,
-            LogicalControl::GesturePress,
-            LogicalControl::GestureLeft,
-            LogicalControl::GestureRight,
-            LogicalControl::GestureUp,
-            LogicalControl::GestureDown,
-        ]
-        .into_iter()
-        .map(|control| {
-            format!(
-                "{}={}",
-                control.label(),
-                self.bindings
-                    .get(&control)
-                    .map(String::as_str)
-                    .unwrap_or("none")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-    }
-
     fn handles_control(&self, control: LogicalControl) -> bool {
-        self.enabled && self.action_for(control).is_some()
+        self.action_for(control).is_some()
     }
 
     fn gesture_direction_enabled(&self) -> bool {
@@ -264,16 +236,15 @@ impl MacOsHookConfig {
     }
 
     fn gesture_route(&self) -> Option<ReprogRoute> {
-        let gesture_requested = self.enabled
-            && [
-                LogicalControl::GesturePress,
-                LogicalControl::GestureLeft,
-                LogicalControl::GestureRight,
-                LogicalControl::GestureUp,
-                LogicalControl::GestureDown,
-            ]
-            .into_iter()
-            .any(|control| self.handles_control(control));
+        let gesture_requested = [
+            LogicalControl::GesturePress,
+            LogicalControl::GestureLeft,
+            LogicalControl::GestureRight,
+            LogicalControl::GestureUp,
+            LogicalControl::GestureDown,
+        ]
+        .into_iter()
+        .any(|control| self.handles_control(control));
         if !gesture_requested {
             return None;
         }
@@ -312,12 +283,44 @@ impl MacOsHookConfig {
 
         routes
     }
+
+    fn summary(&self) -> String {
+        let bindings = [
+            LogicalControl::Back,
+            LogicalControl::Forward,
+            LogicalControl::Middle,
+            LogicalControl::HscrollLeft,
+            LogicalControl::HscrollRight,
+            LogicalControl::GesturePress,
+            LogicalControl::GestureLeft,
+            LogicalControl::GestureRight,
+            LogicalControl::GestureUp,
+            LogicalControl::GestureDown,
+        ]
+        .into_iter()
+        .map(|control| {
+            format!(
+                "{}={}",
+                control.label(),
+                self.bindings
+                    .get(&control)
+                    .map(String::as_str)
+                    .unwrap_or("none")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+        format!(
+            "{}:{} [{}]",
+            self.managed_device_key, self.resolved_profile_id, bindings
+        )
+    }
 }
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GestureInputSource {
-    EventTap,
     HidRawxy,
 }
 
@@ -325,7 +328,6 @@ enum GestureInputSource {
 impl GestureInputSource {
     fn as_str(self) -> &'static str {
         match self {
-            Self::EventTap => "event_tap",
             Self::HidRawxy => "hid_rawxy",
         }
     }
@@ -346,138 +348,8 @@ struct GestureTrackingState {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, Default)]
-struct ScrollAxisDeltas {
-    line: i64,
-    fixed: i64,
-    point: i64,
-}
-
-#[cfg(target_os = "macos")]
-impl ScrollAxisDeltas {
-    fn is_zero(self) -> bool {
-        self.line == 0 && self.fixed == 0 && self.point == 0
-    }
-
-    fn inverted(self) -> Self {
-        Self {
-            line: -self.line,
-            fixed: -self.fixed,
-            point: -self.point,
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug)]
-enum ThumbWheelTrackpadPhase {
-    Began,
-    Changed,
-    Ended,
-}
-
-#[cfg(target_os = "macos")]
-impl ThumbWheelTrackpadPhase {
-    fn as_scroll_phase(self) -> i64 {
-        match self {
-            Self::Began => 1,
-            Self::Changed => 2,
-            Self::Ended => 4,
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, Default)]
-struct ThumbWheelGestureState {
-    active: bool,
-    emitted_motion: bool,
-    end_requested: bool,
-    pending_point_delta: f64,
-    last_wheel_at: Option<Instant>,
-    last_location: CGPoint,
-    last_flags: CGEventFlags,
-}
-
-#[cfg(target_os = "macos")]
-enum ThumbWheelWorkerState {
-    Action(
-        CGPoint,
-        CGEventFlags,
-        ThumbWheelTrackpadPhase,
-        ScrollAxisDeltas,
-    ),
-    Wait,
-    WaitTimeout(Duration),
-}
-
-#[cfg(target_os = "macos")]
-fn thumb_wheel_worker_state_for_state(
-    state: &mut ThumbWheelGestureState,
-    hold_timeout: Duration,
-    now: Instant,
-) -> ThumbWheelWorkerState {
-    if !state.active {
-        return ThumbWheelWorkerState::Wait;
-    }
-
-    let location = state.last_location;
-    let flags = state.last_flags;
-    if let Some(step) = next_thumb_wheel_point_step(state.pending_point_delta) {
-        state.pending_point_delta -= step as f64;
-        if state.pending_point_delta.abs() < 0.5 {
-            state.pending_point_delta = 0.0;
-        }
-        let phase = if state.emitted_motion {
-            ThumbWheelTrackpadPhase::Changed
-        } else {
-            state.emitted_motion = true;
-            ThumbWheelTrackpadPhase::Began
-        };
-        return ThumbWheelWorkerState::Action(
-            location,
-            flags,
-            phase,
-            ScrollAxisDeltas {
-                line: 0,
-                fixed: step,
-                point: step,
-            },
-        );
-    }
-
-    let should_end = state.end_requested
-        || state
-            .last_wheel_at
-            .is_some_and(|last_wheel_at| now.duration_since(last_wheel_at) >= hold_timeout);
-    if !should_end {
-        return state
-            .last_wheel_at
-            .and_then(|last_wheel_at| hold_timeout.checked_sub(now.duration_since(last_wheel_at)))
-            .map(ThumbWheelWorkerState::WaitTimeout)
-            .unwrap_or(ThumbWheelWorkerState::Wait);
-    }
-
-    let emitted_motion = state.emitted_motion;
-    *state = ThumbWheelGestureState::default();
-    if !emitted_motion {
-        return ThumbWheelWorkerState::Wait;
-    }
-
-    ThumbWheelWorkerState::Action(
-        location,
-        flags,
-        ThumbWheelTrackpadPhase::Ended,
-        ScrollAxisDeltas::default(),
-    )
-}
-
-#[cfg(target_os = "macos")]
 struct MacOsHookShared {
     config: RwLock<Arc<MacOsHookConfig>>,
-    gesture_state: Mutex<GestureTrackingState>,
-    thumb_wheel_state: Mutex<ThumbWheelGestureState>,
-    thumb_wheel_cv: Condvar,
     events: Mutex<Vec<HookBackendEvent>>,
     intercepting: AtomicBool,
     gesture_connected: AtomicBool,
@@ -488,9 +360,6 @@ impl MacOsHookShared {
     fn new() -> Self {
         Self {
             config: RwLock::new(Arc::new(MacOsHookConfig::default())),
-            gesture_state: Mutex::new(GestureTrackingState::default()),
-            thumb_wheel_state: Mutex::new(ThumbWheelGestureState::default()),
-            thumb_wheel_cv: Condvar::new(),
             events: Mutex::new(Vec::new()),
             intercepting: AtomicBool::new(false),
             gesture_connected: AtomicBool::new(false),
@@ -516,8 +385,8 @@ impl MacOsHookShared {
         }
     }
 
-    fn reconfigure(&self, settings: &HookBackendSettings, profile: &Profile, enabled: bool) {
-        let next = Arc::new(MacOsHookConfig::from_runtime(settings, profile, enabled));
+    fn reconfigure(&self, settings: &HookBackendSettings, enabled: bool) {
+        let next = Arc::new(MacOsHookConfig::from_runtime(settings, enabled));
         let changed = {
             let mut config = self.config.write().unwrap();
             if config.as_ref() == next.as_ref() {
@@ -531,20 +400,12 @@ impl MacOsHookShared {
         if changed && next.debug_mode {
             self.push_event(
                 DebugEventKind::Info,
-                format!("Hook profile -> {}", next.profile_id),
-            );
-            self.push_event(
-                DebugEventKind::Info,
-                format!("Hook mappings -> {}", next.summary()),
+                format!("Hook routes -> {}", next.summary()),
             );
         }
 
         if !next.gesture_capture_requested() {
-            self.reset_gesture_state();
-        }
-        if !next.macos_thumb_wheel_simulate_trackpad {
-            self.reset_thumb_wheel_state();
-            self.thumb_wheel_cv.notify_all();
+            self.mark_gesture_connected(false, None);
         }
     }
 
@@ -552,15 +413,8 @@ impl MacOsHookShared {
         Arc::clone(&self.config.read().unwrap())
     }
 
-    fn gesture_capture_requested(&self) -> bool {
-        self.current_config().gesture_capture_requested()
-    }
-
     fn mark_gesture_connected(&self, connected: bool, message: Option<String>) {
         self.gesture_connected.store(connected, Ordering::SeqCst);
-        if !connected {
-            self.reset_gesture_state();
-        }
         if let Some(message) = message {
             self.push_event(DebugEventKind::Info, message);
         }
@@ -594,324 +448,36 @@ impl MacOsHookShared {
 
     fn handle_other_mouse_event(&self, event: &CGEvent, is_down: bool) -> CallbackResult {
         let button = event.get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER);
-        let Some(control) = control_for_button(button) else {
-            return CallbackResult::Keep;
-        };
-
-        let config = self.current_config();
-        if !config.handles_control(control) {
-            return CallbackResult::Keep;
-        }
-
-        if is_down {
-            self.dispatch_control_action(&config, control);
-        }
-
-        CallbackResult::Drop
-    }
-
-    fn handle_scroll_event(&self, event: &CGEvent) -> CallbackResult {
-        match event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) {
-            SCROLL_INVERT_MARKER | THUMB_WHEEL_TRACKPAD_MARKER => {
-                return CallbackResult::Keep;
-            }
-            _ => {}
-        }
-
-        let config = self.current_config();
-        match self.maybe_post_thumb_wheel_trackpad_scroll(config.as_ref(), event) {
-            Ok(true) => return CallbackResult::Drop,
-            Ok(false) => {}
-            Err(error) => {
-                self.reset_thumb_wheel_state();
-                self.push_event(
-                    DebugEventKind::Warning,
-                    format!("Thumb wheel trackpad simulation failed: {error}"),
-                );
-            }
-        }
-
-        let horizontal_fixed =
-            event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_2);
-        if let Some(control) = horizontal_scroll_control(horizontal_fixed as i32) {
-            if config.handles_control(control) {
-                self.dispatch_control_action(config.as_ref(), control);
-                return CallbackResult::Drop;
-            }
-        }
-
-        if (config.invert_vertical_scroll || config.invert_horizontal_scroll)
-            && post_inverted_scroll_event(
-                event,
-                config.invert_vertical_scroll,
-                config.invert_horizontal_scroll,
-            )
-            .is_ok()
-        {
-            return CallbackResult::Drop;
-        }
-
+        let _ = (button, is_down);
         CallbackResult::Keep
     }
 
-    fn maybe_post_thumb_wheel_trackpad_scroll(
-        &self,
-        config: &MacOsHookConfig,
-        event: &CGEvent,
-    ) -> Result<bool, PlatformError> {
-        if !(config.enabled && config.macos_thumb_wheel_simulate_trackpad) {
-            return Ok(false);
-        }
-
-        let Some(deltas) =
-            extract_thumb_wheel_trackpad_deltas(event, config.invert_horizontal_scroll)
-        else {
-            return Ok(false);
-        };
-
-        let location = event.location();
-        let flags = event.get_flags();
-        let now = Instant::now();
-        let started = {
-            let mut state = self.thumb_wheel_state.lock().unwrap();
-            let started = !state.active;
-            state.active = true;
-            state.end_requested = false;
-            state.pending_point_delta += deltas.point as f64;
-            state.last_wheel_at = Some(now);
-            state.last_location = location;
-            state.last_flags = flags;
-            started
-        };
-
-        self.thumb_wheel_cv.notify_all();
-
-        if started {
-            self.push_debug("Thumb wheel trackpad swipe started");
-        }
-
-        Ok(true)
-    }
-
-    fn reset_thumb_wheel_state(&self) {
-        let mut state = self.thumb_wheel_state.lock().unwrap();
-        *state = ThumbWheelGestureState::default();
-        self.thumb_wheel_cv.notify_all();
-    }
-
-    fn note_thumb_wheel_pointer_move(&self, event: &CGEvent) {
-        let delta_x = event.get_integer_value_field(EventField::MOUSE_EVENT_DELTA_X);
-        let delta_y = event.get_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y);
-        if delta_x == 0 && delta_y == 0 {
-            return;
-        }
-
-        let mut state = self.thumb_wheel_state.lock().unwrap();
-        if !state.active {
-            return;
-        }
-
-        state.end_requested = true;
-        state.last_location = event.location();
-        state.last_flags = event.get_flags();
-        self.thumb_wheel_cv.notify_all();
-    }
-
-    fn thumb_wheel_worker_state(&self, now: Instant) -> ThumbWheelWorkerState {
-        let hold_timeout = Duration::from_millis(u64::from(
-            self.current_config()
-                .macos_thumb_wheel_trackpad_hold_timeout_ms,
-        ));
-        let mut state = self.thumb_wheel_state.lock().unwrap();
-        thumb_wheel_worker_state_for_state(&mut state, hold_timeout, now)
+    fn handle_scroll_event(&self, event: &CGEvent) -> CallbackResult {
+        let _ = event;
+        CallbackResult::Keep
     }
 
     fn handle_motion_event(&self, event: &CGEvent) -> CallbackResult {
-        self.note_thumb_wheel_pointer_move(event);
-        self.handle_gesture_motion_event(event)
+        let _ = event;
+        CallbackResult::Keep
     }
 
-    fn handle_gesture_motion_event(&self, event: &CGEvent) -> CallbackResult {
-        let config = self.current_config();
-        if !(config.enabled && config.gesture_direction_enabled()) {
-            return CallbackResult::Keep;
-        }
-
-        let delta_x = event.get_integer_value_field(EventField::MOUSE_EVENT_DELTA_X) as f64;
-        let delta_y = event.get_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y) as f64;
-        if delta_x == 0.0 && delta_y == 0.0 {
-            return CallbackResult::Keep;
-        }
-
-        let mut state = self.gesture_state.lock().unwrap();
-        if !state.active {
-            return CallbackResult::Keep;
-        }
-
-        if state.input_source == Some(GestureInputSource::HidRawxy) {
-            return CallbackResult::Drop;
-        }
-
-        self.accumulate_gesture_delta(
-            &config,
-            &mut state,
-            delta_x,
-            delta_y,
-            GestureInputSource::EventTap,
-        );
-        CallbackResult::Drop
-    }
-
-    fn hid_gesture_down(&self) {
-        let config = self.current_config();
-        let mut state = self.gesture_state.lock().unwrap();
-        if state.active {
+    fn dispatch_route_control_action(&self, route: &MacOsDeviceRoute, control: LogicalControl) {
+        let Some(action_id) = route.action_for(control).map(str::to_string) else {
             return;
-        }
-
-        state.active = true;
-        state.triggered = false;
-        self.push_gesture_debug("Gesture button down");
-
-        if config.gesture_direction_enabled() && !cooldown_active(&state) {
-            start_gesture_tracking(&mut state);
-        } else {
-            state.tracking = false;
-            state.triggered = false;
-        }
-    }
-
-    fn hid_gesture_up(&self) {
-        let config = self.current_config();
-        let should_click = {
-            let mut state = self.gesture_state.lock().unwrap();
-            if !state.active {
-                return;
-            }
-
-            let should_click = !state.triggered;
-            state.active = false;
-            finish_gesture_tracking(&mut state);
-            state.triggered = false;
-            should_click
         };
 
-        self.push_gesture_debug(format!(
-            "Gesture button up click_candidate={}",
-            should_click
+        self.push_debug(format!(
+            "Mapped {} on {} -> {}",
+            control.label(),
+            route.managed_device_key,
+            action_id
         ));
-
-        if should_click {
-            self.dispatch_control_action(&config, LogicalControl::GesturePress);
-        }
-    }
-
-    fn hid_rawxy_move(&self, delta_x: i16, delta_y: i16) {
-        let config = self.current_config();
-        if !(config.enabled && config.gesture_direction_enabled()) {
-            return;
-        }
-
-        let mut state = self.gesture_state.lock().unwrap();
-        if !state.active {
-            return;
-        }
-
-        self.accumulate_gesture_delta(
-            &config,
-            &mut state,
-            f64::from(delta_x),
-            f64::from(delta_y),
-            GestureInputSource::HidRawxy,
-        );
-    }
-
-    fn reset_gesture_state(&self) {
-        let mut state = self.gesture_state.lock().unwrap();
-        *state = GestureTrackingState::default();
-    }
-
-    fn dispatch_control_action(&self, config: &MacOsHookConfig, control: LogicalControl) {
-        let Some(action_id) = config.action_for(control).map(str::to_string) else {
-            return;
-        };
-
-        self.push_debug(format!("Mapped {} -> {}", control.label(), action_id));
         if let Err(error) = execute_action(&action_id) {
             self.push_event(
                 DebugEventKind::Warning,
                 format!("Action `{action_id}` failed: {error}"),
             );
-        }
-    }
-
-    fn accumulate_gesture_delta(
-        &self,
-        config: &MacOsHookConfig,
-        state: &mut GestureTrackingState,
-        delta_x: f64,
-        delta_y: f64,
-        source: GestureInputSource,
-    ) {
-        if !(config.gesture_direction_enabled() && state.active) {
-            return;
-        }
-
-        if cooldown_active(state) {
-            return;
-        }
-
-        if !state.tracking {
-            self.push_gesture_debug(format!("Gesture tracking started via {}", source.as_str()));
-            start_gesture_tracking(state);
-        }
-
-        let now = Instant::now();
-        let idle_timed_out = state.last_move_at.is_some_and(|last_move_at| {
-            now.duration_since(last_move_at).as_millis() > u128::from(config.gesture_timeout_ms)
-        });
-        if idle_timed_out {
-            self.push_gesture_debug(format!(
-                "Gesture segment reset after {} ms",
-                config.gesture_timeout_ms
-            ));
-            start_gesture_tracking(state);
-        }
-
-        if source == GestureInputSource::HidRawxy
-            && state.input_source == Some(GestureInputSource::EventTap)
-        {
-            self.push_gesture_debug("Gesture source promoted from event_tap to hid_rawxy");
-            start_gesture_tracking(state);
-        }
-
-        if state.input_source.is_some() && state.input_source != Some(source) {
-            return;
-        }
-        state.input_source = Some(source);
-
-        state.delta_x += delta_x;
-        state.delta_y += delta_y;
-        state.last_move_at = Some(now);
-
-        if let Some(control) = detect_gesture_control(
-            state.delta_x,
-            state.delta_y,
-            f64::from(config.gesture_threshold),
-            f64::from(config.gesture_deadzone),
-        ) {
-            state.triggered = true;
-            self.push_gesture_debug(format!(
-                "Gesture detected {} source={} dx={} dy={}",
-                control.label(),
-                source.as_str(),
-                state.delta_x as i32,
-                state.delta_y as i32,
-            ));
-            self.dispatch_control_action(config, control);
-            state.cooldown_until =
-                Some(Instant::now() + Duration::from_millis(u64::from(config.gesture_cooldown_ms)));
-            finish_gesture_tracking(state);
         }
     }
 }
@@ -923,8 +489,6 @@ pub struct MacOsHookBackend {
     worker: Mutex<Option<JoinHandle<()>>>,
     gesture_stop: Arc<AtomicBool>,
     gesture_worker: Mutex<Option<JoinHandle<()>>>,
-    thumb_wheel_stop: Arc<AtomicBool>,
-    thumb_wheel_worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -935,7 +499,6 @@ impl MacOsHookBackend {
         let (startup_tx, startup_rx) = mpsc::channel::<Result<(), ()>>();
         let startup_signal = Arc::new(Mutex::new(Some(startup_tx)));
         let gesture_stop = Arc::new(AtomicBool::new(false));
-        let thumb_wheel_stop = Arc::new(AtomicBool::new(false));
 
         let worker_shared = Arc::clone(&shared);
         let worker_loop = Arc::clone(&run_loop);
@@ -1033,21 +596,12 @@ impl MacOsHookBackend {
             .spawn(move || run_gesture_worker(gesture_shared, gesture_stop_flag))
             .ok();
 
-        let thumb_wheel_shared = Arc::clone(&shared);
-        let thumb_wheel_stop_flag = Arc::clone(&thumb_wheel_stop);
-        let thumb_wheel_worker = thread::Builder::new()
-            .name("mouser-macos-thumb-wheel".to_string())
-            .spawn(move || run_thumb_wheel_worker(thumb_wheel_shared, thumb_wheel_stop_flag))
-            .ok();
-
         Self {
             shared,
             run_loop,
             worker: Mutex::new(handle),
             gesture_stop,
             gesture_worker: Mutex::new(gesture_worker),
-            thumb_wheel_stop,
-            thumb_wheel_worker: Mutex::new(thumb_wheel_worker),
         }
     }
 }
@@ -1065,12 +619,6 @@ impl Drop for MacOsHookBackend {
 
         self.gesture_stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.gesture_worker.lock().unwrap().take() {
-            let _ = handle.join();
-        }
-
-        self.thumb_wheel_stop.store(true, Ordering::SeqCst);
-        self.shared.thumb_wheel_cv.notify_all();
-        if let Some(handle) = self.thumb_wheel_worker.lock().unwrap().take() {
             let _ = handle.join();
         }
     }
@@ -1105,11 +653,14 @@ impl HookBackend for MacOsHookBackend {
     fn configure(
         &self,
         settings: &HookBackendSettings,
-        profile: &Profile,
         enabled: bool,
     ) -> Result<(), PlatformError> {
-        self.shared.reconfigure(settings, profile, enabled);
+        self.shared.reconfigure(settings, enabled);
         Ok(())
+    }
+
+    fn execute_action(&self, action_id: &str) -> Result<(), PlatformError> {
+        execute_action(action_id)
     }
 
     fn drain_events(&self) -> Vec<HookBackendEvent> {
@@ -1128,6 +679,7 @@ fn bindings_map(bindings: &[Binding]) -> BTreeMap<LogicalControl, String> {
 
 #[cfg(target_os = "macos")]
 struct GestureSession {
+    route: MacOsDeviceRoute,
     info: MacOsIoKitInfo,
     device: MacOsNativeHidDevice,
     dev_idx: u8,
@@ -1135,10 +687,26 @@ struct GestureSession {
     routes: Vec<ReprogRoute>,
     active_cids: BTreeSet<u16>,
     gesture_active: bool,
+    tracking_state: GestureTrackingState,
 }
 
 #[cfg(target_os = "macos")]
 impl GestureSession {
+    fn route_key(&self) -> &str {
+        &self.route.managed_device_key
+    }
+
+    fn product_label(&self) -> String {
+        self.info
+            .product_string
+            .clone()
+            .unwrap_or_else(|| format!("PID 0x{:04X}", self.info.product_id))
+    }
+
+    fn matches_route(&self, route: &MacOsDeviceRoute) -> bool {
+        &self.route == route
+    }
+
     fn handle_report(&mut self, shared: &MacOsHookShared, raw: &[u8]) {
         let Some((dev_idx, feature_idx, function, _sw, params)) = hidpp::parse_message(raw) else {
             return;
@@ -1156,7 +724,7 @@ impl GestureSession {
             let delta_x = decode_s16(params[0], params[1]);
             let delta_y = decode_s16(params[2], params[3]);
             if delta_x != 0 || delta_y != 0 {
-                shared.hid_rawxy_move(delta_x, delta_y);
+                self.handle_hid_rawxy_move(shared, delta_x, delta_y);
             }
             return;
         }
@@ -1166,29 +734,163 @@ impl GestureSession {
         }
 
         let active_cids = collect_active_cids(&params);
-        let config = shared.current_config();
 
-        for cid in active_cids.difference(&self.active_cids).copied() {
+        let changed_cids = active_cids
+            .difference(&self.active_cids)
+            .copied()
+            .collect::<Vec<_>>();
+        for cid in changed_cids {
             if self.gesture_cid_active(cid) {
                 if !self.gesture_active {
                     self.gesture_active = true;
-                    shared.hid_gesture_down();
+                    self.handle_hid_gesture_down(shared);
                 }
                 continue;
             }
 
             if let Some(control) = self.control_for_cid(cid) {
-                shared.dispatch_control_action(config.as_ref(), control);
+                shared.dispatch_route_control_action(&self.route, control);
             }
         }
 
         let gesture_now = active_cids.iter().any(|cid| self.gesture_cid_active(*cid));
         if !gesture_now && self.gesture_active {
             self.gesture_active = false;
-            shared.hid_gesture_up();
+            self.handle_hid_gesture_up(shared);
         }
 
         self.active_cids = active_cids;
+    }
+
+    fn handle_hid_gesture_down(&mut self, shared: &MacOsHookShared) {
+        let route_key = self.route_key().to_string();
+        let state = &mut self.tracking_state;
+        if state.active {
+            return;
+        }
+
+        state.active = true;
+        state.triggered = false;
+        shared.push_gesture_debug(format!("Gesture button down [{route_key}]"));
+
+        if self.route.gesture_direction_enabled() && !cooldown_active(state) {
+            start_gesture_tracking(state);
+        } else {
+            state.tracking = false;
+            state.triggered = false;
+        }
+    }
+
+    fn handle_hid_gesture_up(&mut self, shared: &MacOsHookShared) {
+        let should_click = {
+            let state = &mut self.tracking_state;
+            if !state.active {
+                return;
+            }
+
+            let should_click = !state.triggered;
+            state.active = false;
+            finish_gesture_tracking(state);
+            state.triggered = false;
+            should_click
+        };
+
+        shared.push_gesture_debug(format!(
+            "Gesture button up [{}] click_candidate={should_click}",
+            self.route_key(),
+        ));
+
+        if should_click {
+            shared.dispatch_route_control_action(&self.route, LogicalControl::GesturePress);
+        }
+    }
+
+    fn handle_hid_rawxy_move(&mut self, shared: &MacOsHookShared, delta_x: i16, delta_y: i16) {
+        if !self.route.gesture_direction_enabled() || !self.tracking_state.active {
+            return;
+        }
+
+        self.accumulate_gesture_delta(
+            shared,
+            f64::from(delta_x),
+            f64::from(delta_y),
+            GestureInputSource::HidRawxy,
+        );
+    }
+
+    fn accumulate_gesture_delta(
+        &mut self,
+        shared: &MacOsHookShared,
+        delta_x: f64,
+        delta_y: f64,
+        source: GestureInputSource,
+    ) {
+        let route_key = self.route_key().to_string();
+        let state = &mut self.tracking_state;
+        if !(self.route.gesture_direction_enabled() && state.active) {
+            return;
+        }
+
+        if cooldown_active(state) {
+            return;
+        }
+
+        if !state.tracking {
+            shared.push_gesture_debug(format!(
+                "Gesture tracking started via {} [{}]",
+                source.as_str(),
+                route_key,
+            ));
+            start_gesture_tracking(state);
+        }
+
+        let now = Instant::now();
+        let idle_timed_out = state.last_move_at.is_some_and(|last_move_at| {
+            now.duration_since(last_move_at).as_millis()
+                > u128::from(self.route.device_settings.gesture_timeout_ms)
+        });
+        if idle_timed_out {
+            shared.push_gesture_debug(format!(
+                "Gesture segment reset after {} ms [{}]",
+                self.route.device_settings.gesture_timeout_ms,
+                route_key,
+            ));
+            start_gesture_tracking(state);
+        }
+
+        if state.input_source.is_some() && state.input_source != Some(source) {
+            return;
+        }
+        state.input_source = Some(source);
+
+        state.delta_x += delta_x;
+        state.delta_y += delta_y;
+        state.last_move_at = Some(now);
+
+        if let Some(control) = detect_gesture_control(
+            state.delta_x,
+            state.delta_y,
+            f64::from(self.route.device_settings.gesture_threshold),
+            f64::from(self.route.device_settings.gesture_deadzone),
+        ) {
+            state.triggered = true;
+            shared.push_gesture_debug(format!(
+                "Gesture detected {} source={} dx={} dy={} [{}]",
+                control.label(),
+                source.as_str(),
+                state.delta_x as i32,
+                state.delta_y as i32,
+                route_key,
+            ));
+            shared.dispatch_route_control_action(&self.route, control);
+            state.cooldown_until = Some(
+                Instant::now()
+                    + Duration::from_millis(u64::from(
+                        self.route.device_settings.gesture_cooldown_ms,
+                    )),
+            );
+            finish_gesture_tracking(state);
+        }
     }
 
     fn gesture_cid_active(&self, cid: u16) -> bool {
@@ -1235,153 +937,176 @@ impl GestureSession {
         }
         self.gesture_active = false;
         self.active_cids.clear();
+        self.tracking_state = GestureTrackingState::default();
     }
 }
 
 #[cfg(target_os = "macos")]
 fn run_gesture_worker(shared: Arc<MacOsHookShared>, stop: Arc<AtomicBool>) {
-    let mut session: Option<GestureSession> = None;
+    let mut sessions = BTreeMap::<String, GestureSession>::new();
 
     while !stop.load(Ordering::SeqCst) {
-        if !shared.gesture_capture_requested() {
-            if let Some(mut active_session) = session.take() {
-                active_session.shutdown();
-                shared.mark_gesture_connected(false, Some("Gesture listener parked".to_string()));
+        let config = shared.current_config();
+        let desired_routes = if config.enabled {
+            config
+                .routes
+                .iter()
+                .filter(|route| route.gesture_capture_requested())
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        if desired_routes.is_empty() {
+            for (_, mut session) in std::mem::take(&mut sessions) {
+                session.shutdown();
             }
+            shared.mark_gesture_connected(false, Some("Gesture listener parked".to_string()));
             thread::sleep(Duration::from_millis(180));
             continue;
         }
 
-        if session.is_none() {
-            match connect_gesture_session(&shared) {
-                Ok(active_session) => {
-                    let source = active_session
-                        .info
-                        .product_string
-                        .clone()
-                        .unwrap_or_else(|| format!("PID 0x{:04X}", active_session.info.product_id));
-                    shared.mark_gesture_connected(
-                        true,
-                        Some(format!("Gesture listener attached to {source}")),
+        let desired_by_key = desired_routes
+            .iter()
+            .map(|route| (route.managed_device_key.as_str(), route))
+            .collect::<BTreeMap<_, _>>();
+        let stale_keys = sessions
+            .iter()
+            .filter_map(|(key, session)| {
+                let desired = desired_by_key.get(key.as_str())?;
+                (!session.matches_route(desired)).then(|| key.clone())
+            })
+            .collect::<Vec<_>>();
+        for key in stale_keys {
+            if let Some(mut session) = sessions.remove(&key) {
+                session.shutdown();
+            }
+        }
+        let removed_keys = sessions
+            .keys()
+            .filter(|key| !desired_by_key.contains_key(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in removed_keys {
+            if let Some(mut session) = sessions.remove(&key) {
+                session.shutdown();
+            }
+        }
+
+        let infos = match enumerate_iokit_infos() {
+            Ok(infos) => infos,
+            Err(error) => {
+                shared.mark_gesture_connected(
+                    false,
+                    Some(format!("Gesture listener unavailable: {error}")),
+                );
+                thread::sleep(Duration::from_millis(900));
+                continue;
+            }
+        };
+
+        let mut last_error = None;
+        for route in desired_routes {
+            if sessions.contains_key(&route.managed_device_key) {
+                continue;
+            }
+            match try_build_gesture_session_for_route(&shared, &route, &infos) {
+                Ok(session) => {
+                    let source = session.product_label();
+                    shared.push_event(
+                        DebugEventKind::Info,
+                        format!(
+                            "Gesture listener attached to {} for {}",
+                            source, route.managed_device_key
+                        ),
                     );
-                    session = Some(active_session);
+                    sessions.insert(route.managed_device_key.clone(), session);
                 }
                 Err(error) => {
-                    shared.mark_gesture_connected(
-                        false,
-                        Some(format!("Gesture listener unavailable: {error}")),
-                    );
-                    thread::sleep(Duration::from_millis(900));
-                    continue;
+                    last_error = Some(error);
                 }
             }
         }
 
-        let Some(active_session) = session.as_mut() else {
+        if sessions.is_empty() {
+            shared.mark_gesture_connected(
+                false,
+                Some(format!(
+                    "Gesture listener unavailable: {}",
+                    last_error
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "no matching HID routes".to_string())
+                )),
+            );
+            thread::sleep(Duration::from_millis(500));
             continue;
-        };
+        }
 
-        match active_session.device.read_timeout(120) {
-            Ok(packet) => {
-                if !packet.is_empty() {
-                    active_session.handle_report(&shared, &packet);
+        shared.mark_gesture_connected(true, None);
+
+        let mut disconnected = Vec::new();
+        for (route_key, active_session) in sessions.iter_mut() {
+            match active_session.device.read_timeout(12) {
+                Ok(packet) => {
+                    if !packet.is_empty() {
+                        active_session.handle_report(&shared, &packet);
+                    }
+                }
+                Err(error) => {
+                    shared.push_event(
+                        DebugEventKind::Warning,
+                        format!(
+                            "Gesture listener lost HID stream for {}: {error}",
+                            route_key
+                        ),
+                    );
+                    disconnected.push(route_key.clone());
                 }
             }
-            Err(error) => {
-                shared.push_event(
-                    DebugEventKind::Warning,
-                    format!("Gesture listener lost HID stream: {error}"),
-                );
-                if let Some(mut failed_session) = session.take() {
-                    failed_session.shutdown();
-                }
-                shared.mark_gesture_connected(
-                    false,
-                    Some("Gesture listener disconnected".to_string()),
-                );
-                thread::sleep(Duration::from_millis(500));
+        }
+        for route_key in disconnected {
+            if let Some(mut failed_session) = sessions.remove(&route_key) {
+                failed_session.shutdown();
             }
         }
     }
 
-    if let Some(mut active_session) = session.take() {
-        active_session.shutdown();
+    for (_, mut session) in sessions {
+        session.shutdown();
     }
     shared.mark_gesture_connected(false, None);
 }
 
 #[cfg(target_os = "macos")]
-fn run_thumb_wheel_worker(shared: Arc<MacOsHookShared>, stop: Arc<AtomicBool>) {
-    while !stop.load(Ordering::SeqCst) {
-        match shared.thumb_wheel_worker_state(Instant::now()) {
-            ThumbWheelWorkerState::Action(location, flags, phase, deltas) => {
-                if let Err(error) = post_thumb_wheel_trackpad_event(location, flags, phase, deltas)
-                {
-                    shared.push_event(
-                        DebugEventKind::Warning,
-                        format!("Thumb wheel trackpad swipe delivery failed: {error}"),
-                    );
-                } else if matches!(phase, ThumbWheelTrackpadPhase::Ended) {
-                    shared.push_debug("Thumb wheel trackpad swipe ended");
-                }
-
-                if !matches!(phase, ThumbWheelTrackpadPhase::Ended) {
-                    thread::sleep(Duration::from_millis(
-                        SCROLL_WHEEL_TRACKPAD_POLL_INTERVAL_MS,
-                    ));
-                }
-            }
-            ThumbWheelWorkerState::Wait => {
-                let guard = shared.thumb_wheel_state.lock().unwrap();
-                let _guard = shared.thumb_wheel_cv.wait(guard).unwrap();
-            }
-            ThumbWheelWorkerState::WaitTimeout(duration) => {
-                let guard = shared.thumb_wheel_state.lock().unwrap();
-                let _ = shared.thumb_wheel_cv.wait_timeout(guard, duration).unwrap();
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn connect_gesture_session(shared: &MacOsHookShared) -> Result<GestureSession, PlatformError> {
-    let infos = preferred_iokit_infos(enumerate_iokit_infos()?, shared.current_config().as_ref());
-    let mut last_error = None;
-
-    for info in infos {
-        match try_build_gesture_session(shared, &info) {
-            Ok(session) => return Ok(session),
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| {
-        PlatformError::Message("no Logitech gesture-capable HID interface found".to_string())
-    }))
-}
-
-#[cfg(target_os = "macos")]
-fn try_build_gesture_session(
+fn try_build_gesture_session_for_route(
     shared: &MacOsHookShared,
-    info: &MacOsIoKitInfo,
+    route: &MacOsDeviceRoute,
+    infos: &[MacOsIoKitInfo],
 ) -> Result<GestureSession, PlatformError> {
     let mut last_error = None;
 
-    for candidate in iokit_open_candidates(info) {
+    for info in infos
+        .iter()
+        .filter(|info| iokit_info_matches_route(info, route))
+        .cloned()
+    {
+        for candidate in iokit_open_candidates(&info) {
         let Ok(device) = MacOsNativeHidDevice::open(&candidate) else {
             continue;
         };
 
-        match initialize_gesture_session(shared, info.clone(), device) {
+            match initialize_gesture_session(shared, route.clone(), info.clone(), device) {
             Ok(session) => return Ok(session),
             Err(error) => last_error = Some(error),
         }
     }
+    }
 
     Err(last_error.unwrap_or_else(|| {
         PlatformError::Message(format!(
-            "could not initialize gesture diversion for pid 0x{:04X}",
-            info.product_id
+            "could not initialize gesture diversion for {}",
+            route.managed_device_key
         ))
     }))
 }
@@ -1389,10 +1114,11 @@ fn try_build_gesture_session(
 #[cfg(target_os = "macos")]
 fn initialize_gesture_session(
     shared: &MacOsHookShared,
+    route: MacOsDeviceRoute,
     info: MacOsIoKitInfo,
     device: MacOsNativeHidDevice,
 ) -> Result<GestureSession, PlatformError> {
-    let routes = shared.current_config().reprog_routes();
+    let routes = route.reprog_routes();
     if routes.is_empty() {
         return Err(PlatformError::Message(
             "no active Logitech REPROG routes configured".to_string(),
@@ -1406,6 +1132,7 @@ fn initialize_gesture_session(
 
         if try_initialize_reprog_session(shared, &device, dev_idx, feature_idx, &routes)? {
             return Ok(GestureSession {
+                route,
                 info,
                 device,
                 dev_idx,
@@ -1413,6 +1140,7 @@ fn initialize_gesture_session(
                 routes: routes.clone(),
                 active_cids: BTreeSet::new(),
                 gesture_active: false,
+                tracking_state: GestureTrackingState::default(),
             });
         }
     }
@@ -1488,24 +1216,12 @@ fn collect_active_cids(params: &[u8]) -> BTreeSet<u16> {
 }
 
 #[cfg(target_os = "macos")]
-fn preferred_iokit_infos(infos: Vec<MacOsIoKitInfo>, config: &MacOsHookConfig) -> Vec<MacOsIoKitInfo> {
-    let mut preferred = Vec::new();
-    let mut others = Vec::new();
-
-    for info in infos {
-        if iokit_info_matches_active_target(
-            &info,
-            config.device_model_key.as_deref(),
-            config.device_identity_key.as_deref(),
-        ) {
-            preferred.push(info);
-        } else {
-            others.push(info);
-        }
-    }
-
-    preferred.extend(others);
-    preferred
+fn iokit_info_matches_route(info: &MacOsIoKitInfo, route: &MacOsDeviceRoute) -> bool {
+    iokit_info_matches_active_target(
+        info,
+        Some(route.live_device.model_key.as_str()),
+        route.live_device.fingerprint.identity_key.as_deref(),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -1644,254 +1360,6 @@ fn detect_gesture_control(
     deadzone: f64,
 ) -> Option<LogicalControl> {
     gesture::detect_gesture_control(delta_x, delta_y, threshold, deadzone)
-}
-
-#[cfg(target_os = "macos")]
-fn control_for_button(button: i64) -> Option<LogicalControl> {
-    match button {
-        BTN_MIDDLE => Some(LogicalControl::Middle),
-        BTN_BACK => Some(LogicalControl::Back),
-        BTN_FORWARD => Some(LogicalControl::Forward),
-        _ => None,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn post_inverted_scroll_event(
-    event: &CGEvent,
-    invert_vertical: bool,
-    invert_horizontal: bool,
-) -> Result<(), PlatformError> {
-    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
-        .map_err(|_| PlatformError::Message("failed to create CGEventSource".to_string()))?;
-
-    let vertical_point =
-        event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1) as i32;
-    let horizontal_point =
-        event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_2) as i32;
-
-    let inverted = CGEvent::new_scroll_event(
-        source,
-        ScrollEventUnit::PIXEL,
-        2,
-        if invert_vertical {
-            -vertical_point
-        } else {
-            vertical_point
-        },
-        if invert_horizontal {
-            -horizontal_point
-        } else {
-            horizontal_point
-        },
-        0,
-    )
-    .map_err(|_| PlatformError::Message("failed to create inverted scroll event".to_string()))?;
-
-    inverted.set_flags(event.get_flags());
-    inverted.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, SCROLL_INVERT_MARKER);
-
-    copy_scroll_axis(
-        event,
-        &inverted,
-        EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1,
-        invert_vertical,
-    );
-    copy_scroll_axis(
-        event,
-        &inverted,
-        EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_2,
-        invert_horizontal,
-    );
-    copy_scroll_axis(
-        event,
-        &inverted,
-        EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_1,
-        invert_vertical,
-    );
-    copy_scroll_axis(
-        event,
-        &inverted,
-        EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_2,
-        invert_horizontal,
-    );
-    copy_scroll_axis(
-        event,
-        &inverted,
-        EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1,
-        invert_vertical,
-    );
-    copy_scroll_axis(
-        event,
-        &inverted,
-        EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_2,
-        invert_horizontal,
-    );
-
-    inverted.post(CGEventTapLocation::HID);
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn copy_scroll_axis(source: &CGEvent, target: &CGEvent, field: u32, invert: bool) {
-    let value = source.get_integer_value_field(field);
-    if value != 0 {
-        target.set_integer_value_field(field, if invert { -value } else { value });
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn extract_thumb_wheel_trackpad_deltas(
-    event: &CGEvent,
-    invert_horizontal: bool,
-) -> Option<ScrollAxisDeltas> {
-    if event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS) != 0 {
-        return None;
-    }
-
-    let vertical = read_scroll_axis_deltas(
-        event,
-        EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1,
-        EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_1,
-        EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1,
-    );
-    if !vertical.is_zero() {
-        return None;
-    }
-
-    let mut horizontal = read_scroll_axis_deltas(
-        event,
-        EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_2,
-        EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_2,
-        EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_2,
-    );
-    if horizontal.is_zero() {
-        return None;
-    }
-
-    if horizontal.point == 0 {
-        horizontal.point = if horizontal.line != 0 {
-            horizontal.line
-        } else {
-            approximate_point_delta_from_fixed(horizontal.fixed)
-        };
-    }
-    if horizontal.line == 0 {
-        horizontal.line = horizontal.point.signum();
-    }
-    if horizontal.fixed == 0 {
-        horizontal.fixed = horizontal.point;
-    }
-
-    Some(if invert_horizontal {
-        horizontal.inverted()
-    } else {
-        horizontal
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn read_scroll_axis_deltas(
-    event: &CGEvent,
-    line_field: u32,
-    fixed_field: u32,
-    point_field: u32,
-) -> ScrollAxisDeltas {
-    ScrollAxisDeltas {
-        line: event.get_integer_value_field(line_field),
-        fixed: event.get_integer_value_field(fixed_field),
-        point: event.get_integer_value_field(point_field),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn approximate_point_delta_from_fixed(fixed: i64) -> i64 {
-    if fixed == 0 {
-        return 0;
-    }
-
-    if fixed.abs() >= 1024 {
-        let scaled = fixed / 65_536;
-        if scaled != 0 {
-            return scaled;
-        }
-    }
-
-    fixed.signum().clamp(-1, 1) * fixed.abs().min(120)
-}
-
-#[cfg(target_os = "macos")]
-fn next_thumb_wheel_point_step(pending: f64) -> Option<i64> {
-    if pending.abs() < 0.5 {
-        return None;
-    }
-
-    let magnitude = if pending.abs() <= SCROLL_WHEEL_TRACKPAD_MIN_STEP {
-        pending.abs()
-    } else {
-        (pending.abs() * SCROLL_WHEEL_TRACKPAD_SMOOTHING_FACTOR).clamp(
-            SCROLL_WHEEL_TRACKPAD_MIN_STEP,
-            SCROLL_WHEEL_TRACKPAD_MAX_STEP,
-        )
-    };
-    let step = pending.signum() * magnitude;
-    Some(step.round() as i64)
-}
-
-#[cfg(target_os = "macos")]
-fn post_thumb_wheel_trackpad_event(
-    location: CGPoint,
-    flags: CGEventFlags,
-    phase: ThumbWheelTrackpadPhase,
-    horizontal: ScrollAxisDeltas,
-) -> Result<(), PlatformError> {
-    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
-        .map_err(|_| PlatformError::Message("failed to create CGEventSource".to_string()))?;
-
-    let event = CGEvent::new_scroll_event(
-        source,
-        ScrollEventUnit::PIXEL,
-        2,
-        0,
-        clamp_i64_to_i32(horizontal.point),
-        0,
-    )
-    .map_err(|_| {
-        PlatformError::Message("failed to create thumb wheel trackpad event".to_string())
-    })?;
-
-    event.set_location(location);
-    event.set_flags(flags);
-    event.set_integer_value_field(
-        EventField::EVENT_SOURCE_USER_DATA,
-        THUMB_WHEEL_TRACKPAD_MARKER,
-    );
-    event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS, 1);
-    event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1, 0);
-    event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_2, horizontal.line);
-    event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_1, 0);
-    event.set_integer_value_field(
-        EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_2,
-        horizontal.fixed,
-    );
-    event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1, 0);
-    event.set_integer_value_field(
-        EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_2,
-        horizontal.point,
-    );
-    event.set_integer_value_field(
-        SCROLL_WHEEL_EVENT_SCROLL_PHASE_FIELD,
-        phase.as_scroll_phase(),
-    );
-    event.set_integer_value_field(SCROLL_WHEEL_EVENT_MOMENTUM_PHASE_FIELD, 0);
-
-    event.post(CGEventTapLocation::Session);
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn clamp_i64_to_i32(value: i64) -> i32 {
-    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 #[cfg(target_os = "macos")]
@@ -2099,64 +1567,4 @@ fn send_media_key(key_id: isize) -> Result<(), PlatformError> {
     ObjcCGEvent::post(ObjcCGEventTapLocation::HIDEventTap, Some(&down_cg));
     ObjcCGEvent::post(ObjcCGEventTapLocation::HIDEventTap, Some(&up_cg));
     Ok(())
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn thumb_wheel_worker_blocks_while_idle() {
-        let mut state = ThumbWheelGestureState::default();
-        assert!(matches!(
-            thumb_wheel_worker_state_for_state(
-                &mut state,
-                Duration::from_millis(500),
-                Instant::now(),
-            ),
-            ThumbWheelWorkerState::Wait
-        ));
-    }
-
-    #[test]
-    fn thumb_wheel_worker_emits_motion_when_pending_delta_exists() {
-        let now = Instant::now();
-        let mut state = ThumbWheelGestureState {
-            active: true,
-            pending_point_delta: 6.0,
-            last_wheel_at: Some(now),
-            last_location: CGPoint { x: 10.0, y: 20.0 },
-            last_flags: CGEventFlags::empty(),
-            ..ThumbWheelGestureState::default()
-        };
-
-        match thumb_wheel_worker_state_for_state(&mut state, Duration::from_millis(500), now) {
-            ThumbWheelWorkerState::Action(_, _, ThumbWheelTrackpadPhase::Began, deltas) => {
-                assert!(deltas.point > 0);
-                assert!(state.emitted_motion);
-            }
-            _ => panic!("expected thumb-wheel worker to emit a began action"),
-        }
-    }
-
-    #[test]
-    fn thumb_wheel_worker_ends_after_hold_timeout() {
-        let now = Instant::now();
-        let mut state = ThumbWheelGestureState {
-            active: true,
-            emitted_motion: true,
-            last_wheel_at: Some(now - Duration::from_millis(600)),
-            last_location: CGPoint { x: 0.0, y: 0.0 },
-            last_flags: CGEventFlags::empty(),
-            ..ThumbWheelGestureState::default()
-        };
-
-        match thumb_wheel_worker_state_for_state(&mut state, Duration::from_millis(500), now) {
-            ThumbWheelWorkerState::Action(_, _, ThumbWheelTrackpadPhase::Ended, deltas) => {
-                assert!(deltas.is_zero());
-                assert!(!state.active);
-            }
-            _ => panic!("expected thumb-wheel worker to end the simulated swipe"),
-        }
-    }
 }

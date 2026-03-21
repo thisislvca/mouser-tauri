@@ -8,9 +8,10 @@ use mouser_core::{
     active_device_with_layout, build_engine_snapshot, build_managed_device_info, clamp_dpi,
     default_action_catalog, default_app_discovery_snapshot, default_config, default_device_catalog,
     default_known_apps, default_layouts, manual_layout_choices, AppConfig, AppIdentity,
-    BootstrapPayload, DebugEvent, DebugEventKind, DeviceFingerprint, DeviceInfo, DeviceLayout,
-    DeviceMatchKind, DeviceRoutingEntry, DeviceRoutingSnapshot, DeviceSettings, EngineSnapshot,
-    EngineSnapshotState, KnownApp, ManagedDevice, PlatformCapabilities, Profile,
+    BootstrapPayload, DebugEvent, DebugEventKind, DeviceAttributionStatus, DeviceFingerprint,
+    DeviceInfo, DeviceLayout, DeviceMatchKind, DeviceRoutingEntry, DeviceRoutingSnapshot,
+    DeviceSettings, EngineSnapshot, EngineSnapshotState, KnownApp, ManagedDevice,
+    PlatformCapabilities, Profile,
 };
 use mouser_platform::{
     current_platform_name, host_hidapi_available, host_iokit_available, ConfigStore,
@@ -361,6 +362,16 @@ impl MockRuntime {
                     is_active_target: managed_device_key
                         .as_deref()
                         .is_some_and(|device_key| Some(device_key) == self.selected_device_key.as_deref()),
+                    hook_eligible: managed.is_some(),
+                    attribution_status: managed
+                        .map(|_| DeviceAttributionStatus::Ready)
+                        .unwrap_or(DeviceAttributionStatus::Unmanaged),
+                    source_hints: live
+                        .fingerprint
+                        .identity_key
+                        .iter()
+                        .cloned()
+                        .collect(),
                 }
             })
             .collect::<Vec<_>>();

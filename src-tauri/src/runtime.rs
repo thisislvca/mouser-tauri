@@ -11,10 +11,10 @@ use mouser_core::{
     default_device_settings, known_device_spec_by_key, known_device_specs, manual_layout_choices,
     normalize_app_match_value, normalize_bindings, normalize_device_settings,
     profile_for_supported_controls, AppConfig, AppDiscoverySnapshot, AppIdentity, AppMatcher,
-    AppMatcherKind, Binding, BootstrapPayload, CatalogApp, DebugEvent, DebugEventKind, DeviceInfo,
-    DeviceMatchKind, DeviceRoutingEntry, DeviceRoutingSnapshot, DeviceSettings, DiscoveredApp,
-    EngineSnapshot, EngineSnapshotState, InstalledApp, ManagedDevice, PlatformCapabilities,
-    Profile,
+    AppMatcherKind, Binding, BootstrapPayload, CatalogApp, DebugEvent, DebugEventKind,
+    DeviceAttributionStatus, DeviceInfo, DeviceMatchKind, DeviceRoutingEntry,
+    DeviceRoutingSnapshot, DeviceSettings, DiscoveredApp, EngineSnapshot, EngineSnapshotState,
+    InstalledApp, ManagedDevice, PlatformCapabilities, Profile,
 };
 use mouser_platform::{
     current_platform_name, host_hidapi_available, host_iokit_available,
@@ -24,7 +24,7 @@ use mouser_platform::{
         WindowsAppDiscoveryBackend, WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend,
     },
     AppDiscoveryBackend, AppFocusBackend, ConfigStore, HidBackend, HookBackend, HookBackendEvent,
-    HookBackendSettings, JsonConfigStore, PlatformError, StaticDeviceCatalog,
+    HookBackendSettings, HookDeviceRoute, JsonConfigStore, PlatformError, StaticDeviceCatalog,
 };
 
 pub struct AppRuntime {
@@ -826,25 +826,13 @@ impl AppRuntime {
     }
 
     fn sync_hook_backend(&mut self) {
-        let Some(profile) = self.active_profile().cloned() else {
-            return;
-        };
         let resolution = self.device_resolution();
-        let filtered_profile = self
-            .active_device_from_resolution(&resolution)
-            .map(|device| profile_for_supported_controls(&profile, &device.supported_controls))
-            .unwrap_or(profile);
-        let active_device = self.active_device_from_resolution(&resolution);
-        let hook_settings = HookBackendSettings::from_app_and_device(
+        let hook_settings = HookBackendSettings::from_routes(
             &self.config.settings,
-            self.selected_device_settings(),
-            active_device.as_ref(),
+            self.hook_device_routes(&resolution),
         );
 
-        if let Err(error) =
-            self.hook_backend
-                .configure(&hook_settings, &filtered_profile, self.enabled)
-        {
+        if let Err(error) = self.hook_backend.configure(&hook_settings, self.enabled) {
             self.push_debug(
                 DebugEventKind::Warning,
                 format!("Failed to configure hook backend: {error}"),
@@ -858,6 +846,42 @@ impl AppRuntime {
         for event in events {
             self.push_debug(event.kind, event.message);
         }
+    }
+
+    fn hook_device_routes(&self, resolution: &DeviceResolution) -> Vec<HookDeviceRoute> {
+        let connected_model_counts =
+            connected_model_counts_for_assignments(&resolution.assignments, &self.detected_devices);
+        self.config
+            .managed_devices
+            .iter()
+            .filter_map(|managed| {
+                let assignment = resolution.assignments.get(&managed.id)?;
+                let live = self.detected_devices.get(assignment.live_index)?.clone();
+                if !hook_route_is_authoritative(
+                    assignment.match_kind,
+                    connected_model_counts
+                        .get(live.model_key.as_str())
+                        .copied()
+                        .unwrap_or_default(),
+                ) {
+                    return None;
+                }
+                let resolved_profile_id = self.config.resolved_profile_id(
+                    managed.profile_id.as_deref(),
+                    self.frontmost_app.as_ref(),
+                );
+                let profile = self.config.profile_by_id(&resolved_profile_id)?;
+                let filtered_profile =
+                    profile_for_supported_controls(profile, &live.supported_controls);
+                Some(HookDeviceRoute {
+                    managed_device_key: managed.id.clone(),
+                    resolved_profile_id,
+                    live_device: live,
+                    bindings: filtered_profile.bindings,
+                    device_settings: managed.settings.clone(),
+                })
+            })
+            .collect()
     }
 
     fn platform_capabilities(&self) -> PlatformCapabilities {
@@ -1260,9 +1284,14 @@ impl AppRuntime {
             .assignments
             .iter()
             .map(|(managed_device_key, assignment)| {
-                (assignment.live_index, (managed_device_key.as_str(), assignment.match_kind))
+                (
+                    assignment.live_index,
+                    (managed_device_key.as_str(), assignment.match_kind),
+                )
             })
             .collect::<BTreeMap<_, _>>();
+        let connected_model_counts =
+            connected_model_counts_for_assignments(&resolution.assignments, &self.detected_devices);
 
         let mut entries = self
             .detected_devices
@@ -1275,8 +1304,10 @@ impl AppRuntime {
                     .copied();
                 let device_profile_id = managed.and_then(|device| device.profile_id.clone());
                 let resolved_profile_id = managed.map(|device| {
-                    self.config
-                        .resolved_profile_id(device.profile_id.as_deref(), self.frontmost_app.as_ref())
+                    self.config.resolved_profile_id(
+                        device.profile_id.as_deref(),
+                        self.frontmost_app.as_ref(),
+                    )
                 });
                 let managed_device_key = managed.map(|device| device.id.clone());
                 let managed_display_name = managed.map(|device| device.display_name.clone());
@@ -1284,6 +1315,12 @@ impl AppRuntime {
                     .get(&live_index)
                     .map(|(_, match_kind)| *match_kind)
                     .unwrap_or(DeviceMatchKind::Unmanaged);
+                let filtered_profile = resolved_profile_id
+                    .as_deref()
+                    .and_then(|profile_id| self.config.profile_by_id(profile_id))
+                    .map(|profile| {
+                        profile_for_supported_controls(profile, &live.supported_controls)
+                    });
 
                 DeviceRoutingEntry {
                     live_device_key: live.key.clone(),
@@ -1295,9 +1332,20 @@ impl AppRuntime {
                     device_profile_id,
                     resolved_profile_id,
                     match_kind,
-                    is_active_target: managed_device_key
-                        .as_deref()
-                        .is_some_and(|device_key| Some(device_key) == self.selected_device_key.as_deref()),
+                    is_active_target: managed_device_key.as_deref().is_some_and(|device_key| {
+                        Some(device_key) == self.selected_device_key.as_deref()
+                    }),
+                    hook_eligible: managed.is_some_and(|device| {
+                        device_hook_eligible(device, filtered_profile.as_ref())
+                    }),
+                    attribution_status: attribution_status_for_match(
+                        match_kind,
+                        connected_model_counts
+                            .get(live.model_key.as_str())
+                            .copied()
+                            .unwrap_or_default(),
+                    ),
+                    source_hints: source_hints_for_live_device(live),
                 }
             })
             .collect::<Vec<_>>();
@@ -1315,7 +1363,7 @@ impl AppRuntime {
                 continue;
             };
             if let Some(position) = remaining_indexes.iter().position(|index| {
-                    let live = &self.detected_devices[*index];
+                let live = &self.detected_devices[*index];
                 live.model_key == device.model_key
                     && normalized_identity_key(live.fingerprint.identity_key.as_deref())
                         == Some(identity_key)
@@ -1530,6 +1578,97 @@ fn live_matches_managed_device(managed: &ManagedDevice, live: &DeviceInfo) -> bo
     }
 }
 
+fn device_hook_eligible(managed: &ManagedDevice, profile: Option<&Profile>) -> bool {
+    managed.settings.invert_horizontal_scroll
+        || managed.settings.invert_vertical_scroll
+        || managed.settings.macos_thumb_wheel_simulate_trackpad
+        || profile.is_some_and(|profile| {
+            profile
+                .bindings
+                .iter()
+                .any(|binding| binding.action_id.as_str() != "none")
+        })
+}
+
+fn connected_model_counts_for_assignments<'a>(
+    assignments: &BTreeMap<String, LiveDeviceAssignment>,
+    detected_devices: &'a [DeviceInfo],
+) -> BTreeMap<&'a str, usize> {
+    assignments
+        .values()
+        .filter_map(|assignment| detected_devices.get(assignment.live_index))
+        .fold(BTreeMap::<&'a str, usize>::new(), |mut counts, live| {
+            *counts.entry(live.model_key.as_str()).or_default() += 1;
+            counts
+        })
+}
+
+fn hook_route_is_authoritative(match_kind: DeviceMatchKind, connected_model_count: usize) -> bool {
+    matches!(
+        attribution_status_for_match(match_kind, connected_model_count),
+        DeviceAttributionStatus::Ready | DeviceAttributionStatus::ModelFallback
+    )
+}
+
+fn attribution_status_for_match(
+    match_kind: DeviceMatchKind,
+    connected_model_count: usize,
+) -> DeviceAttributionStatus {
+    match match_kind {
+        DeviceMatchKind::Identity => DeviceAttributionStatus::Ready,
+        DeviceMatchKind::ModelFallback => {
+            if connected_model_count > 1 {
+                DeviceAttributionStatus::Ambiguous
+            } else {
+                DeviceAttributionStatus::ModelFallback
+            }
+        }
+        DeviceMatchKind::Unmanaged => DeviceAttributionStatus::Unmanaged,
+    }
+}
+
+fn source_hints_for_live_device(live: &DeviceInfo) -> Vec<String> {
+    let mut hints = Vec::new();
+
+    if let Some(identity_key) = normalized_identity_key(live.fingerprint.identity_key.as_deref()) {
+        hints.push(identity_key.to_string());
+    }
+    if let Some(serial_number) = normalized_identity_key(live.fingerprint.serial_number.as_deref())
+    {
+        hints.push(format!("serial:{serial_number}"));
+    }
+    if let Some(source) = live
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        hints.push(format!("source:{source}"));
+    }
+    if let Some(transport) = live
+        .transport
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        hints.push(format!("transport:{transport}"));
+    }
+    if let Some(hid_path) = live
+        .fingerprint
+        .hid_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        hints.push(format!("path:{hid_path}"));
+    }
+    if let Some(location_id) = live.fingerprint.location_id {
+        hints.push(format!("location:{location_id:08x}"));
+    }
+
+    hints
+}
+
 fn model_default_profile_id(model_key: &str) -> String {
     format!("device_{model_key}")
 }
@@ -1605,9 +1744,12 @@ mod tests {
         fn configure(
             &self,
             _settings: &HookBackendSettings,
-            _profile: &Profile,
             _enabled: bool,
         ) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn execute_action(&self, _action_id: &str) -> Result<(), PlatformError> {
             Ok(())
         }
 
@@ -1752,6 +1894,44 @@ mod tests {
         let entry = &snapshot.entries[0];
         assert_eq!(entry.managed_device_key.as_deref(), Some("mx-master"));
         assert_eq!(entry.match_kind, DeviceMatchKind::ModelFallback);
+    }
+
+    #[test]
+    fn hook_device_routes_keep_single_model_fallback_assignment() {
+        let mut runtime = test_runtime();
+        runtime.config.managed_devices = vec![managed_device(None)];
+        runtime.detected_devices = vec![live_device(Some("serial:456"))];
+
+        let resolution = runtime.device_resolution();
+        let routes = runtime.hook_device_routes(&resolution);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].managed_device_key, "mx-master");
+    }
+
+    #[test]
+    fn hook_device_routes_drop_ambiguous_same_model_fallback_assignments() {
+        let mut runtime = test_runtime();
+        let mut managed_a = managed_device(None);
+        managed_a.id = "mx-master-a".to_string();
+        let mut managed_b = managed_device(None);
+        managed_b.id = "mx-master-b".to_string();
+        runtime.config.managed_devices = vec![managed_a, managed_b];
+
+        let mut live_a = live_device(Some("serial:111"));
+        live_a.key = "live-a".to_string();
+        let mut live_b = live_device(Some("serial:222"));
+        live_b.key = "live-b".to_string();
+        runtime.detected_devices = vec![live_a, live_b];
+
+        let resolution = runtime.device_resolution();
+        assert!(runtime.hook_device_routes(&resolution).is_empty());
+
+        let snapshot = runtime.device_routing_snapshot_from_resolution(&resolution);
+        assert_eq!(snapshot.entries.len(), 2);
+        assert!(snapshot.entries.iter().all(|entry| {
+            entry.match_kind == DeviceMatchKind::ModelFallback
+                && entry.attribution_status == DeviceAttributionStatus::Ambiguous
+        }));
     }
 
     #[test]

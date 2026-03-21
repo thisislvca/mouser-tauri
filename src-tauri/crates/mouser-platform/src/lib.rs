@@ -15,8 +15,7 @@ use mouser_core::{
     default_layouts_ref, default_profile_bindings, known_device_specs_ref,
     legacy_default_profile_bindings_v3, normalize_app_match_value, normalize_bindings, AppConfig,
     AppIdentity, AppMatcherKind, Binding, DebugEventKind, DeviceControlSpec, DeviceFingerprint,
-    DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp, KnownApp, LogicalControl, Profile,
-    Settings,
+    DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp, KnownApp, LogicalControl, Settings,
 };
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -45,7 +44,17 @@ pub struct HidCapabilities {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookDeviceRoute {
+    pub managed_device_key: String,
+    pub resolved_profile_id: String,
+    pub live_device: DeviceInfo,
+    pub bindings: Vec<Binding>,
+    pub device_settings: DeviceSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookBackendSettings {
+    pub debug_mode: bool,
     pub invert_horizontal_scroll: bool,
     pub invert_vertical_scroll: bool,
     pub macos_thumb_wheel_simulate_trackpad: bool,
@@ -54,10 +63,10 @@ pub struct HookBackendSettings {
     pub gesture_deadzone: u16,
     pub gesture_timeout_ms: u32,
     pub gesture_cooldown_ms: u32,
-    pub debug_mode: bool,
     pub device_model_key: Option<String>,
     pub device_identity_key: Option<String>,
     pub device_controls: Vec<DeviceControlSpec>,
+    pub routes: Vec<HookDeviceRoute>,
 }
 
 impl HookBackendSettings {
@@ -77,6 +86,7 @@ impl HookBackendSettings {
                 .map(str::to_string)
         });
         Self {
+            debug_mode: settings.debug_mode,
             invert_horizontal_scroll: device_settings.invert_horizontal_scroll,
             invert_vertical_scroll: device_settings.invert_vertical_scroll,
             macos_thumb_wheel_simulate_trackpad: cfg!(target_os = "macos")
@@ -88,12 +98,64 @@ impl HookBackendSettings {
             gesture_deadzone: device_settings.gesture_deadzone,
             gesture_timeout_ms: device_settings.gesture_timeout_ms,
             gesture_cooldown_ms: device_settings.gesture_cooldown_ms,
-            debug_mode: settings.debug_mode,
+            device_model_key,
             device_identity_key,
             device_controls: active_device
                 .map(|device| device.controls.clone())
                 .unwrap_or_default(),
-            device_model_key,
+            routes: Vec::new(),
+        }
+    }
+
+    pub fn from_routes(settings: &Settings, routes: Vec<HookDeviceRoute>) -> Self {
+        let primary = routes.first();
+        Self {
+            debug_mode: settings.debug_mode,
+            invert_horizontal_scroll: primary
+                .map(|route| route.device_settings.invert_horizontal_scroll)
+                .unwrap_or(false),
+            invert_vertical_scroll: primary
+                .map(|route| route.device_settings.invert_vertical_scroll)
+                .unwrap_or(false),
+            macos_thumb_wheel_simulate_trackpad: primary
+                .map(|route| {
+                    cfg!(target_os = "macos")
+                        && route.device_settings.macos_thumb_wheel_simulate_trackpad
+                        && supports_macos_thumb_wheel_trackpad_model(Some(
+                            route.live_device.model_key.as_str(),
+                        ))
+                })
+                .unwrap_or(false),
+            macos_thumb_wheel_trackpad_hold_timeout_ms: primary
+                .map(|route| route.device_settings.macos_thumb_wheel_trackpad_hold_timeout_ms)
+                .unwrap_or_else(|| default_device_settings().macos_thumb_wheel_trackpad_hold_timeout_ms),
+            gesture_threshold: primary
+                .map(|route| route.device_settings.gesture_threshold)
+                .unwrap_or_else(|| default_device_settings().gesture_threshold),
+            gesture_deadzone: primary
+                .map(|route| route.device_settings.gesture_deadzone)
+                .unwrap_or_else(|| default_device_settings().gesture_deadzone),
+            gesture_timeout_ms: primary
+                .map(|route| route.device_settings.gesture_timeout_ms)
+                .unwrap_or_else(|| default_device_settings().gesture_timeout_ms),
+            gesture_cooldown_ms: primary
+                .map(|route| route.device_settings.gesture_cooldown_ms)
+                .unwrap_or_else(|| default_device_settings().gesture_cooldown_ms),
+            device_model_key: primary.map(|route| route.live_device.model_key.clone()),
+            device_identity_key: primary.and_then(|route| {
+                route
+                    .live_device
+                    .fingerprint
+                    .identity_key
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            }),
+            device_controls: primary
+                .map(|route| route.live_device.controls.clone())
+                .unwrap_or_default(),
+            routes,
         }
     }
 }
@@ -110,7 +172,7 @@ pub struct HookBackendEvent {
     pub message: String,
 }
 
-fn supports_macos_thumb_wheel_trackpad_model(model_key: Option<&str>) -> bool {
+pub(crate) fn supports_macos_thumb_wheel_trackpad_model(model_key: Option<&str>) -> bool {
     model_key
         .is_some_and(|model_key| model_key == "mx_master" || model_key.starts_with("mx_master_"))
 }
@@ -154,12 +216,8 @@ pub fn host_iokit_available() -> bool {
 pub trait HookBackend: Send + Sync {
     fn backend_id(&self) -> &'static str;
     fn capabilities(&self) -> HookCapabilities;
-    fn configure(
-        &self,
-        settings: &HookBackendSettings,
-        profile: &Profile,
-        enabled: bool,
-    ) -> Result<(), PlatformError>;
+    fn configure(&self, settings: &HookBackendSettings, enabled: bool) -> Result<(), PlatformError>;
+    fn execute_action(&self, action_id: &str) -> Result<(), PlatformError>;
     fn drain_events(&self) -> Vec<HookBackendEvent>;
 }
 

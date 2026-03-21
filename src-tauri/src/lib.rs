@@ -998,7 +998,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mouser_core::DeviceMatchKind;
+    use mouser_core::{DeviceAttributionStatus, DeviceMatchKind};
 
     fn routing_entry(
         live_device_key: &str,
@@ -1018,6 +1018,13 @@ mod tests {
             resolved_profile_id: resolved_profile_id.map(str::to_string),
             match_kind,
             is_active_target,
+            hook_eligible: managed_device_key.is_some(),
+            attribution_status: match match_kind {
+                DeviceMatchKind::Identity => DeviceAttributionStatus::Ready,
+                DeviceMatchKind::ModelFallback => DeviceAttributionStatus::ModelFallback,
+                DeviceMatchKind::Unmanaged => DeviceAttributionStatus::Unmanaged,
+            },
+            source_hints: vec![format!("serial:{live_device_key}")],
         }
     }
 

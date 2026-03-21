@@ -181,8 +181,21 @@ function buildDeviceRouting(
         deviceProfileId: managedDevice?.profileId ?? null,
         resolvedProfileId:
           managedDevice?.profileId ?? config.activeProfileId ?? null,
-        matchKind: managedDevice?.identityKey ? "identity" : "model_fallback",
+        matchKind: managedDevice
+          ? managedDevice.identityKey
+            ? "identity"
+            : "model_fallback"
+          : "unmanaged",
         isActiveTarget: managedDevice?.id === "mx_master_3s",
+        hookEligible: managedDevice != null,
+        attributionStatus: managedDevice
+          ? managedDevice.identityKey
+            ? "ready"
+            : "model_fallback"
+          : "unmanaged",
+        sourceHints: device.fingerprint?.identityKey
+          ? [device.fingerprint.identityKey]
+          : [],
       };
     }),
   };

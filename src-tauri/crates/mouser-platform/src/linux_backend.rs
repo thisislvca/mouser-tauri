@@ -17,7 +17,7 @@ use mouser_core::{
     build_connected_device_info, hydrate_identity_key, known_device_spec_by_key,
     resolve_known_device, AppDiscoverySource, AppIdentity, DebugEventKind,
     DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint, DeviceInfo, InstalledApp,
-    LogicalControl, Profile,
+    DeviceSettings, LogicalControl,
 };
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
     hidpp::{self, HidppIo, BT_DEV_IDX},
     horizontal_scroll_control, push_bounded_hook_event, AppDiscoveryBackend, AppFocusBackend,
     HidBackend, HidCapabilities, HookBackend, HookBackendEvent, HookBackendSettings,
-    HookCapabilities, PlatformError,
+    HookCapabilities, HookDeviceRoute, PlatformError,
 };
 
 #[cfg(target_os = "linux")]
@@ -97,17 +97,18 @@ struct TelemetryProbePlan {
 #[derive(Clone, PartialEq, Eq)]
 struct LinuxHookConfig {
     enabled: bool,
-    invert_horizontal_scroll: bool,
-    invert_vertical_scroll: bool,
     debug_mode: bool,
-    device_model_key: Option<String>,
-    device_identity_key: Option<String>,
+    routes: Vec<LinuxDeviceRoute>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct LinuxDeviceRoute {
+    managed_device_key: String,
+    resolved_profile_id: String,
+    live_device: DeviceInfo,
+    device_settings: DeviceSettings,
     bindings: HashMap<LogicalControl, String>,
     device_controls: Vec<DeviceControlSpec>,
-    gesture_threshold: u16,
-    gesture_deadzone: u16,
-    gesture_timeout_ms: u32,
-    gesture_cooldown_ms: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,36 +119,57 @@ struct ReprogRoute {
 }
 
 impl LinuxHookConfig {
-    fn from_runtime(settings: &HookBackendSettings, profile: &Profile, enabled: bool) -> Self {
+    fn from_runtime(settings: &HookBackendSettings, enabled: bool) -> Self {
         Self {
             enabled,
-            invert_horizontal_scroll: settings.invert_horizontal_scroll,
-            invert_vertical_scroll: settings.invert_vertical_scroll,
             debug_mode: settings.debug_mode,
-            device_model_key: settings.device_model_key.clone(),
-            device_identity_key: settings.device_identity_key.clone(),
-            bindings: profile
+            routes: settings
+                .routes
+                .iter()
+                .cloned()
+                .map(LinuxDeviceRoute::from_runtime)
+                .collect(),
+        }
+    }
+
+    fn summary(&self) -> String {
+        self.routes
+            .iter()
+            .map(LinuxDeviceRoute::summary)
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    fn gesture_capture_requested(&self) -> bool {
+        self.enabled && self.routes.iter().any(LinuxDeviceRoute::gesture_capture_requested)
+    }
+}
+
+impl LinuxDeviceRoute {
+    fn from_runtime(route: HookDeviceRoute) -> Self {
+        Self {
+            managed_device_key: route.managed_device_key,
+            resolved_profile_id: route.resolved_profile_id,
+            device_controls: route.live_device.controls.clone(),
+            bindings: route
                 .bindings
                 .iter()
                 .map(|binding| (binding.control, binding.action_id.clone()))
                 .collect(),
-            device_controls: settings.device_controls.clone(),
-            gesture_threshold: settings.gesture_threshold.max(5),
-            gesture_deadzone: settings.gesture_deadzone,
-            gesture_timeout_ms: settings.gesture_timeout_ms.max(250),
-            gesture_cooldown_ms: settings.gesture_cooldown_ms,
+            live_device: route.live_device,
+            device_settings: route.device_settings,
         }
     }
 
     fn action_for(&self, control: LogicalControl) -> Option<&str> {
-        self.bindings.get(&control).map(String::as_str)
+        self.bindings
+            .get(&control)
+            .map(String::as_str)
+            .filter(|action_id| *action_id != "none")
     }
 
     fn handles_control(&self, control: LogicalControl) -> bool {
-        self.enabled
-            && self
-                .action_for(control)
-                .is_some_and(|action_id| action_id != "none")
+        self.action_for(control).is_some()
     }
 
     fn gesture_direction_enabled(&self) -> bool {
@@ -166,16 +188,15 @@ impl LinuxHookConfig {
     }
 
     fn gesture_route(&self) -> Option<ReprogRoute> {
-        let gesture_requested = self.enabled
-            && [
-                LogicalControl::GesturePress,
-                LogicalControl::GestureLeft,
-                LogicalControl::GestureRight,
-                LogicalControl::GestureUp,
-                LogicalControl::GestureDown,
-            ]
-            .into_iter()
-            .any(|control| self.handles_control(control));
+        let gesture_requested = [
+            LogicalControl::GesturePress,
+            LogicalControl::GestureLeft,
+            LogicalControl::GestureRight,
+            LogicalControl::GestureUp,
+            LogicalControl::GestureDown,
+        ]
+        .into_iter()
+        .any(|control| self.handles_control(control));
         if !gesture_requested {
             return None;
         }
@@ -214,6 +235,39 @@ impl LinuxHookConfig {
 
         routes
     }
+
+    fn summary(&self) -> String {
+        let bindings = [
+            LogicalControl::Back,
+            LogicalControl::Forward,
+            LogicalControl::Middle,
+            LogicalControl::HscrollLeft,
+            LogicalControl::HscrollRight,
+            LogicalControl::GesturePress,
+            LogicalControl::GestureLeft,
+            LogicalControl::GestureRight,
+            LogicalControl::GestureUp,
+            LogicalControl::GestureDown,
+        ]
+        .into_iter()
+        .map(|control| {
+            format!(
+                "{}={}",
+                control.label(),
+                self.bindings
+                    .get(&control)
+                    .map(String::as_str)
+                    .unwrap_or("none")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+        format!(
+            "{}:{} [{}]",
+            self.managed_device_key, self.resolved_profile_id, bindings
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,7 +301,7 @@ struct GestureTrackingState {
 struct LinuxHookShared {
     config: RwLock<Arc<LinuxHookConfig>>,
     events: Mutex<Vec<HookBackendEvent>>,
-    gesture_state: Mutex<GestureTrackingState>,
+    gesture_states: Mutex<BTreeMap<String, GestureTrackingState>>,
     gesture_cv: Condvar,
     hook_running: AtomicBool,
     gesture_connected: AtomicBool,
@@ -256,10 +310,6 @@ struct LinuxHookShared {
 impl LinuxHookShared {
     fn new() -> Self {
         let config = mouser_core::default_config();
-        let profile = config
-            .active_profile()
-            .cloned()
-            .unwrap_or_else(|| config.profiles[0].clone());
         let hook_settings = HookBackendSettings::from_app_and_device(
             &config.settings,
             &config.device_defaults,
@@ -267,13 +317,9 @@ impl LinuxHookShared {
         );
 
         Self {
-            config: RwLock::new(Arc::new(LinuxHookConfig::from_runtime(
-                &hook_settings,
-                &profile,
-                true,
-            ))),
+            config: RwLock::new(Arc::new(LinuxHookConfig::from_runtime(&hook_settings, true))),
             events: Mutex::new(Vec::new()),
-            gesture_state: Mutex::new(GestureTrackingState::default()),
+            gesture_states: Mutex::new(BTreeMap::new()),
             gesture_cv: Condvar::new(),
             hook_running: AtomicBool::new(false),
             gesture_connected: AtomicBool::new(false),
@@ -284,8 +330,8 @@ impl LinuxHookShared {
         Arc::clone(&self.config.read().unwrap())
     }
 
-    fn reconfigure(&self, settings: &HookBackendSettings, profile: &Profile, enabled: bool) {
-        let next = Arc::new(LinuxHookConfig::from_runtime(settings, profile, enabled));
+    fn reconfigure(&self, settings: &HookBackendSettings, enabled: bool) {
+        let next = Arc::new(LinuxHookConfig::from_runtime(settings, enabled));
         let changed = {
             let mut config = self.config.write().unwrap();
             if config.as_ref() == next.as_ref() {
@@ -296,20 +342,25 @@ impl LinuxHookShared {
             }
         };
 
-        if !next.gesture_capture_requested() {
-            self.reset_gesture_state();
+        {
+            let mut gesture_states = self.gesture_states.lock().unwrap();
+            if next.gesture_capture_requested() {
+                let active_keys = next
+                    .routes
+                    .iter()
+                    .map(|route| route.managed_device_key.as_str())
+                    .collect::<BTreeSet<_>>();
+                gesture_states.retain(|key, _| active_keys.contains(key.as_str()));
+            } else {
+                gesture_states.clear();
+            }
         }
         self.gesture_cv.notify_all();
 
         if changed && next.debug_mode {
             self.push_event(
                 DebugEventKind::Info,
-                format!(
-                    "Linux hook reconfigured: enabled={} debug={} gesture_capture={}",
-                    next.enabled,
-                    next.debug_mode,
-                    next.gesture_capture_requested()
-                ),
+                format!("Linux hook routes -> {}", next.summary()),
             );
         }
     }
@@ -358,12 +409,17 @@ impl LinuxHookShared {
         }
     }
 
-    fn dispatch_control_action(&self, config: &LinuxHookConfig, control: LogicalControl) {
-        let Some(action_id) = config.action_for(control).map(str::to_string) else {
+    fn dispatch_route_control_action(&self, route: &LinuxDeviceRoute, control: LogicalControl) {
+        let Some(action_id) = route.action_for(control).map(str::to_string) else {
             return;
         };
 
-        self.push_debug(format!("Mapped {} -> {}", control.label(), action_id));
+        self.push_debug(format!(
+            "Mapped {} on {} -> {}",
+            control.label(),
+            route.managed_device_key,
+            action_id
+        ));
         if let Err(error) = execute_action(&action_id) {
             self.push_event(
                 DebugEventKind::Warning,
@@ -372,41 +428,45 @@ impl LinuxHookShared {
         }
     }
 
-    fn hid_gesture_down(&self) {
-        let config = self.current_config();
-        if !config.gesture_capture_requested() {
+    fn route_gesture_down(&self, route: &LinuxDeviceRoute) {
+        if !route.gesture_capture_requested() {
             return;
         }
 
-        let mut state = self.gesture_state.lock().unwrap();
+        let mut gesture_states = self.gesture_states.lock().unwrap();
+        let state = gesture_states
+            .entry(route.managed_device_key.clone())
+            .or_default();
         if state.active {
             return;
         }
 
         state.active = true;
         state.triggered = false;
-        if config.gesture_direction_enabled() && !cooldown_active(&state) {
-            self.push_gesture_debug("Gesture button down");
-            start_gesture_tracking(&mut state);
+        if route.gesture_direction_enabled() && !cooldown_active(state) {
+            self.push_gesture_debug(format!("Gesture button down [{}]", route.managed_device_key));
+            start_gesture_tracking(state);
         } else {
-            finish_gesture_tracking(&mut state);
+            finish_gesture_tracking(state);
         }
 
         self.gesture_cv.notify_all();
     }
 
-    fn hid_gesture_up(&self) {
-        let config = self.current_config();
+    fn route_gesture_up(&self, route: &LinuxDeviceRoute) {
         let should_click = {
-            let mut state = self.gesture_state.lock().unwrap();
+            let mut gesture_states = self.gesture_states.lock().unwrap();
+            let Some(state) = gesture_states.get_mut(&route.managed_device_key) else {
+                return;
+            };
             if !state.active {
                 return;
             }
 
             let should_click =
-                !state.triggered && config.handles_control(LogicalControl::GesturePress);
+                !state.triggered && route.handles_control(LogicalControl::GesturePress);
             state.active = false;
-            finish_gesture_tracking(&mut state);
+            finish_gesture_tracking(state);
             state.triggered = false;
             should_click
         };
@@ -414,21 +474,23 @@ impl LinuxHookShared {
         self.gesture_cv.notify_all();
 
         self.push_gesture_debug(format!(
-            "Gesture button up click_candidate={}",
-            should_click
+            "Gesture button up [{}] click_candidate={should_click}",
+            route.managed_device_key,
         ));
 
         if should_click {
-            self.dispatch_control_action(&config, LogicalControl::GesturePress);
+            self.dispatch_route_control_action(route, LogicalControl::GesturePress);
         }
     }
 
-    fn hid_rawxy_move(&self, delta_x: i16, delta_y: i16) {
-        let config = self.current_config();
-        let mut state = self.gesture_state.lock().unwrap();
+    fn route_hid_rawxy_move(&self, route: &LinuxDeviceRoute, delta_x: i16, delta_y: i16) {
+        let mut gesture_states = self.gesture_states.lock().unwrap();
+        let state = gesture_states
+            .entry(route.managed_device_key.clone())
+            .or_default();
         self.accumulate_gesture_delta(
-            &config,
-            &mut state,
+            route,
+            state,
             f64::from(delta_x),
             f64::from(delta_y),
             GestureInputSource::HidRawxy,
@@ -436,12 +498,14 @@ impl LinuxHookShared {
         self.gesture_cv.notify_all();
     }
 
-    fn evdev_move(&self, delta_x: i32, delta_y: i32) {
-        let config = self.current_config();
-        let mut state = self.gesture_state.lock().unwrap();
+    fn route_evdev_move(&self, route: &LinuxDeviceRoute, delta_x: i32, delta_y: i32) {
+        let mut gesture_states = self.gesture_states.lock().unwrap();
+        let state = gesture_states
+            .entry(route.managed_device_key.clone())
+            .or_default();
         self.accumulate_gesture_delta(
-            &config,
-            &mut state,
+            route,
+            state,
             f64::from(delta_x),
             f64::from(delta_y),
             GestureInputSource::Evdev,
@@ -449,31 +513,34 @@ impl LinuxHookShared {
         self.gesture_cv.notify_all();
     }
 
-    fn reset_gesture_state(&self) {
-        let mut state = self.gesture_state.lock().unwrap();
-        *state = GestureTrackingState::default();
+    fn reset_route_gesture_state(&self, route_key: &str) {
+        let mut gesture_states = self.gesture_states.lock().unwrap();
+        gesture_states.remove(route_key);
         self.gesture_cv.notify_all();
     }
 
-    fn gesture_active_without_hid_rawxy(&self) -> bool {
-        let state = self.gesture_state.lock().unwrap();
-        state.active && state.input_source != Some(GestureInputSource::HidRawxy)
+    fn route_gesture_active_without_hid_rawxy(&self, route_key: &str) -> bool {
+        let gesture_states = self.gesture_states.lock().unwrap();
+        gesture_states.get(route_key).is_some_and(|state| {
+            state.active && state.input_source != Some(GestureInputSource::HidRawxy)
+        })
     }
 
     fn accumulate_gesture_delta(
         &self,
-        config: &LinuxHookConfig,
+        route: &LinuxDeviceRoute,
         state: &mut GestureTrackingState,
         delta_x: f64,
         delta_y: f64,
         source: GestureInputSource,
     ) {
-        if !(config.gesture_direction_enabled() && state.active) {
+        if !(route.gesture_direction_enabled() && state.active) {
             return;
         }
         if cooldown_active(state) {
             self.push_gesture_debug(format!(
-                "Gesture cooldown active source={} dx={} dy={}",
+                "Gesture cooldown active [{}] source={} dx={} dy={}",
+                route.managed_device_key,
                 source.as_str(),
                 delta_x,
                 delta_y
@@ -482,8 +549,9 @@ impl LinuxHookShared {
         }
         if !state.tracking {
             self.push_gesture_debug(format!(
-                "Gesture tracking started source={}",
-                source.as_str()
+                "Gesture tracking started [{}] source={}",
+                route.managed_device_key,
+                source.as_str(),
             ));
             start_gesture_tracking(state);
         }
@@ -493,9 +561,10 @@ impl LinuxHookShared {
             .last_move_at
             .map(|last_move_at| now.duration_since(last_move_at).as_millis() as u32)
             .unwrap_or_default();
-        if idle_ms > config.gesture_timeout_ms {
+        if idle_ms > route.device_settings.gesture_timeout_ms.max(250) {
             self.push_gesture_debug(format!(
-                "Gesture segment reset timeout source={} accum_x={} accum_y={}",
+                "Gesture segment reset [{}] timeout source={} accum_x={} accum_y={}",
+                route.managed_device_key,
                 source.as_str(),
                 state.delta_x,
                 state.delta_y
@@ -506,15 +575,18 @@ impl LinuxHookShared {
         if source == GestureInputSource::HidRawxy && state.input_source == Some(GestureInputSource::Evdev)
         {
             self.push_gesture_debug(format!(
-                "Gesture source promoted from evdev to hid_rawxy prev_accum_x={} prev_accum_y={}",
-                state.delta_x, state.delta_y
+                "Gesture source promoted [{}] from evdev to hid_rawxy prev_accum_x={} prev_accum_y={}",
+                route.managed_device_key,
+                state.delta_x,
+                state.delta_y,
             ));
             start_gesture_tracking(state);
         }
 
         if state.input_source.is_some_and(|current| current != source) {
             self.push_gesture_debug(format!(
-                "Gesture source locked to {}; ignoring {} dx={} dy={}",
+                "Gesture source locked [{}] to {}; ignoring {} dx={} dy={}",
+                route.managed_device_key,
                 state.input_source.unwrap().as_str(),
                 source.as_str(),
                 delta_x,
@@ -529,7 +601,8 @@ impl LinuxHookShared {
         state.last_move_at = Some(now);
 
         self.push_gesture_debug(format!(
-            "Gesture segment source={} accum_x={} accum_y={}",
+            "Gesture segment [{}] source={} accum_x={} accum_y={}",
+            route.managed_device_key,
             source.as_str(),
             state.delta_x,
             state.delta_y
@@ -538,23 +611,26 @@ impl LinuxHookShared {
         let Some(control) = gesture::detect_gesture_control(
             state.delta_x,
             state.delta_y,
-            f64::from(config.gesture_threshold),
-            f64::from(config.gesture_deadzone),
+            f64::from(route.device_settings.gesture_threshold.max(5)),
+            f64::from(route.device_settings.gesture_deadzone),
         ) else {
             return;
         };
 
         state.triggered = true;
         self.push_gesture_debug(format!(
-            "Gesture detected {} source={} delta_x={} delta_y={}",
+            "Gesture detected {} [{}] source={} delta_x={} delta_y={}",
             control.label(),
+            route.managed_device_key,
             source.as_str(),
             state.delta_x,
             state.delta_y
         ));
-        self.dispatch_control_action(config, control);
-        state.cooldown_until =
-            Some(Instant::now() + Duration::from_millis(u64::from(config.gesture_cooldown_ms)));
+        self.dispatch_route_control_action(route, control);
+        state.cooldown_until = Some(
+            Instant::now()
+                + Duration::from_millis(u64::from(route.device_settings.gesture_cooldown_ms)),
+        );
         finish_gesture_tracking(state);
     }
 }
@@ -654,20 +730,23 @@ impl HookBackend for LinuxHookBackend {
     fn configure(
         &self,
         settings: &HookBackendSettings,
-        profile: &Profile,
         enabled: bool,
     ) -> Result<(), PlatformError> {
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (settings, profile, enabled);
+            let _ = (settings, enabled);
             Ok(())
         }
 
         #[cfg(target_os = "linux")]
         {
-            self.shared.reconfigure(settings, profile, enabled);
+            self.shared.reconfigure(settings, enabled);
             Ok(())
         }
+    }
+
+    fn execute_action(&self, action_id: &str) -> Result<(), PlatformError> {
+        execute_action(action_id)
     }
 
     fn drain_events(&self) -> Vec<HookBackendEvent> {
@@ -971,62 +1050,143 @@ impl LinuxHidBackend {
 
 #[cfg(target_os = "linux")]
 fn run_hook_worker(shared: Arc<LinuxHookShared>, stop: Arc<AtomicBool>) {
-    let mut warned_setup_failure = false;
+    let mut sessions = BTreeMap::<String, MouseHookSession>::new();
 
     while !stop.load(Ordering::SeqCst) {
-        let preferred_model_key = shared.current_config().device_model_key.clone();
-        match MouseHookSession::open(preferred_model_key.as_deref()) {
-            Ok(mut session) => {
-                warned_setup_failure = false;
-                shared.mark_hook_running(
-                    true,
-                    Some(format!(
-                        "Grabbed Linux mouse `{}` at {}",
-                        session.device_name,
-                        session.device_path.display()
-                    )),
-                );
+        let config = shared.current_config();
+        let desired_routes = if config.enabled {
+            config.routes.clone()
+        } else {
+            Vec::new()
+        };
 
-                match session.run(&shared, &stop) {
-                    Ok(()) => {
-                        if !stop.load(Ordering::SeqCst) {
-                            shared.mark_hook_running(
-                                false,
-                                Some("Linux mouse hook stopped".to_string()),
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        shared.push_event(
-                            DebugEventKind::Warning,
-                            format!("Linux mouse hook error: {error}"),
-                        );
-                        shared.mark_hook_running(
-                            false,
-                            Some("Linux mouse hook disconnected".to_string()),
-                        );
-                    }
-                }
+        if desired_routes.is_empty() {
+            for (_, session) in std::mem::take(&mut sessions) {
+                drop(session);
             }
-            Err(error) => {
-                if !warned_setup_failure || shared.current_config().debug_mode {
+            shared.mark_hook_running(false, Some("Linux mouse hook parked".to_string()));
+            thread::sleep(Duration::from_millis(180));
+            continue;
+        }
+
+        let desired_by_key = desired_routes
+            .iter()
+            .map(|route| (route.managed_device_key.as_str(), route))
+            .collect::<BTreeMap<_, _>>();
+        let stale_keys = sessions
+            .iter()
+            .filter_map(|(key, session)| {
+                let desired = desired_by_key.get(key.as_str())?;
+                (!session.matches_route(desired)).then(|| key.clone())
+            })
+            .collect::<Vec<_>>();
+        for key in stale_keys {
+            if let Some(session) = sessions.remove(&key) {
+                drop(session);
+                shared.reset_route_gesture_state(&key);
+            }
+        }
+        let removed_keys = sessions
+            .keys()
+            .filter(|key| !desired_by_key.contains_key(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in removed_keys {
+            if let Some(session) = sessions.remove(&key) {
+                drop(session);
+                shared.reset_route_gesture_state(&key);
+            }
+        }
+
+        let same_model_counts = desired_routes.iter().fold(
+            BTreeMap::<&str, usize>::new(),
+            |mut counts, route| {
+                *counts.entry(route.live_device.model_key.as_str()).or_default() += 1;
+                counts
+            },
+        );
+        let mut occupied_paths = sessions
+            .values()
+            .map(|session| session.device_path.clone())
+            .collect::<BTreeSet<_>>();
+        let mut open_failures = Vec::new();
+
+        for route in desired_routes {
+            if sessions.contains_key(&route.managed_device_key) {
+                continue;
+            }
+            let same_model_count = same_model_counts
+                .get(route.live_device.model_key.as_str())
+                .copied()
+                .unwrap_or(1);
+            match MouseHookSession::open_for_route(&route, &occupied_paths, same_model_count) {
+                Ok(session) => {
+                    occupied_paths.insert(session.device_path.clone());
+                    shared.push_event(
+                        DebugEventKind::Info,
+                        format!(
+                            "Grabbed Linux mouse `{}` at {} for {}",
+                            session.device_name,
+                            session.device_path.display(),
+                            route.managed_device_key
+                        ),
+                    );
+                    sessions.insert(route.managed_device_key.clone(), session);
+                }
+                Err(error) => open_failures.push(format!("{}: {error}", route.managed_device_key)),
+            }
+        }
+
+        if sessions.is_empty() {
+            if let Some(first_failure) = open_failures.first() {
+                shared.push_event(
+                    DebugEventKind::Warning,
+                    format!("Linux mouse hook unavailable: {first_failure}"),
+                );
+            }
+            shared.mark_hook_running(false, None);
+            thread::sleep(HOOK_RETRY_DELAY);
+            continue;
+        }
+
+        shared.mark_hook_running(true, None);
+
+        let mut disconnected = Vec::new();
+        let mut saw_activity = false;
+        for (route_key, session) in sessions.iter_mut() {
+            match session.poll(&shared) {
+                Ok(activity) => {
+                    saw_activity |= activity;
+                }
+                Err(error) => {
                     shared.push_event(
                         DebugEventKind::Warning,
-                        format!("Linux mouse hook unavailable: {error}"),
+                        format!("Linux mouse hook error for {}: {error}", route_key),
                     );
-                    warned_setup_failure = true;
+                    disconnected.push(route_key.clone());
                 }
-                shared.mark_hook_running(false, None);
-                thread::sleep(HOOK_RETRY_DELAY);
             }
+        }
+        for route_key in disconnected {
+            if let Some(session) = sessions.remove(&route_key) {
+                drop(session);
+            }
+            shared.reset_route_gesture_state(&route_key);
+        }
+        if !saw_activity {
+            thread::sleep(Duration::from_millis(12));
         }
     }
 
+    for (_, session) in sessions {
+        drop(session);
+    }
     shared.mark_hook_running(false, None);
 }
 
 #[cfg(target_os = "linux")]
 struct MouseHookSession {
+    route: LinuxDeviceRoute,
     device_path: PathBuf,
     device_name: String,
     device: Device,
@@ -1035,12 +1195,19 @@ struct MouseHookSession {
 
 #[cfg(target_os = "linux")]
 impl MouseHookSession {
-    fn open(preferred_model_key: Option<&str>) -> Result<Self, PlatformError> {
-        let (device_path, mut device) = find_mouse_device(preferred_model_key).ok_or_else(|| {
-            PlatformError::Message(
-                "could not find a relative Linux mouse device with primary buttons".to_string(),
-            )
-        })?;
+    fn open_for_route(
+        route: &LinuxDeviceRoute,
+        occupied_paths: &BTreeSet<PathBuf>,
+        same_model_route_count: usize,
+    ) -> Result<Self, PlatformError> {
+        let (device_path, mut device) =
+            find_mouse_device_for_route(route, occupied_paths, same_model_route_count)
+                .ok_or_else(|| {
+                    PlatformError::Message(format!(
+                        "could not find a Linux mouse device for {}",
+                        route.managed_device_key
+                    ))
+                })?;
         let device_name = device.name().unwrap_or("Mouse").to_string();
         let mirror = create_virtual_mouse(&device)?;
 
@@ -1052,6 +1219,7 @@ impl MouseHookSession {
             .map_err(|error| io_error("grab Linux mouse device", error))?;
 
         Ok(Self {
+            route: route.clone(),
             device_path,
             device_name,
             device,
@@ -1059,32 +1227,23 @@ impl MouseHookSession {
         })
     }
 
-    fn run(
-        &mut self,
-        shared: &LinuxHookShared,
-        stop: &AtomicBool,
-    ) -> Result<(), PlatformError> {
-        while !stop.load(Ordering::SeqCst) {
-            match self.device.fetch_events() {
-                Ok(events) => {
-                    let batch = events.collect::<Vec<_>>();
-                    if batch.is_empty() {
-                        thread::sleep(Duration::from_millis(12));
-                        continue;
-                    }
-                    self.process_batch(shared, &batch)?;
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(12));
-                }
-                Err(error) => return Err(io_error("read Linux mouse device", error)),
-            }
-        }
+    fn matches_route(&self, route: &LinuxDeviceRoute) -> bool {
+        &self.route == route
+    }
 
-        self.device
-            .ungrab()
-            .map_err(|error| io_error("release Linux mouse grab", error))?;
-        Ok(())
+    fn poll(&mut self, shared: &LinuxHookShared) -> Result<bool, PlatformError> {
+        match self.device.fetch_events() {
+            Ok(events) => {
+                let batch = events.collect::<Vec<_>>();
+                if batch.is_empty() {
+                    return Ok(false);
+                }
+                self.process_batch(shared, &batch)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
+            Err(error) => Err(io_error("read Linux mouse device", error)),
+        }
     }
 
     fn process_batch(
@@ -1092,16 +1251,15 @@ impl MouseHookSession {
         shared: &LinuxHookShared,
         events: &[InputEvent],
     ) -> Result<(), PlatformError> {
-        let config = shared.current_config();
         let mut forwarded = Vec::new();
 
         for event in events {
             match event.destructure() {
                 EventSummary::Key(_, code, value) => {
-                    self.handle_button(shared, &config, code, value, &mut forwarded, *event);
+                    self.handle_button(shared, code, value, &mut forwarded, *event);
                 }
                 EventSummary::RelativeAxis(_, code, value) => {
-                    self.handle_relative(shared, &config, code, value, &mut forwarded);
+                    self.handle_relative(shared, code, value, &mut forwarded);
                 }
                 EventSummary::Synchronization(_, _, _) => {}
                 _ => forwarded.push(*event),
@@ -1120,7 +1278,6 @@ impl MouseHookSession {
     fn handle_button(
         &mut self,
         shared: &LinuxHookShared,
-        config: &LinuxHookConfig,
         code: KeyCode,
         value: i32,
         forwarded: &mut Vec<InputEvent>,
@@ -1138,9 +1295,9 @@ impl MouseHookSession {
             return;
         };
 
-        if config.handles_control(control) {
+        if self.route.handles_control(control) {
             if value == 1 {
-                shared.dispatch_control_action(config, control);
+                shared.dispatch_route_control_action(&self.route, control);
             }
             return;
         }
@@ -1151,22 +1308,21 @@ impl MouseHookSession {
     fn handle_relative(
         &mut self,
         shared: &LinuxHookShared,
-        config: &LinuxHookConfig,
         code: RelativeAxisCode,
         value: i32,
         forwarded: &mut Vec<InputEvent>,
     ) {
         match code {
             RelativeAxisCode::REL_X => {
-                if shared.gesture_active_without_hid_rawxy() {
-                    shared.evdev_move(value, 0);
+                if shared.route_gesture_active_without_hid_rawxy(&self.route.managed_device_key) {
+                    shared.route_evdev_move(&self.route, value, 0);
                     return;
                 }
                 forwarded.push(InputEvent::new(2, code.0, value));
             }
             RelativeAxisCode::REL_Y => {
-                if shared.gesture_active_without_hid_rawxy() {
-                    shared.evdev_move(0, value);
+                if shared.route_gesture_active_without_hid_rawxy(&self.route.managed_device_key) {
+                    shared.route_evdev_move(&self.route, 0, value);
                     return;
                 }
                 forwarded.push(InputEvent::new(2, code.0, value));
@@ -1175,7 +1331,7 @@ impl MouseHookSession {
                 forwarded.push(InputEvent::new(
                     2,
                     code.0,
-                    if config.invert_vertical_scroll {
+                    if self.route.device_settings.invert_vertical_scroll {
                         -value
                     } else {
                         value
@@ -1184,17 +1340,17 @@ impl MouseHookSession {
             }
             RelativeAxisCode::REL_HWHEEL => {
                 let should_block = horizontal_scroll_control(value)
-                    .is_some_and(|control| config.handles_control(control));
+                    .is_some_and(|control| self.route.handles_control(control));
                 if should_block {
                     if let Some(control) = horizontal_scroll_control(value) {
-                        shared.dispatch_control_action(config, control);
+                        shared.dispatch_route_control_action(&self.route, control);
                     }
                     return;
                 }
                 forwarded.push(InputEvent::new(
                     2,
                     code.0,
-                    if config.invert_horizontal_scroll {
+                    if self.route.device_settings.invert_horizontal_scroll {
                         -value
                     } else {
                         value
@@ -1207,14 +1363,14 @@ impl MouseHookSession {
 
                 if is_hi_res_hwheel {
                     let should_block = horizontal_scroll_control(value)
-                        .is_some_and(|control| config.handles_control(control));
+                        .is_some_and(|control| self.route.handles_control(control));
                     if should_block {
                         return;
                     }
                     forwarded.push(InputEvent::new(
                         2,
                         code.0,
-                        if config.invert_horizontal_scroll {
+                        if self.route.device_settings.invert_horizontal_scroll {
                             -value
                         } else {
                             value
@@ -1224,7 +1380,7 @@ impl MouseHookSession {
                     forwarded.push(InputEvent::new(
                         2,
                         code.0,
-                        if config.invert_vertical_scroll {
+                        if self.route.device_settings.invert_vertical_scroll {
                             -value
                         } else {
                             value
@@ -1246,39 +1402,36 @@ impl Drop for MouseHookSession {
 }
 
 #[cfg(target_os = "linux")]
-fn find_mouse_device(preferred_model_key: Option<&str>) -> Option<(PathBuf, Device)> {
-    let preferred_product_ids = preferred_model_key
-        .and_then(known_device_spec_by_key)
-        .map(|spec| spec.product_ids.into_iter().collect::<BTreeSet<_>>())
-        .unwrap_or_default();
+fn find_mouse_device_for_route(
+    route: &LinuxDeviceRoute,
+    occupied_paths: &BTreeSet<PathBuf>,
+    same_model_route_count: usize,
+) -> Option<(PathBuf, Device)> {
+    let preferred_product_ids = route_product_ids(route);
+    let requires_exact_identity = same_model_route_count > 1
+        && normalized_identity_key(route.live_device.fingerprint.identity_key.as_deref()).is_some();
     let mut candidates = Vec::new();
 
     for (path, device) in evdev::enumerate() {
-        let Some(relative_axes) = device.supported_relative_axes() else {
-            continue;
-        };
-        let Some(keys) = device.supported_keys() else {
-            continue;
-        };
-        if !(relative_axes.contains(RelativeAxisCode::REL_X)
-            && relative_axes.contains(RelativeAxisCode::REL_Y))
-        {
-            continue;
-        }
-        if !(keys.contains(KeyCode::BTN_LEFT)
-            && keys.contains(KeyCode::BTN_RIGHT)
-            && keys.contains(KeyCode::BTN_MIDDLE))
-        {
+        if occupied_paths.contains(&path) || !is_mouse_hook_candidate(&device) {
             continue;
         }
 
-        let has_side_buttons = keys.contains(KeyCode::BTN_SIDE) || keys.contains(KeyCode::BTN_EXTRA);
         let input_id = device.input_id();
-        let is_preferred_model = !preferred_product_ids.is_empty()
-            && input_id.vendor() == LOGI_VID
-            && preferred_product_ids.contains(&input_id.product());
+        let product_matches = preferred_product_ids.is_empty()
+            || preferred_product_ids.contains(&input_id.product());
+        if !product_matches {
+            continue;
+        }
+        let identity_matches = evdev_device_matches_route(route, &path, &device);
+        if requires_exact_identity && !identity_matches {
+            continue;
+        }
+
+        let keys = device.supported_keys()?;
+        let has_side_buttons = keys.contains(KeyCode::BTN_SIDE) || keys.contains(KeyCode::BTN_EXTRA);
         candidates.push((
-            !is_preferred_model,
+            !identity_matches,
             input_id.vendor() != LOGI_VID,
             !has_side_buttons,
             path,
@@ -1290,6 +1443,76 @@ fn find_mouse_device(preferred_model_key: Option<&str>) -> Option<(PathBuf, Devi
         .into_iter()
         .min_by_key(|entry| (entry.0, entry.1, entry.2))
         .map(|(_, _, _, path, device)| (path, device))
+}
+
+#[cfg(target_os = "linux")]
+fn is_mouse_hook_candidate(device: &Device) -> bool {
+    let Some(relative_axes) = device.supported_relative_axes() else {
+        return false;
+    };
+    let Some(keys) = device.supported_keys() else {
+        return false;
+    };
+    relative_axes.contains(RelativeAxisCode::REL_X)
+        && relative_axes.contains(RelativeAxisCode::REL_Y)
+        && keys.contains(KeyCode::BTN_LEFT)
+        && keys.contains(KeyCode::BTN_RIGHT)
+        && keys.contains(KeyCode::BTN_MIDDLE)
+}
+
+#[cfg(target_os = "linux")]
+fn route_product_ids(route: &LinuxDeviceRoute) -> BTreeSet<u16> {
+    let mut product_ids = known_device_spec_by_key(&route.live_device.model_key)
+        .map(|spec| spec.product_ids.into_iter().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    if let Some(product_id) = route.live_device.product_id {
+        product_ids.insert(product_id);
+    }
+    product_ids
+}
+
+#[cfg(target_os = "linux")]
+fn evdev_device_matches_route(route: &LinuxDeviceRoute, path: &Path, device: &Device) -> bool {
+    let expected_identity =
+        normalized_identity_key(route.live_device.fingerprint.identity_key.as_deref());
+    let expected_serial =
+        normalized_identity_key(route.live_device.fingerprint.serial_number.as_deref());
+    if expected_identity.is_none() && expected_serial.is_none() {
+        return true;
+    }
+
+    let product_id = device.input_id().product();
+    if let Some(unique_name) = normalized_identity_key(device.unique_name()) {
+        if expected_serial == Some(unique_name) {
+            return true;
+        }
+        let mut fingerprint = DeviceFingerprint {
+            identity_key: None,
+            serial_number: Some(unique_name.to_string()),
+            hid_path: None,
+            interface_number: None,
+            usage_page: None,
+            usage: None,
+            location_id: None,
+        };
+        hydrate_identity_key(Some(product_id), &mut fingerprint);
+        if normalized_identity_key(fingerprint.identity_key.as_deref()) == expected_identity {
+            return true;
+        }
+    }
+
+    let path_string = path.to_string_lossy().into_owned();
+    [device.physical_path(), Some(path_string.as_str())]
+        .into_iter()
+        .flatten()
+        .any(|candidate| {
+        let normalized_candidate = normalized_identity_key(Some(candidate));
+        normalized_candidate == expected_identity
+            || normalized_candidate
+                .map(|candidate| format!("path:{candidate}"))
+                .as_deref()
+                == expected_identity
+        })
 }
 
 #[cfg(target_os = "linux")]
@@ -1317,88 +1540,161 @@ fn create_virtual_mouse(device: &Device) -> Result<VirtualDevice, PlatformError>
 
 #[cfg(target_os = "linux")]
 fn run_gesture_worker(shared: Arc<LinuxHookShared>, stop: Arc<AtomicBool>) {
-    let mut session: Option<GestureSession> = None;
+    let mut sessions = BTreeMap::<String, GestureSession>::new();
 
     while !stop.load(Ordering::SeqCst) {
-        if !shared.gesture_capture_requested() {
-            if let Some(mut active_session) = session.take() {
-                active_session.shutdown();
-                shared.mark_gesture_connected(false, Some("Gesture listener parked".to_string()));
+        let config = shared.current_config();
+        let desired_routes = if config.enabled {
+            config
+                .routes
+                .iter()
+                .filter(|route| route.gesture_capture_requested())
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        if desired_routes.is_empty() {
+            for (_, mut session) in std::mem::take(&mut sessions) {
+                session.shutdown();
             }
-            let mut guard = shared.gesture_state.lock().unwrap();
+            shared.mark_gesture_connected(false, Some("Gesture listener parked".to_string()));
+            let mut guard = shared.gesture_states.lock().unwrap();
             while !stop.load(Ordering::SeqCst) && !shared.gesture_capture_requested() {
                 guard = shared.gesture_cv.wait(guard).unwrap();
             }
             continue;
         }
 
-        if session.is_none() {
-            match connect_gesture_session(&shared) {
-                Ok(active_session) => {
-                    let source = active_session
+        let desired_by_key = desired_routes
+            .iter()
+            .map(|route| (route.managed_device_key.as_str(), route))
+            .collect::<BTreeMap<_, _>>();
+        let stale_keys = sessions
+            .iter()
+            .filter_map(|(key, session)| {
+                let desired = desired_by_key.get(key.as_str())?;
+                (!session.matches_route(desired)).then(|| key.clone())
+            })
+            .collect::<Vec<_>>();
+        for key in stale_keys {
+            if let Some(mut session) = sessions.remove(&key) {
+                session.shutdown();
+                shared.reset_route_gesture_state(&key);
+            }
+        }
+        let removed_keys = sessions
+            .keys()
+            .filter(|key| !desired_by_key.contains_key(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in removed_keys {
+            if let Some(mut session) = sessions.remove(&key) {
+                session.shutdown();
+                shared.reset_route_gesture_state(&key);
+            }
+        }
+
+        let api = match HidApi::new().map_err(map_hid_error) {
+            Ok(api) => api,
+            Err(error) => {
+                shared.mark_gesture_connected(
+                    false,
+                    Some(format!("Gesture listener unavailable: {error}")),
+                );
+                let guard = shared.gesture_states.lock().unwrap();
+                let _ = shared
+                    .gesture_cv
+                    .wait_timeout(guard, Duration::from_millis(900))
+                    .unwrap();
+                continue;
+            }
+        };
+
+        let mut last_error = None;
+        for route in desired_routes {
+            if sessions.contains_key(&route.managed_device_key) {
+                continue;
+            }
+            match try_build_gesture_session_for_route(&shared, &route, &api) {
+                Ok(session) => {
+                    let source = session
                         .product_name
                         .clone()
-                        .unwrap_or_else(|| format!("PID 0x{:04X}", active_session.product_id));
-                    shared.mark_gesture_connected(
-                        true,
-                        Some(format!("Gesture listener attached to {source}")),
+                        .unwrap_or_else(|| format!("PID 0x{:04X}", session.product_id));
+                    shared.push_event(
+                        DebugEventKind::Info,
+                        format!(
+                            "Gesture listener attached to {} for {}",
+                            source, route.managed_device_key
+                        ),
                     );
-                    session = Some(active_session);
+                    sessions.insert(route.managed_device_key.clone(), session);
                 }
                 Err(error) => {
-                    shared.mark_gesture_connected(
-                        false,
-                        Some(format!("Gesture listener unavailable: {error}")),
-                    );
-                    let guard = shared.gesture_state.lock().unwrap();
-                    let _ = shared
-                        .gesture_cv
-                        .wait_timeout(guard, Duration::from_millis(900))
-                        .unwrap();
-                    continue;
+                    last_error = Some(error);
                 }
             }
         }
 
-        let Some(active_session) = session.as_mut() else {
+        if sessions.is_empty() {
+            shared.mark_gesture_connected(
+                false,
+                Some(format!(
+                    "Gesture listener unavailable: {}",
+                    last_error
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "no matching HID routes".to_string())
+                )),
+            );
+            let guard = shared.gesture_states.lock().unwrap();
+            let _ = shared
+                .gesture_cv
+                .wait_timeout(guard, Duration::from_millis(500))
+                .unwrap();
             continue;
-        };
+        }
 
-        match active_session.device.read_packet(120) {
-            Ok(packet) => {
-                if !packet.is_empty() {
-                    active_session.handle_report(&shared, &packet);
+        shared.mark_gesture_connected(true, None);
+
+        let mut disconnected = Vec::new();
+        for (route_key, active_session) in sessions.iter_mut() {
+            match active_session.device.read_packet(12) {
+                Ok(packet) => {
+                    if !packet.is_empty() {
+                        active_session.handle_report(&shared, &packet);
+                    }
+                }
+                Err(error) => {
+                    shared.push_event(
+                        DebugEventKind::Warning,
+                        format!(
+                            "Gesture listener lost HID stream for {}: {error}",
+                            route_key
+                        ),
+                    );
+                    disconnected.push(route_key.clone());
                 }
             }
-            Err(error) => {
-                shared.push_event(
-                    DebugEventKind::Warning,
-                    format!("Gesture listener lost HID stream: {error}"),
-                );
-                if let Some(mut failed_session) = session.take() {
-                    failed_session.shutdown();
-                }
-                shared.mark_gesture_connected(
-                    false,
-                    Some("Gesture listener disconnected".to_string()),
-                );
-                let guard = shared.gesture_state.lock().unwrap();
-                let _ = shared
-                    .gesture_cv
-                    .wait_timeout(guard, Duration::from_millis(500))
-                    .unwrap();
+        }
+        for route_key in disconnected {
+            if let Some(mut session) = sessions.remove(&route_key) {
+                session.shutdown();
             }
+            shared.reset_route_gesture_state(&route_key);
         }
     }
 
-    if let Some(mut active_session) = session.take() {
-        active_session.shutdown();
+    for (_, mut session) in sessions {
+        session.shutdown();
     }
     shared.mark_gesture_connected(false, None);
 }
 
 #[cfg(target_os = "linux")]
 struct GestureSession {
+    route: LinuxDeviceRoute,
     product_id: u16,
     product_name: Option<String>,
     device: HidDevice,
@@ -1411,6 +1707,10 @@ struct GestureSession {
 
 #[cfg(target_os = "linux")]
 impl GestureSession {
+    fn matches_route(&self, route: &LinuxDeviceRoute) -> bool {
+        &self.route == route
+    }
+
     fn handle_report(&mut self, shared: &LinuxHookShared, raw: &[u8]) {
         let Some((dev_idx, feature_idx, function, _sw, params)) = hidpp::parse_message(raw) else {
             return;
@@ -1427,7 +1727,7 @@ impl GestureSession {
             let delta_x = decode_s16(params[0], params[1]);
             let delta_y = decode_s16(params[2], params[3]);
             if delta_x != 0 || delta_y != 0 {
-                shared.hid_rawxy_move(delta_x, delta_y);
+                shared.route_hid_rawxy_move(&self.route, delta_x, delta_y);
             }
             return;
         }
@@ -1437,26 +1737,29 @@ impl GestureSession {
         }
 
         let active_cids = collect_active_cids(params);
-        let config = shared.current_config();
 
-        for cid in active_cids.difference(&self.active_cids).copied() {
+        let changed_cids = active_cids
+            .difference(&self.active_cids)
+            .copied()
+            .collect::<Vec<_>>();
+        for cid in changed_cids {
             if self.gesture_cid_active(cid) {
                 if !self.gesture_active {
                     self.gesture_active = true;
-                    shared.hid_gesture_down();
+                    shared.route_gesture_down(&self.route);
                 }
                 continue;
             }
 
             if let Some(control) = self.control_for_cid(cid) {
-                shared.dispatch_control_action(config.as_ref(), control);
+                shared.dispatch_route_control_action(&self.route, control);
             }
         }
 
         let gesture_now = active_cids.iter().any(|cid| self.gesture_cid_active(*cid));
         if !gesture_now && self.gesture_active {
             self.gesture_active = false;
-            shared.hid_gesture_up();
+            shared.route_gesture_up(&self.route);
         }
 
         self.active_cids = active_cids;
@@ -1510,17 +1813,22 @@ impl GestureSession {
 }
 
 #[cfg(target_os = "linux")]
-fn connect_gesture_session(shared: &LinuxHookShared) -> Result<GestureSession, PlatformError> {
-    let api = HidApi::new().map_err(map_hid_error)?;
+fn try_build_gesture_session_for_route(
+    shared: &LinuxHookShared,
+    route: &LinuxDeviceRoute,
+    api: &HidApi,
+) -> Result<GestureSession, PlatformError> {
     let mut last_error = None;
-    let config = shared.current_config();
 
-    for info in preferred_vendor_hid_infos(&api, config.as_ref()) {
+    for info in vendor_hid_infos(api)
+        .into_iter()
+        .filter(|info| hid_info_matches_route(info, route))
+    {
         let Ok(device) = info.open_device(&api) else {
             continue;
         };
 
-        match initialize_gesture_session(shared, info, device) {
+        match initialize_gesture_session(shared, route.clone(), info, device) {
             Ok(session) => return Ok(session),
             Err(error) => last_error = Some(error),
         }
@@ -1534,10 +1842,11 @@ fn connect_gesture_session(shared: &LinuxHookShared) -> Result<GestureSession, P
 #[cfg(target_os = "linux")]
 fn initialize_gesture_session(
     shared: &LinuxHookShared,
+    route: LinuxDeviceRoute,
     info: &HidDeviceInfo,
     device: HidDevice,
 ) -> Result<GestureSession, PlatformError> {
-    let routes = shared.current_config().reprog_routes();
+    let routes = route.reprog_routes();
     if routes.is_empty() {
         return Err(PlatformError::Message(
             "no active Logitech REPROG routes configured".to_string(),
@@ -1549,10 +1858,18 @@ fn initialize_gesture_session(
             continue;
         };
 
-        if let Some(session) =
-            try_initialize_reprog_session(shared, info, device, dev_idx, feature_idx, &routes)?
-        {
-            return Ok(session);
+        if try_initialize_reprog_session(shared, &device, dev_idx, feature_idx, &routes)? {
+            return Ok(GestureSession {
+                route,
+                product_id: info.product_id(),
+                product_name: info.product_string().map(str::to_string),
+                device,
+                dev_idx,
+                feature_idx,
+                routes: routes.to_vec(),
+                active_cids: BTreeSet::new(),
+                gesture_active: false,
+            });
         }
     }
 
@@ -1565,12 +1882,11 @@ fn initialize_gesture_session(
 #[cfg(target_os = "linux")]
 fn try_initialize_reprog_session(
     shared: &LinuxHookShared,
-    info: &HidDeviceInfo,
-    device: HidDevice,
+    device: &HidDevice,
     dev_idx: u8,
     feature_idx: u8,
     routes: &[ReprogRoute],
-) -> Result<Option<GestureSession>, PlatformError> {
+) -> Result<bool, PlatformError> {
     let mut diverted = Vec::new();
 
     for route in routes {
@@ -1597,7 +1913,7 @@ fn try_initialize_reprog_session(
                         GESTURE_UNDIVERT_FLAGS
                     };
                     let _ = hidpp::write_request(
-                        &device,
+                        device,
                         dev_idx,
                         feature_idx,
                         3,
@@ -1610,21 +1926,12 @@ fn try_initialize_reprog_session(
                         ],
                     );
                 }
-                return Ok(None);
+                return Ok(false);
             }
         }
     }
 
-    Ok(Some(GestureSession {
-        product_id: info.product_id(),
-        product_name: info.product_string().map(str::to_string),
-        device,
-        dev_idx,
-        feature_idx,
-        routes: routes.to_vec(),
-        active_cids: BTreeSet::new(),
-        gesture_active: false,
-    }))
+    Ok(true)
 }
 
 #[cfg(target_os = "linux")]
@@ -1684,41 +1991,15 @@ fn fingerprint_from_hid_info(info: &HidDeviceInfo) -> DeviceFingerprint {
 }
 
 #[cfg(target_os = "linux")]
-fn preferred_vendor_hid_infos<'a>(
-    api: &'a HidApi,
-    config: &LinuxHookConfig,
-) -> Vec<&'a HidDeviceInfo> {
-    let mut preferred = Vec::new();
-    let mut others = Vec::new();
-
-    for info in vendor_hid_infos(api) {
-        if hid_info_matches_active_target(
-            info,
-            config.device_model_key.as_deref(),
-            config.device_identity_key.as_deref(),
-        ) {
-            preferred.push(info);
-        } else {
-            others.push(info);
-        }
-    }
-
-    preferred.extend(others);
-    preferred
-}
-
-#[cfg(target_os = "linux")]
-fn hid_info_matches_active_target(
-    info: &HidDeviceInfo,
-    model_key: Option<&str>,
-    identity_key: Option<&str>,
-) -> bool {
-    if let Some(identity_key) = normalized_identity_key(identity_key) {
+fn hid_info_matches_route(info: &HidDeviceInfo, route: &LinuxDeviceRoute) -> bool {
+    if let Some(identity_key) =
+        normalized_identity_key(route.live_device.fingerprint.identity_key.as_deref())
+    {
         return normalized_identity_key(fingerprint_from_hid_info(info).identity_key.as_deref())
             == Some(identity_key);
     }
 
-    model_key.is_some_and(|model_key| {
+    Some(route.live_device.model_key.as_str()).is_some_and(|model_key| {
         resolve_known_device(Some(info.product_id()), info.product_string())
             .map(|spec| spec.key == model_key)
             .unwrap_or(false)

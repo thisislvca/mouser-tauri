@@ -694,6 +694,16 @@ pub enum DeviceMatchKind {
     Unmanaged,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceAttributionStatus {
+    Ready,
+    ModelFallback,
+    Ambiguous,
+    #[default]
+    Unmanaged,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceRoutingEntry {
@@ -707,6 +717,12 @@ pub struct DeviceRoutingEntry {
     pub resolved_profile_id: Option<String>,
     pub match_kind: DeviceMatchKind,
     pub is_active_target: bool,
+    #[serde(default)]
+    pub hook_eligible: bool,
+    #[serde(default)]
+    pub attribution_status: DeviceAttributionStatus,
+    #[serde(default)]
+    pub source_hints: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
