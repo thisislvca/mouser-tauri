@@ -15,12 +15,14 @@ use std::{
 
 use mouser_core::{
     build_connected_device_info, hydrate_identity_key, known_device_spec_by_key,
-    resolve_known_device, AppDiscoverySource, AppIdentity, DebugEventKind,
+    resolve_known_device, AppDiscoverySource, AppIdentity, DebugEventKind, DebugLogGroup,
+    DebugLogGroups,
     DeviceBatteryInfo, DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint,
     DeviceInfo, DeviceSettings, InstalledApp, LogicalControl,
 };
 
 use crate::{
+    backend_debug_logging_enabled, emit_backend_console_log,
     dedupe_installed_apps, gesture,
     hidpp::{self, HidppIo, BT_DEV_IDX},
     horizontal_scroll_control, push_bounded_hook_event, AppDiscoveryBackend, AppFocusBackend,
@@ -98,6 +100,7 @@ struct TelemetryProbePlan {
 struct LinuxHookConfig {
     enabled: bool,
     debug_mode: bool,
+    debug_log_groups: DebugLogGroups,
     routes: Vec<LinuxDeviceRoute>,
 }
 
@@ -123,6 +126,7 @@ impl LinuxHookConfig {
         Self {
             enabled,
             debug_mode: settings.debug_mode,
+            debug_log_groups: settings.debug_log_groups.clone(),
             routes: settings
                 .routes
                 .iter()
@@ -130,6 +134,10 @@ impl LinuxHookConfig {
                 .map(LinuxDeviceRoute::from_runtime)
                 .collect(),
         }
+    }
+
+    fn debug_logging_enabled(&self, group: DebugLogGroup) -> bool {
+        backend_debug_logging_enabled(self.debug_mode, &self.debug_log_groups, group)
     }
 
     fn summary(&self) -> String {
@@ -357,10 +365,12 @@ impl LinuxHookShared {
         }
         self.gesture_cv.notify_all();
 
-        if changed && next.debug_mode {
-            self.push_event(
+        if changed && next.debug_logging_enabled(DebugLogGroup::HookRouting) {
+            emit_backend_console_log(
+                "linux",
                 DebugEventKind::Info,
-                format!("Linux hook routes -> {}", next.summary()),
+                DebugLogGroup::HookRouting,
+                &format!("Linux hook routes -> {}", next.summary()),
             );
         }
     }
@@ -370,16 +380,20 @@ impl LinuxHookShared {
         push_bounded_hook_event(&mut events, kind, message);
     }
 
-    fn push_debug(&self, message: impl Into<String>) {
-        if self.config.read().unwrap().debug_mode {
-            self.push_event(DebugEventKind::Info, message);
+    fn log_console(&self, group: DebugLogGroup, kind: DebugEventKind, message: impl Into<String>) {
+        let message = message.into();
+        let config = self.current_config();
+        if config.debug_logging_enabled(group) {
+            emit_backend_console_log("linux", kind, group, &message);
         }
     }
 
+    fn push_debug(&self, message: impl Into<String>) {
+        self.log_console(DebugLogGroup::HookRouting, DebugEventKind::Info, message);
+    }
+
     fn push_gesture_debug(&self, message: impl Into<String>) {
-        if self.config.read().unwrap().debug_mode {
-            self.push_event(DebugEventKind::Gesture, message);
-        }
+        self.log_console(DebugLogGroup::Gestures, DebugEventKind::Gesture, message);
     }
 
     fn drain_events(&self) -> Vec<HookBackendEvent> {

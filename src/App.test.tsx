@@ -25,6 +25,13 @@ const DEFAULT_DEVICE_SETTINGS: NonNullable<AppConfig["deviceDefaults"]> = {
   gestureCooldownMs: 500,
   manualLayoutOverride: null,
 };
+const DEFAULT_DEBUG_LOG_GROUPS = {
+  runtime: true,
+  hookRouting: false,
+  gestures: false,
+  thumbWheel: false,
+  hid: false,
+};
 const FULL_SUPPORT = {
   level: "full" as const,
   supportsBatteryStatus: true,
@@ -321,6 +328,7 @@ function makeBootstrap(): BootstrapPayload {
       startAtLogin: false,
       appearanceMode: "system",
       debugMode: false,
+      debugLogGroups: DEFAULT_DEBUG_LOG_GROUPS,
     },
     deviceDefaults: {
       dpi: 1200,
@@ -1204,7 +1212,6 @@ describe("App", () => {
       activeSection: "devices",
       selectedProfileId: null,
       importDraft: "",
-      eventLog: [],
     });
   });
 
@@ -1382,16 +1389,16 @@ describe("App", () => {
     });
   });
 
-  it("shows and saves the macOS thumb wheel trackpad beta toggle for MX Master devices", async () => {
+  it("shows and saves the macOS thumb wheel trackpad alpha toggle for MX Master devices", async () => {
     const { user } = renderApp();
     await user.click(await screen.findByRole("button", { name: "Tune" }));
 
-    const betaSwitch = await screen.findByRole("switch", {
+    const alphaSwitch = await screen.findByRole("switch", {
       name: /Simulate trackpad swipe from thumb wheel/i,
     });
-    expect(betaSwitch).toBeInTheDocument();
+    expect(alphaSwitch).toBeInTheDocument();
 
-    await user.click(betaSwitch);
+    await user.click(alphaSwitch);
 
     await waitFor(() => {
       expect(apiMocks.devicesUpdateSettings).toHaveBeenCalled();
@@ -1406,7 +1413,7 @@ describe("App", () => {
     });
   });
 
-  it("shows and saves the thumb wheel swipe hold timeout when the beta toggle is enabled", async () => {
+  it("shows and saves the thumb wheel swipe hold timeout when the alpha toggle is enabled", async () => {
     const { user } = renderApp();
     await user.click(await screen.findByRole("button", { name: "Tune" }));
 
@@ -1435,7 +1442,7 @@ describe("App", () => {
     });
   });
 
-  it("hides the beta toggle when the active device is not an MX Master family mouse", async () => {
+  it("hides the alpha toggle when the active device is not an MX Master family mouse", async () => {
     currentBootstrap = makeGenericMouseBootstrap();
 
     const { user } = renderApp();
@@ -1448,7 +1455,7 @@ describe("App", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("hides the beta toggle on non-macOS platforms", async () => {
+  it("hides the alpha toggle on non-macOS platforms", async () => {
     currentBootstrap = makeWindowsBootstrap();
 
     const { user } = renderApp();

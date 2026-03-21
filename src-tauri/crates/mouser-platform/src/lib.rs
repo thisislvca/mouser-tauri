@@ -14,9 +14,9 @@ use mouser_core::{
     clamp_dpi, default_config, default_device_settings, default_known_apps_ref,
     default_layouts_ref, default_profile_bindings, known_device_specs_ref,
     legacy_default_profile_bindings_v3, normalize_app_match_value, normalize_bindings, AppConfig,
-    AppIdentity, AppMatcherKind, Binding, DebugEventKind, DeviceBatteryInfo, DeviceControlSpec,
-    DeviceFingerprint, DeviceInfo, DeviceLayout, DeviceSettings, InstalledApp, KnownApp,
-    LogicalControl, Settings,
+    AppIdentity, AppMatcherKind, Binding, DebugEventKind, DebugLogGroup, DebugLogGroups,
+    DeviceBatteryInfo, DeviceControlSpec, DeviceFingerprint, DeviceInfo, DeviceLayout,
+    DeviceSettings, InstalledApp, KnownApp, LogicalControl, Settings,
 };
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -56,6 +56,7 @@ pub struct HookDeviceRoute {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookBackendSettings {
     pub debug_mode: bool,
+    pub debug_log_groups: DebugLogGroups,
     pub invert_horizontal_scroll: bool,
     pub invert_vertical_scroll: bool,
     pub macos_thumb_wheel_simulate_trackpad: bool,
@@ -88,6 +89,7 @@ impl HookBackendSettings {
         });
         Self {
             debug_mode: settings.debug_mode,
+            debug_log_groups: settings.debug_log_groups.clone(),
             invert_horizontal_scroll: device_settings.invert_horizontal_scroll,
             invert_vertical_scroll: device_settings.invert_vertical_scroll,
             macos_thumb_wheel_simulate_trackpad: cfg!(target_os = "macos")
@@ -112,6 +114,7 @@ impl HookBackendSettings {
         let primary = routes.first();
         Self {
             debug_mode: settings.debug_mode,
+            debug_log_groups: settings.debug_log_groups.clone(),
             invert_horizontal_scroll: primary
                 .map(|route| route.device_settings.invert_horizontal_scroll)
                 .unwrap_or(false),
@@ -171,6 +174,38 @@ pub struct HookEvent {
 pub struct HookBackendEvent {
     pub kind: DebugEventKind,
     pub message: String,
+}
+
+pub(crate) fn backend_debug_logging_enabled(
+    debug_mode: bool,
+    debug_log_groups: &DebugLogGroups,
+    group: DebugLogGroup,
+) -> bool {
+    debug_mode && debug_log_groups.enabled(group)
+}
+
+pub fn emit_backend_console_log(
+    backend: &str,
+    kind: DebugEventKind,
+    group: DebugLogGroup,
+    message: &str,
+) {
+    let kind = match kind {
+        DebugEventKind::Info => "info",
+        DebugEventKind::Warning => "warning",
+        DebugEventKind::Gesture => "gesture",
+    };
+    let group = match group {
+        DebugLogGroup::Runtime => "runtime",
+        DebugLogGroup::HookRouting => "hook-routing",
+        DebugLogGroup::Gestures => "gestures",
+        DebugLogGroup::ThumbWheel => "thumb-wheel",
+        DebugLogGroup::Hid => "hid",
+    };
+    match kind {
+        "warning" => eprintln!("[mouser][{backend}][{group}][{kind}] {message}"),
+        _ => println!("[mouser][{backend}][{group}][{kind}] {message}"),
+    }
 }
 
 pub(crate) fn supports_macos_thumb_wheel_trackpad_model(model_key: Option<&str>) -> bool {

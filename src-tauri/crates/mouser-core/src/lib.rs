@@ -221,6 +221,44 @@ pub enum AppearanceMode {
     Dark,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugLogGroup {
+    Runtime,
+    HookRouting,
+    Gestures,
+    ThumbWheel,
+    Hid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugLogGroups {
+    pub runtime: bool,
+    pub hook_routing: bool,
+    pub gestures: bool,
+    pub thumb_wheel: bool,
+    pub hid: bool,
+}
+
+impl DebugLogGroups {
+    pub fn enabled(&self, group: DebugLogGroup) -> bool {
+        match group {
+            DebugLogGroup::Runtime => self.runtime,
+            DebugLogGroup::HookRouting => self.hook_routing,
+            DebugLogGroup::Gestures => self.gestures,
+            DebugLogGroup::ThumbWheel => self.thumb_wheel,
+            DebugLogGroup::Hid => self.hid,
+        }
+    }
+}
+
+impl Default for DebugLogGroups {
+    fn default() -> Self {
+        default_debug_log_groups()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -228,6 +266,8 @@ pub struct Settings {
     pub start_at_login: bool,
     pub appearance_mode: AppearanceMode,
     pub debug_mode: bool,
+    #[serde(default = "default_debug_log_groups")]
+    pub debug_log_groups: DebugLogGroups,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -782,7 +822,7 @@ pub struct DeviceRoutingEvent {
     pub changes: Vec<DeviceRoutingChange>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum DebugEventKind {
     Info,
@@ -876,6 +916,17 @@ pub fn default_settings() -> Settings {
         start_at_login: false,
         appearance_mode: AppearanceMode::System,
         debug_mode: false,
+        debug_log_groups: default_debug_log_groups(),
+    }
+}
+
+pub fn default_debug_log_groups() -> DebugLogGroups {
+    DebugLogGroups {
+        runtime: true,
+        hook_routing: false,
+        gestures: false,
+        thumb_wheel: false,
+        hid: false,
     }
 }
 

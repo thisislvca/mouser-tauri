@@ -57,7 +57,6 @@ import {
   appDiscoveryRefresh,
   appSettingsUpdate,
   bootstrapLoad,
-  debugClearLog,
   deviceDefaultsUpdate,
   devicesAdd,
   devicesResetToFactory,
@@ -81,7 +80,6 @@ import type {
   BootstrapPayload,
   DeviceControlSpec,
   DeviceSupportLevel,
-  DebugEventRecord,
   DeviceInfo,
   DeviceLayout,
   DiscoveredApp,
@@ -190,6 +188,15 @@ const DEFAULT_DEVICE_SETTINGS: NonNullable<AppConfig["deviceDefaults"]> = {
   gestureTimeoutMs: 3000,
   gestureCooldownMs: 500,
   manualLayoutOverride: null,
+};
+const DEFAULT_DEBUG_LOG_GROUPS: NonNullable<
+  AppConfig["settings"]["debugLogGroups"]
+> = {
+  runtime: true,
+  hookRouting: false,
+  gestures: false,
+  thumbWheel: false,
+  hid: false,
 };
 
 function normalizedIdentityKey(identityKey: string | null | undefined) {
@@ -638,9 +645,6 @@ function App() {
   );
   const importDraft = useUiStore((state) => state.importDraft);
   const setImportDraft = useUiStore((state) => state.setImportDraft);
-  const eventLog = useUiStore((state) => state.eventLog);
-  const hydrateDebugLog = useUiStore((state) => state.hydrateDebugLog);
-  const clearDebugEvents = useUiStore((state) => state.clearDebugEvents);
 
   const [newProfileLabel, setNewProfileLabel] = useState("");
   const [newProfileApp, setNewProfileApp] = useState("");
@@ -659,14 +663,6 @@ function App() {
 
   const setBootstrapQueryData = (payload: BootstrapPayload) => {
     queryClient.setQueryData(["bootstrap"], payload);
-  };
-
-  const patchBootstrapQueryData = (
-    apply: (current: BootstrapPayload) => BootstrapPayload,
-  ) => {
-    queryClient.setQueryData<BootstrapPayload>(["bootstrap"], (current) =>
-      current ? apply(current) : current,
-    );
   };
 
   const invalidateBootstrap = () =>
@@ -749,17 +745,6 @@ function App() {
       void invalidateBootstrap();
     },
   });
-  const clearDebugLogMutation = useMutation({
-    mutationFn: debugClearLog,
-    onSuccess: (engineSnapshot) => {
-      clearDebugEvents();
-      patchBootstrapQueryData((current) => ({
-        ...current,
-        engineSnapshot,
-      }));
-    },
-  });
-
   useEffect(() => {
     if (!importDraft) {
       setImportDraft(sampleLegacyConfig);
@@ -806,8 +791,6 @@ function App() {
       return;
     }
 
-    hydrateDebugLog(bootstrapQuery.data.engineSnapshot.engineStatus.debugLog);
-
     const profileIds = new Set(
       bootstrapQuery.data.config.profiles.map((profile) => profile.id),
     );
@@ -828,7 +811,6 @@ function App() {
     lastActiveProfileIdRef.current = activeProfileId;
   }, [
     bootstrapQuery.data,
-    hydrateDebugLog,
     selectedProfileId,
     setSelectedProfileId,
   ]);
@@ -913,8 +895,7 @@ function App() {
     addDeviceMutation.isPending ||
     removeDeviceMutation.isPending ||
     selectDeviceMutation.isPending ||
-    importMutation.isPending ||
-    clearDebugLogMutation.isPending;
+    importMutation.isPending;
 
   if (bootstrapQuery.isLoading) {
     return (
@@ -959,8 +940,6 @@ function App() {
     availableActions.map((action) => [action.id, action]),
   );
   const groupedActions = groupActions(availableActions);
-  const runtimeEvents =
-    eventLog.length > 0 ? eventLog : engineSnapshot.engineStatus.debugLog;
 
   const updateSelectedProfile = (mutateProfile: (profile: Profile) => void) => {
     const nextProfile = cloneProfile(selectedProfile);
@@ -1253,13 +1232,10 @@ function App() {
             {activeSection === "debug" && (
               <DebugView
                 activeDevice={activeDevice}
-                clearDebugLog={clearDebugLogMutation.mutate}
                 config={config}
-                debugEvents={runtimeEvents}
                 importDraft={importDraft}
                 importSourcePath={importSourcePath}
                 importWarnings={importWarnings}
-                isClearing={clearDebugLogMutation.isPending}
                 onImport={() =>
                   importMutation.mutate(
                     buildImportRequest(importSourcePath, importDraft),
@@ -2488,11 +2464,11 @@ function DeviceDetailView(props: {
                 checked={
                   deviceSettings.macosThumbWheelSimulateTrackpad ?? false
                 }
-                description="Beta: converts the MX Master thumb wheel into macOS-style trackpad horizontal swipe events for apps that need them."
+                description="Alpha: converts the MX Master thumb wheel into macOS-style trackpad horizontal swipe events for apps that need them."
                 label={
                   <span className="flex flex-wrap items-center gap-2">
                     <span>Simulate trackpad swipe from thumb wheel</span>
-                    <Badge variant="secondary">Beta</Badge>
+                    <Badge variant="secondary">Alpha</Badge>
                   </span>
                 }
                 onChange={(value) =>
@@ -2989,75 +2965,138 @@ function DebugView(props: {
   activeDevice: DeviceInfo | null;
   config: AppConfig;
   platformCapabilities: BootstrapPayload["platformCapabilities"];
-  debugEvents: DebugEventRecord[];
   importDraft: string;
   importSourcePath: string;
   importWarnings: string[];
-  isClearing: boolean;
   saveAppSettings: (
     mutateSettings: (nextSettings: AppConfig["settings"]) => void,
   ) => void;
-  clearDebugLog: () => void;
   onImport: () => void;
   setImportDraft: (value: string) => void;
   setImportSourcePath: (value: string) => void;
 }) {
+  const debugLogGroups = {
+    ...DEFAULT_DEBUG_LOG_GROUPS,
+    ...props.config.settings.debugLogGroups,
+  };
+
+  const updateDebugLogGroups = (
+    mutateGroups: (
+      nextGroups: NonNullable<AppConfig["settings"]["debugLogGroups"]>,
+    ) => void,
+  ) => {
+    props.saveAppSettings((nextSettings) => {
+      nextSettings.debugLogGroups = {
+        ...DEFAULT_DEBUG_LOG_GROUPS,
+        ...nextSettings.debugLogGroups,
+      };
+      mutateGroups(nextSettings.debugLogGroups);
+    });
+  };
+
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_360px]">
-      <Panel title="Log">
-        <div className="flex flex-wrap items-center gap-3">
-          <StatusPill
-            tone={props.config.settings.debugMode ? "accent" : "neutral"}
-            value={props.config.settings.debugMode ? "Debug on" : "Debug off"}
-          />
-          <Button
-            disabled={props.isClearing}
-            onClick={props.clearDebugLog}
-            variant="outline"
-          >
-            Clear log
-          </Button>
-        </div>
+      <Panel title="Logging">
+        <div className="space-y-5">
+          <div className="flex flex-wrap items-center gap-3">
+            <StatusPill
+              tone={props.config.settings.debugMode ? "accent" : "neutral"}
+              value={props.config.settings.debugMode ? "Debug on" : "Debug off"}
+            />
+            <p className="text-sm leading-6 text-muted-foreground">
+              Backend logs now go to the Rust console only. Run Mouser from a
+              terminal to inspect them.
+            </p>
+          </div>
 
-        <div className="mt-5 grid gap-3 md:grid-cols-2">
-          <CapabilityRow
-            label="Active HID backend"
-            value={props.platformCapabilities.activeHidBackend}
-          />
-          <CapabilityRow
-            label="Active hook backend"
-            value={props.platformCapabilities.activeHookBackend}
-          />
-          <CapabilityRow
-            label="Active focus backend"
-            value={props.platformCapabilities.activeFocusBackend}
-          />
-          <CapabilityRow
-            label="iokit backend"
-            value={
-              props.platformCapabilities.iokitAvailable ? "Ready" : "Not ported"
-            }
-          />
-        </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <CapabilityRow
+              label="Active HID backend"
+              value={props.platformCapabilities.activeHidBackend}
+            />
+            <CapabilityRow
+              label="Active hook backend"
+              value={props.platformCapabilities.activeHookBackend}
+            />
+            <CapabilityRow
+              label="Active focus backend"
+              value={props.platformCapabilities.activeFocusBackend}
+            />
+            <CapabilityRow
+              label="iokit backend"
+              value={
+                props.platformCapabilities.iokitAvailable ? "Ready" : "Not ported"
+              }
+            />
+          </div>
 
-        <div className="mt-5 rounded-[28px] bg-card-muted p-3 ring-1 ring-border">
-          <ScrollArea className="max-h-[560px] pr-1">
-            <div className="space-y-3">
-              {props.debugEvents.length > 0 ? (
-                props.debugEvents.map((event) => (
-                  <LogEntry
-                    event={event}
-                    key={`${event.timestampMs}-${event.message}`}
-                  />
-                ))
-              ) : (
-                <EmptyState
-                  body="Enable debug mode, then interact with the app to collect backend events."
-                  title="No debug events"
-                />
-              )}
-            </div>
-          </ScrollArea>
+          <div className="grid gap-3 rounded-[28px] bg-card-muted p-5 ring-1 ring-border md:grid-cols-2">
+            <SwitchRow
+              checked={props.config.settings.debugMode}
+              label="Enable debug mode"
+              onChange={(value) =>
+                props.saveAppSettings((nextSettings) => {
+                  nextSettings.debugMode = value;
+                })
+              }
+            />
+            <SwitchRow
+              checked={debugLogGroups.runtime}
+              label="Runtime"
+              onChange={(value) =>
+                updateDebugLogGroups((nextGroups) => {
+                  nextGroups.runtime = value;
+                })
+              }
+            />
+            <SwitchRow
+              checked={debugLogGroups.hookRouting}
+              label="Hook routing"
+              onChange={(value) =>
+                updateDebugLogGroups((nextGroups) => {
+                  nextGroups.hookRouting = value;
+                })
+              }
+            />
+            <SwitchRow
+              checked={debugLogGroups.gestures}
+              label="Gestures"
+              onChange={(value) =>
+                updateDebugLogGroups((nextGroups) => {
+                  nextGroups.gestures = value;
+                })
+              }
+            />
+            <SwitchRow
+              checked={debugLogGroups.thumbWheel}
+              label="Thumb wheel"
+              onChange={(value) =>
+                updateDebugLogGroups((nextGroups) => {
+                  nextGroups.thumbWheel = value;
+                })
+              }
+            />
+            <SwitchRow
+              checked={debugLogGroups.hid}
+              label="Raw HID"
+              onChange={(value) =>
+                updateDebugLogGroups((nextGroups) => {
+                  nextGroups.hid = value;
+                })
+              }
+            />
+          </div>
+
+          <div className="rounded-[28px] border border-dashed border-border-strong bg-card-muted p-5">
+            <p className="text-sm font-semibold text-foreground">
+              Frontend debug log disabled
+            </p>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              High-volume backend logs are no longer streamed into the UI. Use
+              the switches above to choose which groups get printed by the Rust
+              backend.
+            </p>
+          </div>
         </div>
       </Panel>
 
@@ -3120,19 +3159,6 @@ function DebugView(props: {
             />
           )}
         </Panel>
-
-        <Panel title="Debug">
-          <SwitchRow
-            checked={props.config.settings.debugMode}
-            label="Enable debug mode"
-            onChange={(value) =>
-              props.saveAppSettings((nextSettings) => {
-                nextSettings.debugMode = value;
-              })
-            }
-          />
-        </Panel>
-
         <Panel title="Import">
           <div className="space-y-4">
             <Field label="Optional source path">
@@ -3788,31 +3814,6 @@ function CapabilityRow(props: { label: string; value: string }) {
       </span>
       <span className="text-foreground">{props.value}</span>
     </div>
-  );
-}
-
-function LogEntry(props: { event: DebugEventRecord }) {
-  const accent =
-    props.event.kind === "warning"
-      ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-100"
-      : props.event.kind === "gesture"
-        ? "border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/35 dark:text-sky-100"
-        : "border-border bg-card text-foreground";
-
-  return (
-    <article className={`rounded-[24px] border px-4 py-4 ${accent}`}>
-      <div className="flex items-center justify-between gap-4">
-        <strong className="text-[11px] font-semibold uppercase tracking-[0.22em]">
-          {props.event.kind}
-        </strong>
-        <span className="text-xs text-muted-foreground">
-          {new Date(props.event.timestampMs).toLocaleTimeString()}
-        </span>
-      </div>
-      <p className="mt-3 text-sm leading-6 text-current">
-        {props.event.message}
-      </p>
-    </article>
   );
 }
 

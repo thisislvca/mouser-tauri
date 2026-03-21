@@ -9,7 +9,7 @@ use std::{
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(target_os = "macos")]
@@ -34,7 +34,11 @@ type IOHIDManagerRef = *mut c_void;
 #[cfg(target_os = "macos")]
 type IOHIDDeviceRef = *mut c_void;
 #[cfg(target_os = "macos")]
+type IOHIDElementRef = *const c_void;
+#[cfg(target_os = "macos")]
 type IOHIDReportType = c_int;
+#[cfg(target_os = "macos")]
+type IOHIDValueRef = *const c_void;
 #[cfg(target_os = "macos")]
 type IOHIDDeviceCallback = unsafe extern "C" fn(
     context: *mut c_void,
@@ -57,6 +61,13 @@ type IOHIDReportCallback = unsafe extern "C" fn(
     report_id: u32,
     report: *mut u8,
     report_length: c_long,
+);
+#[cfg(target_os = "macos")]
+type IOHIDValueCallback = unsafe extern "C" fn(
+    context: *mut c_void,
+    result: IOReturn,
+    sender: *mut c_void,
+    value: IOHIDValueRef,
 );
 
 #[cfg(target_os = "macos")]
@@ -115,6 +126,15 @@ unsafe extern "C" {
         callback: IOHIDReportCallback,
         context: *mut c_void,
     );
+    fn IOHIDDeviceRegisterInputValueCallback(
+        device: IOHIDDeviceRef,
+        callback: IOHIDValueCallback,
+        context: *mut c_void,
+    );
+    fn IOHIDValueGetElement(value: IOHIDValueRef) -> IOHIDElementRef;
+    fn IOHIDValueGetIntegerValue(value: IOHIDValueRef) -> c_long;
+    fn IOHIDElementGetUsagePage(element: IOHIDElementRef) -> u32;
+    fn IOHIDElementGetUsage(element: IOHIDElementRef) -> u32;
 }
 
 #[cfg(target_os = "macos")]
@@ -127,6 +147,15 @@ pub struct MacOsIoKitInfo {
     pub product_string: Option<String>,
     pub serial_number: Option<String>,
     pub location_id: Option<u32>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+pub struct MacOsInputValueEvent {
+    pub usage_page: u32,
+    pub usage: u32,
+    pub value: i64,
+    pub observed_at: Instant,
 }
 
 #[cfg(target_os = "macos")]
@@ -361,6 +390,8 @@ pub struct MacOsNativeHidDevice {
     _report_buffer: Box<[u8; 64]>,
     report_sender: *mut Sender<Vec<u8>>,
     report_receiver: Receiver<Vec<u8>>,
+    value_sender: *mut Sender<MacOsInputValueEvent>,
+    value_receiver: Receiver<MacOsInputValueEvent>,
 }
 
 #[cfg(target_os = "macos")]
@@ -412,8 +443,10 @@ impl MacOsNativeHidDevice {
 
         let run_loop = CFRunLoop::get_current();
         let mut report_buffer = Box::new([0u8; 64]);
-        let (tx, rx) = mpsc::channel();
-        let report_sender = Box::into_raw(Box::new(tx));
+        let (report_tx, report_rx) = mpsc::channel();
+        let report_sender = Box::into_raw(Box::new(report_tx));
+        let (value_tx, value_rx) = mpsc::channel();
+        let value_sender = Box::into_raw(Box::new(value_tx));
 
         unsafe {
             IOHIDDeviceScheduleWithRunLoop(
@@ -428,6 +461,11 @@ impl MacOsNativeHidDevice {
                 input_report_callback,
                 report_sender as *mut c_void,
             );
+            IOHIDDeviceRegisterInputValueCallback(
+                device,
+                input_value_callback,
+                value_sender as *mut c_void,
+            );
         }
 
         Ok(Self {
@@ -437,7 +475,9 @@ impl MacOsNativeHidDevice {
             run_loop,
             _report_buffer: report_buffer,
             report_sender,
-            report_receiver: rx,
+            report_receiver: report_rx,
+            value_sender,
+            value_receiver: value_rx,
         })
     }
 
@@ -490,6 +530,38 @@ impl MacOsNativeHidDevice {
 
         Ok(Vec::new())
     }
+
+    pub fn read_value_timeout(&self, timeout_ms: i32) -> Result<Option<MacOsInputValueEvent>, PlatformError> {
+        match self.value_receiver.try_recv() {
+            Ok(event) => return Ok(Some(event)),
+            Err(TryRecvError::Disconnected) => {
+                return Err(PlatformError::Message(
+                    "native HID input-value channel closed".to_string(),
+                ))
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(0) as u64);
+
+        while std::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let slice = remaining.min(Duration::from_millis(50));
+            CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, slice, true);
+
+            match self.value_receiver.try_recv() {
+                Ok(event) => return Ok(Some(event)),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(PlatformError::Message(
+                        "native HID input-value channel closed".to_string(),
+                    ))
+                }
+                Err(TryRecvError::Empty) => continue,
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -505,6 +577,7 @@ impl Drop for MacOsNativeHidDevice {
             CFRelease(self.device as CFTypeRef);
             CFRelease(self.manager as CFTypeRef);
             drop(Box::from_raw(self.report_sender));
+            drop(Box::from_raw(self.value_sender));
         }
     }
 }
@@ -526,6 +599,31 @@ unsafe extern "C" fn input_report_callback(
     let sender = &*(context as *mut Sender<Vec<u8>>);
     let packet = std::slice::from_raw_parts(report, report_length as usize).to_vec();
     let _ = sender.send(packet);
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn input_value_callback(
+    context: *mut c_void,
+    result: IOReturn,
+    _sender: *mut c_void,
+    value: IOHIDValueRef,
+) {
+    if result != 0 || context.is_null() || value.is_null() {
+        return;
+    }
+
+    let element = IOHIDValueGetElement(value);
+    if element.is_null() {
+        return;
+    }
+
+    let sender = &*(context as *mut Sender<MacOsInputValueEvent>);
+    let _ = sender.send(MacOsInputValueEvent {
+        usage_page: IOHIDElementGetUsagePage(element),
+        usage: IOHIDElementGetUsage(element),
+        value: IOHIDValueGetIntegerValue(value) as i64,
+        observed_at: Instant::now(),
+    });
 }
 
 #[cfg(target_os = "macos")]

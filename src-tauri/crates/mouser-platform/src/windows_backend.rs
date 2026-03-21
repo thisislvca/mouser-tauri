@@ -16,13 +16,15 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use mouser_core::{
     build_connected_device_info, default_config, hydrate_identity_key, resolve_known_device,
-    AppDiscoverySource, AppIdentity, DebugEventKind, DeviceBatteryInfo,
+    AppDiscoverySource, AppIdentity, DebugEventKind, DebugLogGroup, DebugLogGroups,
+    DeviceBatteryInfo,
     DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint, DeviceInfo, DeviceSettings,
     InstalledApp, LogicalControl,
 };
 use serde_json::Value as JsonValue;
 
 use crate::{
+    backend_debug_logging_enabled, emit_backend_console_log,
     dedupe_installed_apps, gesture,
     hidpp::{self, HidppIo, BT_DEV_IDX},
     horizontal_scroll_control, push_bounded_hook_event, AppDiscoveryBackend, AppFocusBackend,
@@ -121,6 +123,7 @@ struct TelemetryProbePlan {
 struct WindowsHookConfig {
     enabled: bool,
     debug_mode: bool,
+    debug_log_groups: DebugLogGroups,
     routes: Vec<WindowsDeviceRoute>,
 }
 
@@ -146,6 +149,7 @@ impl WindowsHookConfig {
         Self {
             enabled,
             debug_mode: settings.debug_mode,
+            debug_log_groups: settings.debug_log_groups.clone(),
             routes: settings
                 .routes
                 .iter()
@@ -153,6 +157,10 @@ impl WindowsHookConfig {
                 .map(WindowsDeviceRoute::from_runtime)
                 .collect(),
         }
+    }
+
+    fn debug_logging_enabled(&self, group: DebugLogGroup) -> bool {
+        backend_debug_logging_enabled(self.debug_mode, &self.debug_log_groups, group)
     }
 
     fn summary(&self) -> String {
@@ -373,10 +381,12 @@ impl WindowsHookShared {
         };
         self.gesture_cv.notify_all();
 
-        if changed && next.debug_mode {
-            self.push_event(
+        if changed && next.debug_logging_enabled(DebugLogGroup::HookRouting) {
+            emit_backend_console_log(
+                "windows",
                 DebugEventKind::Info,
-                format!("Windows hook routes -> {}", next.summary()),
+                DebugLogGroup::HookRouting,
+                &format!("Windows hook routes -> {}", next.summary()),
             );
         }
     }
@@ -386,16 +396,20 @@ impl WindowsHookShared {
         push_bounded_hook_event(&mut events, kind, message);
     }
 
-    fn push_debug(&self, message: impl Into<String>) {
-        if self.config.read().unwrap().debug_mode {
-            self.push_event(DebugEventKind::Info, message);
+    fn log_console(&self, group: DebugLogGroup, kind: DebugEventKind, message: impl Into<String>) {
+        let message = message.into();
+        let config = self.current_config();
+        if config.debug_logging_enabled(group) {
+            emit_backend_console_log("windows", kind, group, &message);
         }
     }
 
+    fn push_debug(&self, message: impl Into<String>) {
+        self.log_console(DebugLogGroup::HookRouting, DebugEventKind::Info, message);
+    }
+
     fn push_gesture_debug(&self, message: impl Into<String>) {
-        if self.config.read().unwrap().debug_mode {
-            self.push_event(DebugEventKind::Gesture, message);
-        }
+        self.log_console(DebugLogGroup::Gestures, DebugEventKind::Gesture, message);
     }
 
     fn drain_events(&self) -> Vec<HookBackendEvent> {

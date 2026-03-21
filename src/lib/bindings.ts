@@ -214,6 +214,7 @@ export type BootstrapPayload = { config: AppConfig; availableActions: ActionDefi
 export type DebugEvent = { kind: DebugEventKind; message: string; timestampMs: number }
 export type DebugEventEnvelope = DebugEvent
 export type DebugEventKind = "info" | "warning" | "gesture"
+export type DebugLogGroups = { runtime: boolean; hookRouting: boolean; gestures: boolean; thumbWheel: boolean; hid: boolean }
 export type DeviceAttributionStatus = "ready" | "model_fallback" | "ambiguous" | "unmanaged"
 export type DeviceBatteryInfo = { kind: DeviceBatteryKind; percentage?: number | null; label: string; sourceFeature?: string | null; rawCapabilities?: number[]; rawStatus?: number[] }
 export type DeviceBatteryKind = "percentage" | "status"
@@ -251,7 +252,7 @@ export type ManagedDevice = { id: string; modelKey: string; displayName: string;
 export type PlatformCapabilities = { platform: string; windowsSupported: boolean; macosSupported: boolean; liveHooksAvailable: boolean; liveHidAvailable: boolean; trayReady: boolean; mappingEngineReady: boolean; gestureDiversionAvailable: boolean; activeHidBackend: string; activeHookBackend: string; activeFocusBackend: string; hidapiAvailable: boolean; iokitAvailable: boolean }
 export type Profile = { id: string; label: string; appMatchers: AppMatcher[]; bindings: Binding[] }
 export type ProfileChangedEvent = { activeProfileId: string; frontmostApp: string | null }
-export type Settings = { startMinimized: boolean; startAtLogin: boolean; appearanceMode: AppearanceMode; debugMode: boolean }
+export type Settings = { startMinimized: boolean; startAtLogin: boolean; appearanceMode: AppearanceMode; debugMode: boolean; debugLogGroups?: DebugLogGroups }
 
 /** tauri-specta globals **/
 

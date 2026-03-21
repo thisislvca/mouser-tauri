@@ -1,11 +1,9 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { events, type DebugEvent } from "../lib/api";
-import { useUiStore } from "../store/uiStore";
+import { events } from "../lib/api";
 
 export function useRuntimeEvents() {
   const queryClient = useQueryClient();
-  const appendDebugEvent = useUiStore((state) => state.appendDebugEvent);
 
   useEffect(() => {
     let cancelled = false;
@@ -30,9 +28,6 @@ export function useRuntimeEvents() {
         events.deviceRoutingChangedEvent.listen(scheduleInvalidate),
         events.profileChangedEvent.listen(scheduleInvalidate),
         events.engineStatusChangedEvent.listen(scheduleInvalidate),
-        events.debugEventEnvelope.listen((event: { payload: DebugEvent }) => {
-          appendDebugEvent(event.payload);
-        }),
       ]);
 
       if (cancelled) {
@@ -52,5 +47,5 @@ export function useRuntimeEvents() {
       }
       unlisten.forEach((stop) => stop());
     };
-  }, [appendDebugEvent, queryClient]);
+  }, [queryClient]);
 }

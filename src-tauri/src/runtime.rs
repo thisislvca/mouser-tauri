@@ -12,12 +12,12 @@ use mouser_core::{
     normalize_app_match_value, normalize_bindings, normalize_device_settings,
     profile_for_supported_controls, AppConfig, AppDiscoverySnapshot, AppIdentity, AppMatcher,
     AppMatcherKind, Binding, BootstrapPayload, CatalogApp, DebugEvent, DebugEventKind,
-    DeviceAttributionStatus, DeviceInfo, DeviceMatchKind, DeviceRoutingEntry,
+    DebugLogGroup, DeviceAttributionStatus, DeviceInfo, DeviceMatchKind, DeviceRoutingEntry,
     DeviceRoutingSnapshot, DeviceSettings, DiscoveredApp, EngineSnapshot, EngineSnapshotState,
     InstalledApp, ManagedDevice, PlatformCapabilities, Profile,
 };
 use mouser_platform::{
-    current_platform_name, host_hidapi_available, host_iokit_available,
+    current_platform_name, emit_backend_console_log, host_hidapi_available, host_iokit_available,
     linux::{LinuxAppDiscoveryBackend, LinuxAppFocusBackend, LinuxHidBackend, LinuxHookBackend},
     macos::{MacOsAppDiscoveryBackend, MacOsAppFocusBackend, MacOsHidBackend, MacOsHookBackend},
     windows::{
@@ -844,7 +844,7 @@ impl AppRuntime {
 
     fn collect_hook_events(&mut self, events: Vec<HookBackendEvent>) {
         for event in events {
-            self.push_debug(event.kind, event.message);
+            self.store_debug(event.kind, event.message);
         }
     }
 
@@ -905,6 +905,12 @@ impl AppRuntime {
     }
 
     fn push_debug(&mut self, kind: DebugEventKind, message: impl Into<String>) {
+        let message = message.into();
+        self.maybe_emit_runtime_console_log(kind, &message);
+        self.store_debug(kind, message);
+    }
+
+    fn store_debug(&mut self, kind: DebugEventKind, message: impl Into<String>) {
         let entry = DebugLogEntry {
             seq: self.next_debug_seq,
             event: DebugEvent {
@@ -918,6 +924,19 @@ impl AppRuntime {
         while self.debug_log.len() > 48 {
             let _ = self.debug_log.pop_back();
         }
+    }
+
+    fn maybe_emit_runtime_console_log(&self, kind: DebugEventKind, message: &str) {
+        if !(self.config.settings.debug_mode
+            && self
+                .config
+                .settings
+                .debug_log_groups
+                .enabled(DebugLogGroup::Runtime))
+        {
+            return;
+        }
+        emit_backend_console_log("runtime", kind, DebugLogGroup::Runtime, message);
     }
 
     fn push_debug_if_enabled(&mut self, kind: DebugEventKind, message: impl Into<String>) {
