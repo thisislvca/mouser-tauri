@@ -259,6 +259,15 @@ function batteryStatusPillValue(device: DeviceInfo | null | undefined) {
     : label;
 }
 
+function formatHexByteList(bytes: number[] | null | undefined) {
+  if (!bytes || bytes.length === 0) {
+    return "None";
+  }
+  return bytes
+    .map((value) => `0x${value.toString(16).toUpperCase().padStart(2, "0")}`)
+    .join(" ");
+}
+
 function supportsControl(
   supportedControls: LogicalControl[],
   control: LogicalControl,
@@ -1243,6 +1252,7 @@ function App() {
 
             {activeSection === "debug" && (
               <DebugView
+                activeDevice={activeDevice}
                 clearDebugLog={clearDebugLogMutation.mutate}
                 config={config}
                 debugEvents={runtimeEvents}
@@ -2976,6 +2986,7 @@ function AppSettingsDialog(props: {
 }
 
 function DebugView(props: {
+  activeDevice: DeviceInfo | null;
   config: AppConfig;
   platformCapabilities: BootstrapPayload["platformCapabilities"];
   debugEvents: DebugEventRecord[];
@@ -3051,6 +3062,65 @@ function DebugView(props: {
       </Panel>
 
       <div className="space-y-6">
+        <Panel title="Battery Telemetry">
+          {props.activeDevice?.battery ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <CapabilityRow
+                  label="Device"
+                  value={props.activeDevice.displayName}
+                />
+                <CapabilityRow
+                  label="Normalized label"
+                  value={props.activeDevice.battery.label}
+                />
+                <CapabilityRow
+                  label="Battery kind"
+                  value={props.activeDevice.battery.kind}
+                />
+                <CapabilityRow
+                  label="Source feature"
+                  value={props.activeDevice.battery.sourceFeature ?? "Unknown"}
+                />
+                <CapabilityRow
+                  label="Percentage"
+                  value={
+                    props.activeDevice.battery.percentage != null
+                      ? `${props.activeDevice.battery.percentage}%`
+                      : "N/A"
+                  }
+                />
+                <CapabilityRow
+                  label="Connected"
+                  value={props.activeDevice.connected ? "Yes" : "No"}
+                />
+              </div>
+
+              <div className="space-y-3">
+                <Field label="Raw capabilities bytes">
+                  <div className="rounded-[20px] bg-card-muted px-4 py-3 font-mono text-xs text-muted-foreground ring-1 ring-border">
+                    {formatHexByteList(props.activeDevice.battery.rawCapabilities)}
+                  </div>
+                </Field>
+                <Field label="Raw status bytes">
+                  <div className="rounded-[20px] bg-card-muted px-4 py-3 font-mono text-xs text-muted-foreground ring-1 ring-border">
+                    {formatHexByteList(props.activeDevice.battery.rawStatus)}
+                  </div>
+                </Field>
+              </div>
+            </div>
+          ) : (
+            <EmptyState
+              title="No battery telemetry"
+              body={
+                props.activeDevice
+                  ? "The selected device has not reported battery data yet, or the current backend could not read it."
+                  : "Select a device to inspect its live battery telemetry."
+              }
+            />
+          )}
+        </Panel>
+
         <Panel title="Debug">
           <SwitchRow
             checked={props.config.settings.debugMode}

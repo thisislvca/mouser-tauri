@@ -579,6 +579,12 @@ pub struct DeviceBatteryInfo {
     #[serde(default)]
     pub percentage: Option<u8>,
     pub label: String,
+    #[serde(default)]
+    pub source_feature: Option<String>,
+    #[serde(default)]
+    pub raw_capabilities: Vec<u8>,
+    #[serde(default)]
+    pub raw_status: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1197,6 +1203,9 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
                 kind: DeviceBatteryKind::Percentage,
                 percentage: Some(84),
                 label: "84%".to_string(),
+                source_feature: None,
+                raw_capabilities: Vec::new(),
+                raw_status: Vec::new(),
             }),
             battery_level: Some(84),
             current_dpi: 1200,
@@ -1252,6 +1261,9 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
                 kind: DeviceBatteryKind::Percentage,
                 percentage: Some(62),
                 label: "62%".to_string(),
+                source_feature: None,
+                raw_capabilities: Vec::new(),
+                raw_status: Vec::new(),
             }),
             battery_level: Some(62),
             current_dpi: 1000,
@@ -1879,6 +1891,9 @@ mod tests {
                 kind: DeviceBatteryKind::Percentage,
                 percentage: Some(100),
                 label: "100%".to_string(),
+                source_feature: None,
+                raw_capabilities: Vec::new(),
+                raw_status: Vec::new(),
             }),
             1000,
             DeviceFingerprint::default(),
@@ -1929,6 +1944,9 @@ mod tests {
                 kind: DeviceBatteryKind::Percentage,
                 percentage: Some(100),
                 label: "100%".to_string(),
+                source_feature: None,
+                raw_capabilities: Vec::new(),
+                raw_status: Vec::new(),
             }),
             1000,
             DeviceFingerprint::default(),

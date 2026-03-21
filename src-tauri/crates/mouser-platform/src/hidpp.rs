@@ -144,6 +144,9 @@ fn parse_legacy_battery_info(capabilities: &[u8], status: &[u8]) -> Option<Devic
             kind: DeviceBatteryKind::Percentage,
             percentage: Some(raw_level),
             label: percentage_label(raw_level, legacy_charge_label(charge_status)),
+            source_feature: Some("battery_status".to_string()),
+            raw_capabilities: capabilities.to_vec(),
+            raw_status: status.to_vec(),
         });
     }
 
@@ -154,6 +157,9 @@ fn parse_legacy_battery_info(capabilities: &[u8], status: &[u8]) -> Option<Devic
             legacy_level_label(raw_level),
             legacy_charge_label(charge_status),
         ),
+        source_feature: Some("battery_status".to_string()),
+        raw_capabilities: capabilities.to_vec(),
+        raw_status: status.to_vec(),
     })
 }
 
@@ -169,6 +175,9 @@ fn parse_unified_battery_info(capabilities: &[u8], status: &[u8]) -> Option<Devi
             kind: DeviceBatteryKind::Percentage,
             percentage: Some(state_of_charge),
             label: percentage_label(state_of_charge, unified_charge_label(charging_status)),
+            source_feature: Some("unified_battery".to_string()),
+            raw_capabilities: capabilities.to_vec(),
+            raw_status: status.to_vec(),
         });
     }
 
@@ -179,6 +188,9 @@ fn parse_unified_battery_info(capabilities: &[u8], status: &[u8]) -> Option<Devi
             unified_level_label(level_flags),
             unified_charge_label(charging_status),
         ),
+        source_feature: Some("unified_battery".to_string()),
+        raw_capabilities: capabilities.to_vec(),
+        raw_status: status.to_vec(),
     })
 }
 
@@ -394,6 +406,9 @@ mod tests {
         assert_eq!(battery.kind, DeviceBatteryKind::Percentage);
         assert_eq!(battery.percentage, Some(84));
         assert_eq!(battery.label, "84%");
+        assert_eq!(battery.source_feature.as_deref(), Some("battery_status"));
+        assert_eq!(battery.raw_capabilities, vec![100, 0x02]);
+        assert_eq!(battery.raw_status, vec![84, 0, 0]);
     }
 
     #[test]
@@ -402,6 +417,7 @@ mod tests {
         assert_eq!(battery.kind, DeviceBatteryKind::Status);
         assert_eq!(battery.percentage, None);
         assert_eq!(battery.label, "Good");
+        assert_eq!(battery.source_feature.as_deref(), Some("battery_status"));
     }
 
     #[test]
@@ -410,6 +426,9 @@ mod tests {
         assert_eq!(battery.kind, DeviceBatteryKind::Percentage);
         assert_eq!(battery.percentage, Some(73));
         assert_eq!(battery.label, "Charging (73%)");
+        assert_eq!(battery.source_feature.as_deref(), Some("unified_battery"));
+        assert_eq!(battery.raw_capabilities, vec![0, 0x02]);
+        assert_eq!(battery.raw_status, vec![73, 0, 1, 0]);
     }
 
     #[test]
@@ -418,5 +437,6 @@ mod tests {
         assert_eq!(battery.kind, DeviceBatteryKind::Status);
         assert_eq!(battery.percentage, None);
         assert_eq!(battery.label, "Good");
+        assert_eq!(battery.source_feature.as_deref(), Some("unified_battery"));
     }
 }
