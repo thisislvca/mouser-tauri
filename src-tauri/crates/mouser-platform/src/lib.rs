@@ -202,10 +202,7 @@ pub fn emit_backend_console_log(
         DebugLogGroup::ThumbWheel => "thumb-wheel",
         DebugLogGroup::Hid => "hid",
     };
-    match kind {
-        "warning" => eprintln!("[mouser][{backend}][{group}][{kind}] {message}"),
-        _ => println!("[mouser][{backend}][{group}][{kind}] {message}"),
-    }
+    eprintln!("[mouser][{backend}][{group}][{kind}] {message}");
 }
 
 pub(crate) fn supports_macos_thumb_wheel_trackpad_model(model_key: Option<&str>) -> bool {

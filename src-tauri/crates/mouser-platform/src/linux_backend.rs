@@ -380,6 +380,17 @@ impl LinuxHookShared {
         push_bounded_hook_event(&mut events, kind, message);
     }
 
+    fn push_status(
+        &self,
+        group: DebugLogGroup,
+        kind: DebugEventKind,
+        message: impl Into<String>,
+    ) {
+        let message = message.into();
+        self.log_console(group, kind, &message);
+        self.push_event(kind, message);
+    }
+
     fn log_console(&self, group: DebugLogGroup, kind: DebugEventKind, message: impl Into<String>) {
         let message = message.into();
         let config = self.current_config();
@@ -409,7 +420,7 @@ impl LinuxHookShared {
         let previous = self.hook_running.swap(running, Ordering::SeqCst);
         if let Some(message) = message {
             if previous != running || self.config.read().unwrap().debug_mode {
-                self.push_event(DebugEventKind::Info, message);
+                self.push_status(DebugLogGroup::HookRouting, DebugEventKind::Info, message);
             }
         }
     }
@@ -418,7 +429,7 @@ impl LinuxHookShared {
         let previous = self.gesture_connected.swap(connected, Ordering::SeqCst);
         if let Some(message) = message {
             if previous != connected || self.config.read().unwrap().debug_mode {
-                self.push_event(DebugEventKind::Info, message);
+                self.push_status(DebugLogGroup::Gestures, DebugEventKind::Info, message);
             }
         }
     }
@@ -435,7 +446,8 @@ impl LinuxHookShared {
             action_id
         ));
         if let Err(error) = execute_action(&action_id) {
-            self.push_event(
+            self.push_status(
+                DebugLogGroup::HookRouting,
                 DebugEventKind::Warning,
                 format!("Action `{action_id}` failed: {error}"),
             );
@@ -1637,7 +1649,8 @@ fn run_gesture_worker(shared: Arc<LinuxHookShared>, stop: Arc<AtomicBool>) {
                         .product_name
                         .clone()
                         .unwrap_or_else(|| format!("PID 0x{:04X}", session.product_id));
-                    shared.push_event(
+                    shared.push_status(
+                        DebugLogGroup::Gestures,
                         DebugEventKind::Info,
                         format!(
                             "Gesture listener attached to {} for {}",

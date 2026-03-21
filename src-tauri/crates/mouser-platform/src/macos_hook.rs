@@ -8,10 +8,9 @@ use crate::macos_iokit::{
 };
 #[cfg(target_os = "macos")]
 use crate::{horizontal_scroll_control, push_bounded_hook_event};
-use crate::{
-    backend_debug_logging_enabled, emit_backend_console_log, HookBackend, HookBackendEvent,
-    HookBackendSettings, HookCapabilities, PlatformError,
-};
+use crate::{HookBackend, HookBackendEvent, HookBackendSettings, HookCapabilities, PlatformError};
+#[cfg(target_os = "macos")]
+use crate::{backend_debug_logging_enabled, emit_backend_console_log};
 #[cfg(target_os = "macos")]
 use crate::HookDeviceRoute;
 #[cfg(target_os = "macos")]
@@ -141,6 +140,12 @@ const THUMB_WHEEL_USAGE_PAGE_CONSUMER: u32 = 0x000C;
 #[cfg(target_os = "macos")]
 const THUMB_WHEEL_USAGE_AC_PAN: u32 = 0x0238;
 #[cfg(target_os = "macos")]
+const BTN_MIDDLE: i64 = 2;
+#[cfg(target_os = "macos")]
+const BTN_BACK: i64 = 3;
+#[cfg(target_os = "macos")]
+const BTN_FORWARD: i64 = 4;
+#[cfg(target_os = "macos")]
 const THUMB_WHEEL_MATCH_WINDOW_MS: u64 = 40;
 #[cfg(target_os = "macos")]
 const HID_DEBUG_LOG_INTERVAL_MS: u64 = 500;
@@ -232,6 +237,34 @@ impl MacOsHookConfig {
 
     fn gesture_capture_requested(&self) -> bool {
         self.enabled && self.routes.iter().any(MacOsDeviceRoute::gesture_capture_requested)
+    }
+
+    fn unique_route_for_control(&self, control: LogicalControl) -> Option<MacOsDeviceRoute> {
+        if !self.enabled {
+            return None;
+        }
+
+        let mut matches = self
+            .routes
+            .iter()
+            .filter(|route| route.handles_control(control))
+            .cloned();
+        let route = matches.next()?;
+        matches.next().is_none().then_some(route)
+    }
+
+    fn unique_vertical_inversion_route(&self) -> Option<MacOsDeviceRoute> {
+        if !self.enabled {
+            return None;
+        }
+
+        let mut matches = self
+            .routes
+            .iter()
+            .filter(|route| route.device_settings.invert_vertical_scroll)
+            .cloned();
+        let route = matches.next()?;
+        matches.next().is_none().then_some(route)
     }
 }
 
@@ -572,6 +605,17 @@ impl MacOsHookShared {
         push_bounded_hook_event(&mut events, kind, message);
     }
 
+    fn push_status(
+        &self,
+        group: DebugLogGroup,
+        kind: DebugEventKind,
+        message: impl Into<String>,
+    ) {
+        let message = message.into();
+        self.log_console(group, kind, &message);
+        self.push_event(kind, message);
+    }
+
     fn log_console(&self, group: DebugLogGroup, kind: DebugEventKind, message: impl Into<String>) {
         let message = message.into();
         let config = self.current_config();
@@ -863,21 +907,23 @@ impl MacOsHookShared {
     fn mark_gesture_connected(&self, connected: bool, message: Option<String>) {
         self.gesture_connected.store(connected, Ordering::SeqCst);
         if let Some(message) = message {
-            self.push_event(DebugEventKind::Info, message);
+            self.push_status(DebugLogGroup::Gestures, DebugEventKind::Info, message);
         }
     }
 
     fn handle_event(&self, event_type: CGEventType, event: &CGEvent) -> CallbackResult {
         match event_type {
             CGEventType::TapDisabledByTimeout => {
-                self.push_event(
+                self.push_status(
+                    DebugLogGroup::HookRouting,
                     DebugEventKind::Warning,
                     "CGEventTap disabled by timeout; macOS stopped dispatching live remap events.",
                 );
                 CallbackResult::Keep
             }
             CGEventType::TapDisabledByUserInput => {
-                self.push_event(
+                self.push_status(
+                    DebugLogGroup::HookRouting,
                     DebugEventKind::Warning,
                     "CGEventTap disabled by user input; Accessibility permission may need to be re-granted.",
                 );
@@ -894,8 +940,21 @@ impl MacOsHookShared {
     }
 
     fn handle_other_mouse_event(&self, event: &CGEvent, is_down: bool) -> CallbackResult {
-        let _ = (event, is_down);
-        CallbackResult::Keep
+        let button = event.get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER);
+        let Some(control) = control_for_button(button) else {
+            return CallbackResult::Keep;
+        };
+
+        let config = self.current_config();
+        let Some(route) = config.unique_route_for_control(control) else {
+            return CallbackResult::Keep;
+        };
+
+        if is_down {
+            self.dispatch_route_control_action(&route, control);
+        }
+
+        CallbackResult::Drop
     }
 
     fn handle_scroll_event(&self, event: &CGEvent) -> CallbackResult {
@@ -934,6 +993,21 @@ impl MacOsHookShared {
                     horizontal.point,
                     pending_hid_summary
                 ));
+            }
+
+            if event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS) == 0 {
+                let vertical = read_scroll_axis_deltas(
+                    event,
+                    EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1,
+                    EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_1,
+                    EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1,
+                );
+                if !vertical.is_zero()
+                    && config.unique_vertical_inversion_route().is_some()
+                    && post_inverted_scroll_event(event, true, false).is_ok()
+                {
+                    return CallbackResult::Drop;
+                }
             }
             return CallbackResult::Keep;
         };
@@ -980,7 +1054,8 @@ impl MacOsHookShared {
             action_id
         ));
         if let Err(error) = execute_action(&action_id) {
-            self.push_event(
+            self.push_status(
+                DebugLogGroup::HookRouting,
                 DebugEventKind::Warning,
                 format!("Action `{action_id}` failed: {error}"),
             );
@@ -1059,7 +1134,8 @@ impl MacOsHookBackend {
                     worker_shared_for_run.intercepting.store(false, Ordering::SeqCst);
 
                     if result.is_err() {
-                        worker_shared_for_run.push_event(
+                        worker_shared_for_run.push_status(
+                            DebugLogGroup::HookRouting,
                             DebugEventKind::Warning,
                             "Failed to start macOS CGEventTap. Grant Accessibility access in System Settings > Privacy & Security > Accessibility.",
                         );
@@ -1077,7 +1153,8 @@ impl MacOsHookBackend {
                         .map(|message| (*message).to_string())
                         .or_else(|| payload.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "unknown panic payload".to_string());
-                    worker_shared_for_panic.push_event(
+                    worker_shared_for_panic.push_status(
+                        DebugLogGroup::HookRouting,
                         DebugEventKind::Warning,
                         format!("macOS event tap thread panicked: {panic_message}"),
                     );
@@ -1092,7 +1169,8 @@ impl MacOsHookBackend {
             Ok(Ok(())) => {}
             Ok(Err(())) => {}
             Err(_) => {
-                shared.push_event(
+                shared.push_status(
+                    DebugLogGroup::HookRouting,
                     DebugEventKind::Warning,
                     "Timed out while starting the macOS event tap; live remapping may stay unavailable until the next launch.",
                 );
@@ -2256,6 +2334,16 @@ fn preferred_scroll_delta(deltas: ScrollAxisDeltas) -> i64 {
 }
 
 #[cfg(target_os = "macos")]
+fn control_for_button(button: i64) -> Option<LogicalControl> {
+    match button {
+        BTN_MIDDLE => Some(LogicalControl::Middle),
+        BTN_BACK => Some(LogicalControl::Back),
+        BTN_FORWARD => Some(LogicalControl::Forward),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn post_inverted_scroll_event(
     event: &CGEvent,
     invert_vertical: bool,
@@ -2775,6 +2863,69 @@ fn send_media_key(key_id: isize) -> Result<(), PlatformError> {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    use mouser_core::{
+        default_device_settings, DeviceFingerprint, DeviceSupportLevel, DeviceSupportMatrix,
+    };
+
+    fn test_route(
+        key: &str,
+        bindings: &[(LogicalControl, &str)],
+        configure: impl FnOnce(&mut DeviceSettings),
+    ) -> MacOsDeviceRoute {
+        let mut device_settings = default_device_settings();
+        configure(&mut device_settings);
+
+        MacOsDeviceRoute {
+            managed_device_key: key.to_string(),
+            resolved_profile_id: format!("profile-{key}"),
+            live_device: DeviceInfo {
+                key: key.to_string(),
+                model_key: "mx_master_3".to_string(),
+                display_name: "MX Master 3".to_string(),
+                nickname: None,
+                product_id: Some(0xB023),
+                product_name: Some("MX Master 3".to_string()),
+                transport: Some("Bluetooth Low Energy".to_string()),
+                source: Some("iokit".to_string()),
+                ui_layout: "mx_master_3".to_string(),
+                image_asset: "mx_master_3.png".to_string(),
+                supported_controls: bindings.iter().map(|(control, _)| *control).collect(),
+                controls: Vec::new(),
+                support: DeviceSupportMatrix {
+                    level: DeviceSupportLevel::Full,
+                    supports_battery_status: true,
+                    supports_dpi_configuration: true,
+                    has_interactive_layout: true,
+                    notes: Vec::new(),
+                },
+                gesture_cids: Vec::new(),
+                dpi_min: 200,
+                dpi_max: 8000,
+                dpi_inferred: false,
+                dpi_source_kind: None,
+                connected: true,
+                battery: None,
+                battery_level: None,
+                current_dpi: 1000,
+                fingerprint: DeviceFingerprint::default(),
+            },
+            device_settings,
+            bindings: bindings
+                .iter()
+                .map(|(control, action_id)| (*control, (*action_id).to_string()))
+                .collect(),
+            device_controls: Vec::new(),
+        }
+    }
+
+    fn test_config(routes: Vec<MacOsDeviceRoute>) -> MacOsHookConfig {
+        MacOsHookConfig {
+            enabled: true,
+            debug_mode: false,
+            debug_log_groups: DebugLogGroups::default(),
+            routes,
+        }
+    }
 
     fn test_ble_info() -> MacOsIoKitInfo {
         MacOsIoKitInfo {
@@ -2827,6 +2978,58 @@ mod tests {
     #[test]
     fn thumb_wheel_candidate_accepts_ble_route_interface() {
         assert!(thumb_wheel_iokit_candidate(&test_ble_info()));
+    }
+
+    #[test]
+    fn control_for_button_maps_supported_buttons() {
+        assert_eq!(control_for_button(BTN_MIDDLE), Some(LogicalControl::Middle));
+        assert_eq!(control_for_button(BTN_BACK), Some(LogicalControl::Back));
+        assert_eq!(control_for_button(BTN_FORWARD), Some(LogicalControl::Forward));
+        assert_eq!(control_for_button(99), None);
+    }
+
+    #[test]
+    fn unique_route_for_control_requires_an_unambiguous_match() {
+        let config = test_config(vec![
+            test_route("mx_master_3-1", &[(LogicalControl::Back, "mission_control")], |_| {}),
+            test_route("mx_master_3-2", &[(LogicalControl::Middle, "launchpad")], |_| {}),
+        ]);
+
+        let route = config.unique_route_for_control(LogicalControl::Back);
+        assert_eq!(route.as_ref().map(|route| route.managed_device_key.as_str()), Some("mx_master_3-1"));
+
+        let ambiguous = test_config(vec![
+            test_route("mx_master_3-1", &[(LogicalControl::Back, "mission_control")], |_| {}),
+            test_route("mx_master_3-2", &[(LogicalControl::Back, "launchpad")], |_| {}),
+        ]);
+        assert!(ambiguous.unique_route_for_control(LogicalControl::Back).is_none());
+    }
+
+    #[test]
+    fn unique_vertical_inversion_route_requires_a_single_route() {
+        let config = test_config(vec![
+            test_route("mx_master_3-1", &[], |settings| {
+                settings.invert_vertical_scroll = true;
+            }),
+            test_route("mx_master_3-2", &[], |_| {}),
+        ]);
+        assert_eq!(
+            config
+                .unique_vertical_inversion_route()
+                .as_ref()
+                .map(|route| route.managed_device_key.as_str()),
+            Some("mx_master_3-1")
+        );
+
+        let ambiguous = test_config(vec![
+            test_route("mx_master_3-1", &[], |settings| {
+                settings.invert_vertical_scroll = true;
+            }),
+            test_route("mx_master_3-2", &[], |settings| {
+                settings.invert_vertical_scroll = true;
+            }),
+        ]);
+        assert!(ambiguous.unique_vertical_inversion_route().is_none());
     }
 
     #[test]
