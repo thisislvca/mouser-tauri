@@ -1,3 +1,10 @@
+mod service;
+
+pub use service::{
+    RuntimeBackgroundUpdate, RuntimeMutationResult, RuntimeNotification, RuntimeNotifier,
+    RuntimeService,
+};
+
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
@@ -24,8 +31,12 @@ use mouser_platform::{
         WindowsAppDiscoveryBackend, WindowsAppFocusBackend, WindowsHidBackend, WindowsHookBackend,
     },
     AppDiscoveryBackend, AppFocusBackend, ConfigStore, HidBackend, HookBackend, HookBackendEvent,
-    HookBackendSettings, HookDeviceRoute, JsonConfigStore, PlatformError, StaticDeviceCatalog,
+    HookBackendSettings, HookDeviceRoute, PlatformError, StaticDeviceCatalog,
 };
+
+use crate::config::JsonConfigStore;
+
+pub(crate) const RUNTIME_STATE_ERROR: &str = "runtime state is unavailable";
 
 pub struct AppRuntime {
     catalog: StaticDeviceCatalog,
@@ -111,9 +122,8 @@ impl AppRuntime {
         if let Some(load_warning) = load_warning {
             runtime.push_debug(DebugEventKind::Warning, load_warning);
         }
-        runtime.refresh_live_state();
-        runtime.refresh_app_discovery();
-        runtime.sync_hook_backend();
+        runtime.ensure_selected_device();
+        runtime.sync_active_profile();
         runtime.push_debug(
             DebugEventKind::Info,
             format!(
@@ -194,14 +204,6 @@ impl AppRuntime {
         } else {
             self.push_debug(DebugEventKind::Info, "Debug mode disabled");
         }
-    }
-
-    pub fn enabled(&self) -> bool {
-        self.enabled
-    }
-
-    pub fn debug_mode(&self) -> bool {
-        self.config.settings.debug_mode
     }
 
     pub fn create_profile(&mut self, profile: Profile) {
@@ -641,22 +643,6 @@ impl AppRuntime {
         if previous_dpi != configured_dpi {
             self.log_dpi_state("DPI apply request");
         }
-    }
-
-    fn refresh_live_state(&mut self) {
-        self.refresh_live_state_with_results(
-            self.hid_backend.list_devices(),
-            self.app_focus_backend.current_frontmost_app(),
-        );
-    }
-
-    fn refresh_live_state_with_results(
-        &mut self,
-        devices: Result<Vec<DeviceInfo>, PlatformError>,
-        frontmost_app: Result<Option<AppIdentity>, PlatformError>,
-    ) {
-        self.apply_device_results(devices);
-        self.apply_frontmost_app_result(frontmost_app);
     }
 
     fn apply_device_results(&mut self, devices: Result<Vec<DeviceInfo>, PlatformError>) -> bool {

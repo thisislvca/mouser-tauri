@@ -14,8 +14,8 @@ use mouser_core::{
     PlatformCapabilities, Profile,
 };
 use mouser_platform::{
-    current_platform_name, host_hidapi_available, host_iokit_available, ConfigStore,
-    DeviceCatalog, PlatformError,
+    current_platform_name, host_hidapi_available, host_iokit_available, ConfigStore, DeviceCatalog,
+    PlatformError,
 };
 
 #[derive(Clone, Default)]
@@ -339,7 +339,8 @@ impl MockRuntime {
             .map(|live| {
                 let managed = config.managed_devices.iter().find(|device| {
                     device.model_key == live.model_key
-                        && device.identity_key.as_deref() == live.fingerprint.identity_key.as_deref()
+                        && device.identity_key.as_deref()
+                            == live.fingerprint.identity_key.as_deref()
                 });
                 let managed_device_key = managed.map(|device| device.id.clone());
                 DeviceRoutingEntry {
@@ -359,19 +360,14 @@ impl MockRuntime {
                     match_kind: managed
                         .map(|_| DeviceMatchKind::Identity)
                         .unwrap_or(DeviceMatchKind::Unmanaged),
-                    is_active_target: managed_device_key
-                        .as_deref()
-                        .is_some_and(|device_key| Some(device_key) == self.selected_device_key.as_deref()),
+                    is_active_target: managed_device_key.as_deref().is_some_and(|device_key| {
+                        Some(device_key) == self.selected_device_key.as_deref()
+                    }),
                     hook_eligible: managed.is_some(),
                     attribution_status: managed
                         .map(|_| DeviceAttributionStatus::Ready)
                         .unwrap_or(DeviceAttributionStatus::Unmanaged),
-                    source_hints: live
-                        .fingerprint
-                        .identity_key
-                        .iter()
-                        .cloned()
-                        .collect(),
+                    source_hints: live.fingerprint.identity_key.iter().cloned().collect(),
                 }
             })
             .collect::<Vec<_>>();
@@ -472,10 +468,7 @@ mod tests {
         let mut runtime = MockRuntime::new();
         runtime.select_device("mx_anywhere_3");
         let snapshot = runtime.engine_snapshot();
-        assert_eq!(
-            snapshot.active_device_key.as_deref(),
-            Some("mx_anywhere_3")
-        );
+        assert_eq!(snapshot.active_device_key.as_deref(), Some("mx_anywhere_3"));
         assert!(snapshot.active_device.unwrap().connected);
     }
 

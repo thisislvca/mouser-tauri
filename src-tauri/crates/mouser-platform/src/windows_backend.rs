@@ -17,15 +17,18 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use mouser_core::{
     build_connected_device_info, default_config, hydrate_identity_key, resolve_known_device,
     AppDiscoverySource, AppIdentity, DebugEventKind, DebugLogGroup, DebugLogGroups,
-    DeviceBatteryInfo,
-    DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint, DeviceInfo, DeviceSettings,
+    DeviceBatteryInfo, DeviceControlSpec, DeviceFingerprint, DeviceInfo, DeviceSettings,
     InstalledApp, LogicalControl,
 };
 use serde_json::Value as JsonValue;
 
 use crate::{
-    backend_debug_logging_enabled, emit_backend_console_log,
-    dedupe_installed_apps, gesture,
+    backend_debug_logging_enabled,
+    common::{
+        hook_routes::{self, ReprogRoute},
+        telemetry::{self, DeviceTelemetryCacheEntry, DeviceTelemetrySnapshot, TelemetryProbePlan},
+    },
+    dedupe_installed_apps, emit_backend_console_log, gesture,
     hidpp::{self, HidppIo, BT_DEV_IDX},
     horizontal_scroll_control, push_bounded_hook_event, AppDiscoveryBackend, AppFocusBackend,
     HidBackend, HidCapabilities, HookBackend, HookBackendEvent, HookBackendSettings,
@@ -97,28 +100,6 @@ pub struct WindowsAppFocusMonitor {
 }
 pub struct WindowsAppDiscoveryBackend;
 
-#[derive(Debug, Clone)]
-struct DeviceTelemetryCacheEntry {
-    current_dpi: Option<u16>,
-    battery: Option<DeviceBatteryInfo>,
-    last_battery_probe_at: Instant,
-    verify_after: Option<Instant>,
-    connected: bool,
-}
-
-#[derive(Debug, Clone)]
-struct DeviceTelemetrySnapshot {
-    current_dpi: Option<u16>,
-    battery: Option<DeviceBatteryInfo>,
-}
-
-#[derive(Debug, Clone)]
-struct TelemetryProbePlan {
-    probe_dpi: bool,
-    probe_battery: bool,
-    cached: DeviceTelemetrySnapshot,
-}
-
 #[derive(Clone, PartialEq, Eq)]
 struct WindowsHookConfig {
     enabled: bool,
@@ -135,13 +116,6 @@ struct WindowsDeviceRoute {
     device_settings: DeviceSettings,
     bindings: HashMap<LogicalControl, String>,
     device_controls: Vec<DeviceControlSpec>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReprogRoute {
-    control: LogicalControl,
-    cids: Vec<u16>,
-    rawxy_enabled: bool,
 }
 
 impl WindowsHookConfig {
@@ -172,11 +146,17 @@ impl WindowsHookConfig {
     }
 
     fn gesture_capture_requested(&self) -> bool {
-        self.enabled && self.routes.iter().any(WindowsDeviceRoute::gesture_capture_requested)
+        self.enabled
+            && self
+                .routes
+                .iter()
+                .any(WindowsDeviceRoute::gesture_capture_requested)
     }
 
     fn global_route(&self) -> Option<&WindowsDeviceRoute> {
-        (self.enabled && self.routes.len() == 1).then(|| self.routes.first()).flatten()
+        (self.enabled && self.routes.len() == 1)
+            .then(|| self.routes.first())
+            .flatten()
     }
 }
 
@@ -197,25 +177,15 @@ impl WindowsDeviceRoute {
     }
 
     fn action_for(&self, control: LogicalControl) -> Option<&str> {
-        self.bindings
-            .get(&control)
-            .map(String::as_str)
-            .filter(|action_id| *action_id != "none")
+        hook_routes::action_for(&self.bindings, control)
     }
 
     fn handles_control(&self, control: LogicalControl) -> bool {
-        self.action_for(control).is_some()
+        hook_routes::handles_control(&self.bindings, control)
     }
 
     fn gesture_direction_enabled(&self) -> bool {
-        [
-            LogicalControl::GestureLeft,
-            LogicalControl::GestureRight,
-            LogicalControl::GestureUp,
-            LogicalControl::GestureDown,
-        ]
-        .into_iter()
-        .any(|control| self.handles_control(control))
+        hook_routes::gesture_direction_enabled(&self.bindings)
     }
 
     fn gesture_capture_requested(&self) -> bool {
@@ -223,84 +193,18 @@ impl WindowsDeviceRoute {
     }
 
     fn gesture_route(&self) -> Option<ReprogRoute> {
-        let gesture_requested = [
-            LogicalControl::GesturePress,
-            LogicalControl::GestureLeft,
-            LogicalControl::GestureRight,
-            LogicalControl::GestureUp,
-            LogicalControl::GestureDown,
-        ]
-        .into_iter()
-        .any(|control| self.handles_control(control));
-        if !gesture_requested {
-            return None;
-        }
-
-        self.device_controls.iter().find_map(|control| {
-            (control.control == LogicalControl::GesturePress && !control.reprog_cids.is_empty())
-                .then(|| ReprogRoute {
-                    control: LogicalControl::GesturePress,
-                    cids: control.reprog_cids.clone(),
-                    rawxy_enabled: self.gesture_direction_enabled(),
-                })
-        })
+        hook_routes::gesture_route(&self.device_controls, &self.bindings)
     }
 
     fn reprog_routes(&self) -> Vec<ReprogRoute> {
-        let mut routes = Vec::new();
-
-        if let Some(route) = self.gesture_route() {
-            routes.push(route);
-        }
-
-        for control in &self.device_controls {
-            if control.capture_kind != DeviceControlCaptureKind::ReprogButton
-                || !self.handles_control(control.control)
-                || control.reprog_cids.is_empty()
-            {
-                continue;
-            }
-
-            routes.push(ReprogRoute {
-                control: control.control,
-                cids: control.reprog_cids.clone(),
-                rawxy_enabled: false,
-            });
-        }
-
-        routes
+        hook_routes::reprog_routes(&self.device_controls, &self.bindings)
     }
 
     fn summary(&self) -> String {
-        let bindings = [
-            LogicalControl::Back,
-            LogicalControl::Forward,
-            LogicalControl::Middle,
-            LogicalControl::HscrollLeft,
-            LogicalControl::HscrollRight,
-            LogicalControl::GesturePress,
-            LogicalControl::GestureLeft,
-            LogicalControl::GestureRight,
-            LogicalControl::GestureUp,
-            LogicalControl::GestureDown,
-        ]
-        .into_iter()
-        .map(|control| {
-            format!(
-                "{}={}",
-                control.label(),
-                self.bindings
-                    .get(&control)
-                    .map(String::as_str)
-                    .unwrap_or("none")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-
-        format!(
-            "{}:{} [{}]",
-            self.managed_device_key, self.resolved_profile_id, bindings
+        hook_routes::route_summary(
+            &self.managed_device_key,
+            &self.resolved_profile_id,
+            &self.bindings,
         )
     }
 }
@@ -355,7 +259,10 @@ impl WindowsHookShared {
         );
 
         Self {
-            config: RwLock::new(Arc::new(WindowsHookConfig::from_runtime(&hook_settings, true))),
+            config: RwLock::new(Arc::new(WindowsHookConfig::from_runtime(
+                &hook_settings,
+                true,
+            ))),
             events: Mutex::new(Vec::new()),
             gesture_wait: Mutex::new(()),
             gesture_cv: Condvar::new(),
@@ -396,12 +303,7 @@ impl WindowsHookShared {
         push_bounded_hook_event(&mut events, kind, message);
     }
 
-    fn push_status(
-        &self,
-        group: DebugLogGroup,
-        kind: DebugEventKind,
-        message: impl Into<String>,
-    ) {
+    fn push_status(&self, group: DebugLogGroup, kind: DebugEventKind, message: impl Into<String>) {
         let message = message.into();
         self.log_console(group, kind, &message);
         self.push_event(kind, message);
@@ -575,15 +477,7 @@ impl WindowsHidBackend {
         #[cfg(target_os = "windows")]
         {
             let cache = self.telemetry_cache.lock().unwrap();
-            let entry = cache.get(cache_key);
-            TelemetryProbePlan {
-                probe_dpi: should_probe_dpi(entry, now),
-                probe_battery: should_probe_battery(entry, now),
-                cached: DeviceTelemetrySnapshot {
-                    current_dpi: entry.and_then(|entry| entry.current_dpi),
-                    battery: entry.and_then(|entry| entry.battery.clone()),
-                },
-            }
+            telemetry::telemetry_plan(&cache, cache_key, now, BATTERY_CACHE_TTL)
         }
     }
 
@@ -597,28 +491,9 @@ impl WindowsHidBackend {
         #[cfg(target_os = "windows")]
         {
             let mut cache = self.telemetry_cache.lock().unwrap();
-            let entry = cache.entry(cache_key).or_insert(DeviceTelemetryCacheEntry {
-                current_dpi: None,
-                battery: None,
-                last_battery_probe_at: now,
-                verify_after: None,
-                connected: true,
-            });
-
-            entry.connected = true;
-
-            if telemetry.current_dpi.is_some() {
-                entry.current_dpi = telemetry.current_dpi;
-            }
-
-            if plan.probe_dpi {
-                entry.verify_after = None;
-            }
-
-            if plan.probe_battery {
-                entry.battery = telemetry.battery.clone();
-                entry.last_battery_probe_at = now;
-            }
+            telemetry::remember_device_telemetry(
+                &mut cache, cache_key, telemetry, plan, now, false,
+            );
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -631,9 +506,7 @@ impl WindowsHidBackend {
         #[cfg(target_os = "windows")]
         {
             let mut cache = self.telemetry_cache.lock().unwrap();
-            for (cache_key, entry) in cache.iter_mut() {
-                entry.connected = connected_cache_keys.contains(cache_key);
-            }
+            telemetry::note_connected_devices(&mut cache, connected_cache_keys);
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -646,16 +519,7 @@ impl WindowsHidBackend {
         #[cfg(target_os = "windows")]
         {
             let mut cache = self.telemetry_cache.lock().unwrap();
-            let entry = cache.entry(cache_key).or_insert(DeviceTelemetryCacheEntry {
-                current_dpi: None,
-                battery: None,
-                last_battery_probe_at: now,
-                verify_after: None,
-                connected: true,
-            });
-            entry.current_dpi = Some(dpi);
-            entry.verify_after = Some(now + DPI_VERIFY_DELAY);
-            entry.connected = true;
+            telemetry::note_dpi_write(&mut cache, cache_key, dpi, now, DPI_VERIFY_DELAY);
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -1613,9 +1477,9 @@ impl GestureSession {
     }
 
     fn gesture_cid_active(&self, cid: u16) -> bool {
-        self.routes.iter().any(|route| {
-            route.control == LogicalControl::GesturePress && route.cids.contains(&cid)
-        })
+        self.routes
+            .iter()
+            .any(|route| route.control == LogicalControl::GesturePress && route.cids.contains(&cid))
     }
 
     fn control_for_cid(&self, cid: u16) -> Option<LogicalControl> {
@@ -1864,23 +1728,11 @@ fn normalized_identity_key(value: Option<&str>) -> Option<&str> {
 }
 
 fn should_probe_dpi(entry: Option<&DeviceTelemetryCacheEntry>, now: Instant) -> bool {
-    let Some(entry) = entry else {
-        return true;
-    };
-
-    !entry.connected
-        || entry.current_dpi.is_none()
-        || entry
-            .verify_after
-            .is_some_and(|verify_after| now >= verify_after)
+    telemetry::should_probe_dpi_entry(entry, now)
 }
 
 fn should_probe_battery(entry: Option<&DeviceTelemetryCacheEntry>, now: Instant) -> bool {
-    let Some(entry) = entry else {
-        return true;
-    };
-
-    !entry.connected || now.duration_since(entry.last_battery_probe_at) >= BATTERY_CACHE_TTL
+    telemetry::should_probe_battery_entry(entry, now, BATTERY_CACHE_TTL)
 }
 
 fn telemetry_cache_key(
@@ -1888,37 +1740,18 @@ fn telemetry_cache_key(
     transport: Option<&str>,
     fingerprint: &DeviceFingerprint,
 ) -> String {
-    if let Some(identity_key) = fingerprint
-        .identity_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return format!("identity:{identity_key}");
-    }
-
-    if let Some(serial_number) = fingerprint
-        .serial_number
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return format!(
-            "serial:{:04x}:{serial_number}",
-            product_id.unwrap_or_default()
-        );
-    }
-
-    format!(
-        "tuple:{:04x}:{}:{}:{}:{}:{}:{}",
-        product_id.unwrap_or_default(),
-        transport.unwrap_or_default(),
-        fingerprint.location_id.unwrap_or_default(),
-        fingerprint.interface_number.unwrap_or_default(),
-        fingerprint.usage_page.unwrap_or_default(),
-        fingerprint.usage.unwrap_or_default(),
-        fingerprint.hid_path.as_deref().unwrap_or_default(),
-    )
+    telemetry::telemetry_cache_key_with_fallback(product_id, transport, fingerprint, || {
+        format!(
+            "tuple:{:04x}:{}:{}:{}:{}:{}:{}",
+            product_id.unwrap_or_default(),
+            transport.unwrap_or_default(),
+            fingerprint.location_id.unwrap_or_default(),
+            fingerprint.interface_number.unwrap_or_default(),
+            fingerprint.usage_page.unwrap_or_default(),
+            fingerprint.usage.unwrap_or_default(),
+            fingerprint.hid_path.as_deref().unwrap_or_default(),
+        )
+    })
 }
 
 #[cfg(target_os = "windows")]

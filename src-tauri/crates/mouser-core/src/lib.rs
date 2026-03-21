@@ -1311,7 +1311,10 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
                 .as_ref()
                 .map(|spec| spec.gesture_cids.clone())
                 .unwrap_or_default(),
-            dpi_min: mx_master_3s.as_ref().map(|spec| spec.dpi_min).unwrap_or(200),
+            dpi_min: mx_master_3s
+                .as_ref()
+                .map(|spec| spec.dpi_min)
+                .unwrap_or(200),
             dpi_max: mx_master_3s
                 .as_ref()
                 .map(|spec| spec.dpi_max)
@@ -1369,7 +1372,10 @@ pub fn default_device_catalog() -> Vec<DeviceInfo> {
                 .as_ref()
                 .map(|spec| spec.gesture_cids.clone())
                 .unwrap_or_default(),
-            dpi_min: mx_anywhere_3.as_ref().map(|spec| spec.dpi_min).unwrap_or(200),
+            dpi_min: mx_anywhere_3
+                .as_ref()
+                .map(|spec| spec.dpi_min)
+                .unwrap_or(200),
             dpi_max: mx_anywhere_3
                 .as_ref()
                 .map(|spec| spec.dpi_max)

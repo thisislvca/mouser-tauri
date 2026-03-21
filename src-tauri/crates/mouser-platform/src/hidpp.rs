@@ -390,9 +390,7 @@ pub(crate) fn parse_message(raw: &[u8]) -> Option<HidppMessage> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        parse_legacy_battery_info, parse_sensor_dpi_response, parse_unified_battery_info,
-    };
+    use super::{parse_legacy_battery_info, parse_sensor_dpi_response, parse_unified_battery_info};
     use mouser_core::DeviceBatteryKind;
 
     #[test]

@@ -2,8 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -16,14 +15,17 @@ use std::{
 use mouser_core::{
     build_connected_device_info, hydrate_identity_key, known_device_spec_by_key,
     resolve_known_device, AppDiscoverySource, AppIdentity, DebugEventKind, DebugLogGroup,
-    DebugLogGroups,
-    DeviceBatteryInfo, DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint,
-    DeviceInfo, DeviceSettings, InstalledApp, LogicalControl,
+    DebugLogGroups, DeviceBatteryInfo, DeviceControlSpec, DeviceFingerprint, DeviceInfo,
+    DeviceSettings, InstalledApp, LogicalControl,
 };
 
 use crate::{
-    backend_debug_logging_enabled, emit_backend_console_log,
-    dedupe_installed_apps, gesture,
+    backend_debug_logging_enabled,
+    common::{
+        hook_routes::{self, ReprogRoute},
+        telemetry::{self, DeviceTelemetryCacheEntry, DeviceTelemetrySnapshot, TelemetryProbePlan},
+    },
+    dedupe_installed_apps, emit_backend_console_log, gesture,
     hidpp::{self, HidppIo, BT_DEV_IDX},
     horizontal_scroll_control, push_bounded_hook_event, AppDiscoveryBackend, AppFocusBackend,
     HidBackend, HidCapabilities, HookBackend, HookBackendEvent, HookBackendSettings,
@@ -74,29 +76,7 @@ pub struct LinuxHidBackend {
 pub struct LinuxAppFocusBackend;
 pub struct LinuxAppDiscoveryBackend;
 
-#[derive(Debug, Clone)]
-struct DeviceTelemetryCacheEntry {
-    current_dpi: Option<u16>,
-    battery: Option<DeviceBatteryInfo>,
-    last_battery_probe_at: Instant,
-    verify_after: Option<Instant>,
-    connected: bool,
-}
-
-#[derive(Debug, Clone)]
-struct DeviceTelemetrySnapshot {
-    current_dpi: Option<u16>,
-    battery: Option<DeviceBatteryInfo>,
-}
-
-#[derive(Debug, Clone)]
-struct TelemetryProbePlan {
-    probe_dpi: bool,
-    probe_battery: bool,
-    cached: DeviceTelemetrySnapshot,
-}
-
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LinuxHookConfig {
     enabled: bool,
     debug_mode: bool,
@@ -104,7 +84,7 @@ struct LinuxHookConfig {
     routes: Vec<LinuxDeviceRoute>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LinuxDeviceRoute {
     managed_device_key: String,
     resolved_profile_id: String,
@@ -112,13 +92,6 @@ struct LinuxDeviceRoute {
     device_settings: DeviceSettings,
     bindings: HashMap<LogicalControl, String>,
     device_controls: Vec<DeviceControlSpec>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReprogRoute {
-    control: LogicalControl,
-    cids: Vec<u16>,
-    rawxy_enabled: bool,
 }
 
 impl LinuxHookConfig {
@@ -149,7 +122,11 @@ impl LinuxHookConfig {
     }
 
     fn gesture_capture_requested(&self) -> bool {
-        self.enabled && self.routes.iter().any(LinuxDeviceRoute::gesture_capture_requested)
+        self.enabled
+            && self
+                .routes
+                .iter()
+                .any(LinuxDeviceRoute::gesture_capture_requested)
     }
 }
 
@@ -170,25 +147,15 @@ impl LinuxDeviceRoute {
     }
 
     fn action_for(&self, control: LogicalControl) -> Option<&str> {
-        self.bindings
-            .get(&control)
-            .map(String::as_str)
-            .filter(|action_id| *action_id != "none")
+        hook_routes::action_for(&self.bindings, control)
     }
 
     fn handles_control(&self, control: LogicalControl) -> bool {
-        self.action_for(control).is_some()
+        hook_routes::handles_control(&self.bindings, control)
     }
 
     fn gesture_direction_enabled(&self) -> bool {
-        [
-            LogicalControl::GestureLeft,
-            LogicalControl::GestureRight,
-            LogicalControl::GestureUp,
-            LogicalControl::GestureDown,
-        ]
-        .into_iter()
-        .any(|control| self.handles_control(control))
+        hook_routes::gesture_direction_enabled(&self.bindings)
     }
 
     fn gesture_capture_requested(&self) -> bool {
@@ -196,84 +163,18 @@ impl LinuxDeviceRoute {
     }
 
     fn gesture_route(&self) -> Option<ReprogRoute> {
-        let gesture_requested = [
-            LogicalControl::GesturePress,
-            LogicalControl::GestureLeft,
-            LogicalControl::GestureRight,
-            LogicalControl::GestureUp,
-            LogicalControl::GestureDown,
-        ]
-        .into_iter()
-        .any(|control| self.handles_control(control));
-        if !gesture_requested {
-            return None;
-        }
-
-        self.device_controls.iter().find_map(|control| {
-            (control.control == LogicalControl::GesturePress && !control.reprog_cids.is_empty())
-                .then(|| ReprogRoute {
-                    control: LogicalControl::GesturePress,
-                    cids: control.reprog_cids.clone(),
-                    rawxy_enabled: self.gesture_direction_enabled(),
-                })
-        })
+        hook_routes::gesture_route(&self.device_controls, &self.bindings)
     }
 
     fn reprog_routes(&self) -> Vec<ReprogRoute> {
-        let mut routes = Vec::new();
-
-        if let Some(route) = self.gesture_route() {
-            routes.push(route);
-        }
-
-        for control in &self.device_controls {
-            if control.capture_kind != DeviceControlCaptureKind::ReprogButton
-                || !self.handles_control(control.control)
-                || control.reprog_cids.is_empty()
-            {
-                continue;
-            }
-
-            routes.push(ReprogRoute {
-                control: control.control,
-                cids: control.reprog_cids.clone(),
-                rawxy_enabled: false,
-            });
-        }
-
-        routes
+        hook_routes::reprog_routes(&self.device_controls, &self.bindings)
     }
 
     fn summary(&self) -> String {
-        let bindings = [
-            LogicalControl::Back,
-            LogicalControl::Forward,
-            LogicalControl::Middle,
-            LogicalControl::HscrollLeft,
-            LogicalControl::HscrollRight,
-            LogicalControl::GesturePress,
-            LogicalControl::GestureLeft,
-            LogicalControl::GestureRight,
-            LogicalControl::GestureUp,
-            LogicalControl::GestureDown,
-        ]
-        .into_iter()
-        .map(|control| {
-            format!(
-                "{}={}",
-                control.label(),
-                self.bindings
-                    .get(&control)
-                    .map(String::as_str)
-                    .unwrap_or("none")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-
-        format!(
-            "{}:{} [{}]",
-            self.managed_device_key, self.resolved_profile_id, bindings
+        hook_routes::route_summary(
+            &self.managed_device_key,
+            &self.resolved_profile_id,
+            &self.bindings,
         )
     }
 }
@@ -325,7 +226,10 @@ impl LinuxHookShared {
         );
 
         Self {
-            config: RwLock::new(Arc::new(LinuxHookConfig::from_runtime(&hook_settings, true))),
+            config: RwLock::new(Arc::new(LinuxHookConfig::from_runtime(
+                &hook_settings,
+                true,
+            ))),
             events: Mutex::new(Vec::new()),
             gesture_states: Mutex::new(BTreeMap::new()),
             gesture_cv: Condvar::new(),
@@ -380,12 +284,7 @@ impl LinuxHookShared {
         push_bounded_hook_event(&mut events, kind, message);
     }
 
-    fn push_status(
-        &self,
-        group: DebugLogGroup,
-        kind: DebugEventKind,
-        message: impl Into<String>,
-    ) {
+    fn push_status(&self, group: DebugLogGroup, kind: DebugEventKind, message: impl Into<String>) {
         let message = message.into();
         self.log_console(group, kind, &message);
         self.push_event(kind, message);
@@ -470,7 +369,10 @@ impl LinuxHookShared {
         state.active = true;
         state.triggered = false;
         if route.gesture_direction_enabled() && !cooldown_active(state) {
-            self.push_gesture_debug(format!("Gesture button down [{}]", route.managed_device_key));
+            self.push_gesture_debug(format!(
+                "Gesture button down [{}]",
+                route.managed_device_key
+            ));
             start_gesture_tracking(state);
         } else {
             finish_gesture_tracking(state);
@@ -598,7 +500,8 @@ impl LinuxHookShared {
             start_gesture_tracking(state);
         }
 
-        if source == GestureInputSource::HidRawxy && state.input_source == Some(GestureInputSource::Evdev)
+        if source == GestureInputSource::HidRawxy
+            && state.input_source == Some(GestureInputSource::Evdev)
         {
             self.push_gesture_debug(format!(
                 "Gesture source promoted [{}] from evdev to hid_rawxy prev_accum_x={} prev_accum_y={}",
@@ -856,8 +759,23 @@ impl HidBackend for LinuxHidBackend {
             for info in vendor_hid_infos(&api) {
                 let fingerprint = fingerprint_from_hid_info(info);
                 let transport = transport_label(info.bus_type());
-                let cache_key =
-                    telemetry_cache_key(Some(info.product_id()), Some(transport), &fingerprint);
+                let cache_key = telemetry::telemetry_cache_key_with_fallback(
+                    Some(info.product_id()),
+                    Some(transport),
+                    &fingerprint,
+                    || {
+                        format!(
+                            "tuple:{:04x}:{}:{}:{}:{}:{}:{}",
+                            info.product_id(),
+                            transport,
+                            fingerprint.location_id.unwrap_or_default(),
+                            fingerprint.interface_number.unwrap_or_default(),
+                            fingerprint.usage_page.unwrap_or_default(),
+                            fingerprint.usage.unwrap_or_default(),
+                            fingerprint.hid_path.as_deref().unwrap_or_default(),
+                        )
+                    },
+                );
                 connected_cache_keys.insert(cache_key.clone());
                 let plan = self.telemetry_plan(&cache_key, now);
 
@@ -929,7 +847,23 @@ impl HidBackend for LinuxHidBackend {
                 ) && set_hidpp_dpi(&device, dpi)?
                 {
                     self.note_dpi_write(
-                        telemetry_cache_key(Some(info.product_id()), Some(transport), &fingerprint),
+                        telemetry::telemetry_cache_key_with_fallback(
+                            Some(info.product_id()),
+                            Some(transport),
+                            &fingerprint,
+                            || {
+                                format!(
+                                    "tuple:{:04x}:{}:{}:{}:{}:{}:{}",
+                                    info.product_id(),
+                                    transport,
+                                    fingerprint.location_id.unwrap_or_default(),
+                                    fingerprint.interface_number.unwrap_or_default(),
+                                    fingerprint.usage_page.unwrap_or_default(),
+                                    fingerprint.usage.unwrap_or_default(),
+                                    fingerprint.hid_path.as_deref().unwrap_or_default(),
+                                )
+                            },
+                        ),
                         dpi,
                         now,
                     );
@@ -1017,15 +951,7 @@ impl AppDiscoveryBackend for LinuxAppDiscoveryBackend {
 impl LinuxHidBackend {
     fn telemetry_plan(&self, cache_key: &str, now: Instant) -> TelemetryProbePlan {
         let cache = self.telemetry_cache.lock().unwrap();
-        let entry = cache.get(cache_key);
-        TelemetryProbePlan {
-            probe_dpi: should_probe_dpi(entry, now),
-            probe_battery: should_probe_battery(entry, now),
-            cached: DeviceTelemetrySnapshot {
-                current_dpi: entry.and_then(|entry| entry.current_dpi),
-                battery: entry.and_then(|entry| entry.battery.clone()),
-            },
-        }
+        telemetry::telemetry_plan(&cache, cache_key, now, BATTERY_CACHE_TTL)
     }
 
     fn remember_device_telemetry(
@@ -1036,41 +962,17 @@ impl LinuxHidBackend {
         now: Instant,
     ) {
         let mut cache = self.telemetry_cache.lock().unwrap();
-        let entry = cache.entry(cache_key).or_insert(DeviceTelemetryCacheEntry {
-            current_dpi: None,
-            battery: None,
-            last_battery_probe_at: now,
-            verify_after: None,
-            connected: true,
-        });
-        entry.current_dpi = telemetry.current_dpi.or(plan.cached.current_dpi);
-        entry.battery = telemetry.battery.or(plan.cached.battery);
-        if plan.probe_battery {
-            entry.last_battery_probe_at = now;
-        }
-        entry.verify_after = None;
-        entry.connected = true;
+        telemetry::remember_device_telemetry(&mut cache, cache_key, telemetry, plan, now, true);
     }
 
     fn note_connected_devices(&self, connected_cache_keys: &BTreeSet<String>) {
         let mut cache = self.telemetry_cache.lock().unwrap();
-        for (cache_key, entry) in cache.iter_mut() {
-            entry.connected = connected_cache_keys.contains(cache_key);
-        }
+        telemetry::note_connected_devices(&mut cache, connected_cache_keys);
     }
 
     fn note_dpi_write(&self, cache_key: String, dpi: u16, now: Instant) {
         let mut cache = self.telemetry_cache.lock().unwrap();
-        let entry = cache.entry(cache_key).or_insert(DeviceTelemetryCacheEntry {
-            current_dpi: None,
-            battery: None,
-            last_battery_probe_at: now,
-            verify_after: None,
-            connected: true,
-        });
-        entry.current_dpi = Some(dpi);
-        entry.verify_after = Some(now + DPI_VERIFY_DELAY);
-        entry.connected = true;
+        telemetry::note_dpi_write(&mut cache, cache_key, dpi, now, DPI_VERIFY_DELAY);
     }
 }
 
@@ -1124,13 +1026,15 @@ fn run_hook_worker(shared: Arc<LinuxHookShared>, stop: Arc<AtomicBool>) {
             }
         }
 
-        let same_model_counts = desired_routes.iter().fold(
-            BTreeMap::<&str, usize>::new(),
-            |mut counts, route| {
-                *counts.entry(route.live_device.model_key.as_str()).or_default() += 1;
-                counts
-            },
-        );
+        let same_model_counts =
+            desired_routes
+                .iter()
+                .fold(BTreeMap::<&str, usize>::new(), |mut counts, route| {
+                    *counts
+                        .entry(route.live_device.model_key.as_str())
+                        .or_default() += 1;
+                    counts
+                });
         let mut occupied_paths = sessions
             .values()
             .map(|session| session.device_path.clone())
@@ -1227,13 +1131,14 @@ impl MouseHookSession {
         same_model_route_count: usize,
     ) -> Result<Self, PlatformError> {
         let (device_path, mut device) =
-            find_mouse_device_for_route(route, occupied_paths, same_model_route_count)
-                .ok_or_else(|| {
+            find_mouse_device_for_route(route, occupied_paths, same_model_route_count).ok_or_else(
+                || {
                     PlatformError::Message(format!(
                         "could not find a Linux mouse device for {}",
                         route.managed_device_key
                     ))
-                })?;
+                },
+            )?;
         let device_name = device.name().unwrap_or("Mouse").to_string();
         let mirror = create_virtual_mouse(&device)?;
 
@@ -1444,8 +1349,8 @@ fn find_mouse_device_for_route(
         }
 
         let input_id = device.input_id();
-        let product_matches = preferred_product_ids.is_empty()
-            || preferred_product_ids.contains(&input_id.product());
+        let product_matches =
+            preferred_product_ids.is_empty() || preferred_product_ids.contains(&input_id.product());
         if !product_matches {
             continue;
         }
@@ -1455,7 +1360,8 @@ fn find_mouse_device_for_route(
         }
 
         let keys = device.supported_keys()?;
-        let has_side_buttons = keys.contains(KeyCode::BTN_SIDE) || keys.contains(KeyCode::BTN_EXTRA);
+        let has_side_buttons =
+            keys.contains(KeyCode::BTN_SIDE) || keys.contains(KeyCode::BTN_EXTRA);
         candidates.push((
             !identity_matches,
             input_id.vendor() != LOGI_VID,
@@ -1532,12 +1438,12 @@ fn evdev_device_matches_route(route: &LinuxDeviceRoute, path: &Path, device: &De
         .into_iter()
         .flatten()
         .any(|candidate| {
-        let normalized_candidate = normalized_identity_key(Some(candidate));
-        normalized_candidate == expected_identity
-            || normalized_candidate
-                .map(|candidate| format!("path:{candidate}"))
-                .as_deref()
-                == expected_identity
+            let normalized_candidate = normalized_identity_key(Some(candidate));
+            normalized_candidate == expected_identity
+                || normalized_candidate
+                    .map(|candidate| format!("path:{candidate}"))
+                    .as_deref()
+                    == expected_identity
         })
 }
 
@@ -1793,9 +1699,9 @@ impl GestureSession {
     }
 
     fn gesture_cid_active(&self, cid: u16) -> bool {
-        self.routes.iter().any(|route| {
-            route.control == LogicalControl::GesturePress && route.cids.contains(&cid)
-        })
+        self.routes
+            .iter()
+            .any(|route| route.control == LogicalControl::GesturePress && route.cids.contains(&cid))
     }
 
     fn control_for_cid(&self, cid: u16) -> Option<LogicalControl> {
@@ -2041,62 +1947,6 @@ fn normalized_identity_key(value: Option<&str>) -> Option<&str> {
     })
 }
 
-fn should_probe_dpi(entry: Option<&DeviceTelemetryCacheEntry>, now: Instant) -> bool {
-    let Some(entry) = entry else {
-        return true;
-    };
-    !entry.connected
-        || entry.current_dpi.is_none()
-        || entry
-            .verify_after
-            .is_some_and(|verify_after| now >= verify_after)
-}
-
-fn should_probe_battery(entry: Option<&DeviceTelemetryCacheEntry>, now: Instant) -> bool {
-    let Some(entry) = entry else {
-        return true;
-    };
-    !entry.connected || now.duration_since(entry.last_battery_probe_at) >= BATTERY_CACHE_TTL
-}
-
-fn telemetry_cache_key(
-    product_id: Option<u16>,
-    transport: Option<&str>,
-    fingerprint: &DeviceFingerprint,
-) -> String {
-    if let Some(identity_key) = fingerprint
-        .identity_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return format!("identity:{identity_key}");
-    }
-
-    if let Some(serial_number) = fingerprint
-        .serial_number
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return format!(
-            "serial:{:04x}:{serial_number}",
-            product_id.unwrap_or_default()
-        );
-    }
-
-    format!(
-        "tuple:{:04x}:{}:{}:{}:{}:{}:{}",
-        product_id.unwrap_or_default(),
-        transport.unwrap_or_default(),
-        fingerprint.location_id.unwrap_or_default(),
-        fingerprint.interface_number.unwrap_or_default(),
-        fingerprint.usage_page.unwrap_or_default(),
-        fingerprint.usage.unwrap_or_default(),
-        fingerprint.hid_path.as_deref().unwrap_or_default(),
-    )
-}
-
 #[cfg(target_os = "linux")]
 fn push_unique_device(devices: &mut Vec<DeviceInfo>, device: DeviceInfo) {
     if devices.iter().all(|existing| existing.key != device.key) {
@@ -2240,9 +2090,13 @@ fn current_frontmost_app_identity() -> Result<Option<AppIdentity>, PlatformError
 
     let active_window = connection
         .get_property(false, root, atoms.active_window, AtomEnum::WINDOW, 0, 1)
-        .map_err(|error| PlatformError::Message(format!("could not query X11 active window: {error}")))?
+        .map_err(|error| {
+            PlatformError::Message(format!("could not query X11 active window: {error}"))
+        })?
         .reply()
-        .map_err(|error| PlatformError::Message(format!("could not read X11 active window: {error}")))?
+        .map_err(|error| {
+            PlatformError::Message(format!("could not read X11 active window: {error}"))
+        })?
         .value32()
         .and_then(|mut values| values.next());
 
@@ -2252,7 +2106,9 @@ fn current_frontmost_app_identity() -> Result<Option<AppIdentity>, PlatformError
 
     let pid = connection
         .get_property(false, window, atoms.net_wm_pid, AtomEnum::CARDINAL, 0, 1)
-        .map_err(|error| PlatformError::Message(format!("could not query X11 window PID: {error}")))?
+        .map_err(|error| {
+            PlatformError::Message(format!("could not query X11 window PID: {error}"))
+        })?
         .reply()
         .map_err(|error| PlatformError::Message(format!("could not read X11 window PID: {error}")))?
         .value32()
@@ -2295,14 +2151,7 @@ fn intern_atom<C: Connection>(connection: &C, name: &[u8]) -> Result<u32, Platfo
 #[cfg(target_os = "linux")]
 fn window_label<C: Connection>(connection: &C, window: Window, atoms: &X11Atoms) -> Option<String> {
     connection
-        .get_property(
-            false,
-            window,
-            atoms.net_wm_name,
-            atoms.utf8_string,
-            0,
-            256,
-        )
+        .get_property(false, window, atoms.net_wm_name, atoms.utf8_string, 0, 256)
         .ok()?
         .reply()
         .ok()?
@@ -2679,7 +2528,10 @@ fn parse_desktop_entry(raw: &str) -> Option<DesktopEntryRecord> {
 }
 
 fn parse_desktop_bool(value: &str) -> bool {
-    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes"
+    )
 }
 
 fn parse_exec_command(raw: &str) -> (Option<String>, Option<String>) {
@@ -2784,7 +2636,10 @@ fn themed_icon_relatives(icon: &str) -> Vec<PathBuf> {
     let mut relatives = Vec::new();
     let file_names = icon_file_names(icon);
 
-    for size in ["512x512", "256x256", "128x128", "96x96", "64x64", "48x48", "32x32", "24x24", "16x16", "scalable"] {
+    for size in [
+        "512x512", "256x256", "128x128", "96x96", "64x64", "48x48", "32x32", "24x24", "16x16",
+        "scalable",
+    ] {
         for kind in ["apps", "categories"] {
             for file_name in &file_names {
                 relatives.push(PathBuf::from(size).join(kind).join(file_name));
@@ -2805,25 +2660,31 @@ fn path_file_name(path: &str) -> Option<String> {
 fn execute_action(action_id: &str) -> Result<(), PlatformError> {
     let keys = match action_id {
         "alt_tab" => Some(&[KeyCode::KEY_LEFTALT, KeyCode::KEY_TAB][..]),
-        "alt_shift_tab" => Some(&[
-            KeyCode::KEY_LEFTALT,
-            KeyCode::KEY_LEFTSHIFT,
-            KeyCode::KEY_TAB,
-        ][..]),
+        "alt_shift_tab" => Some(
+            &[
+                KeyCode::KEY_LEFTALT,
+                KeyCode::KEY_LEFTSHIFT,
+                KeyCode::KEY_TAB,
+            ][..],
+        ),
         "show_desktop" => Some(&[KeyCode::KEY_LEFTMETA, KeyCode::KEY_D][..]),
         "task_view" | "mission_control" => Some(&[KeyCode::KEY_LEFTMETA][..]),
         "app_expose" => Some(&[KeyCode::KEY_LEFTMETA, KeyCode::KEY_DOWN][..]),
         "launchpad" => Some(&[KeyCode::KEY_LEFTMETA, KeyCode::KEY_A][..]),
-        "space_left" => Some(&[
-            KeyCode::KEY_LEFTCTRL,
-            KeyCode::KEY_LEFTALT,
-            KeyCode::KEY_LEFT,
-        ][..]),
-        "space_right" => Some(&[
-            KeyCode::KEY_LEFTCTRL,
-            KeyCode::KEY_LEFTALT,
-            KeyCode::KEY_RIGHT,
-        ][..]),
+        "space_left" => Some(
+            &[
+                KeyCode::KEY_LEFTCTRL,
+                KeyCode::KEY_LEFTALT,
+                KeyCode::KEY_LEFT,
+            ][..],
+        ),
+        "space_right" => Some(
+            &[
+                KeyCode::KEY_LEFTCTRL,
+                KeyCode::KEY_LEFTALT,
+                KeyCode::KEY_RIGHT,
+            ][..],
+        ),
         "browser_back" => Some(&[KeyCode::KEY_BACK][..]),
         "browser_forward" => Some(&[KeyCode::KEY_FORWARD][..]),
         "close_tab" => Some(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_W][..]),
@@ -2832,7 +2693,13 @@ fn execute_action(action_id: &str) -> Result<(), PlatformError> {
         "paste" => Some(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_V][..]),
         "cut" => Some(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_X][..]),
         "undo" => Some(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_Z][..]),
-        "redo" => Some(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_Z][..]),
+        "redo" => Some(
+            &[
+                KeyCode::KEY_LEFTCTRL,
+                KeyCode::KEY_LEFTSHIFT,
+                KeyCode::KEY_Z,
+            ][..],
+        ),
         "select_all" => Some(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_A][..]),
         "save" => Some(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_S][..]),
         "find" => Some(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_F][..]),
@@ -2893,7 +2760,11 @@ fn with_virtual_keyboard(
     if guard.is_none() {
         *guard = Some(create_virtual_keyboard()?);
     }
-    apply(guard.as_mut().expect("virtual keyboard should be initialized"))
+    apply(
+        guard
+            .as_mut()
+            .expect("virtual keyboard should be initialized"),
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -2965,9 +2836,7 @@ mod tests {
             parse_exec_command("env GTK_THEME=Adwaita /usr/bin/code --unity-launch %F");
 
         assert_eq!(executable.as_deref(), Some("code"));
-        assert!(
-            executable_path.is_none() || executable_path.as_deref() == Some("/usr/bin/code")
-        );
+        assert!(executable_path.is_none() || executable_path.as_deref() == Some("/usr/bin/code"));
     }
 
     #[test]

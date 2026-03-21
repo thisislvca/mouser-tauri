@@ -7,18 +7,17 @@ use crate::macos_iokit::{
     enumerate_iokit_infos, MacOsInputValueEvent, MacOsIoKitInfo, MacOsNativeHidDevice,
 };
 #[cfg(target_os = "macos")]
-use crate::{horizontal_scroll_control, push_bounded_hook_event};
-use crate::{HookBackend, HookBackendEvent, HookBackendSettings, HookCapabilities, PlatformError};
+use crate::HookDeviceRoute;
 #[cfg(target_os = "macos")]
 use crate::{backend_debug_logging_enabled, emit_backend_console_log};
 #[cfg(target_os = "macos")]
-use crate::HookDeviceRoute;
+use crate::{horizontal_scroll_control, push_bounded_hook_event};
+use crate::{HookBackend, HookBackendEvent, HookBackendSettings, HookCapabilities, PlatformError};
 #[cfg(target_os = "macos")]
 use mouser_core::{
     hydrate_identity_key, resolve_known_device, Binding, DebugEventKind, DebugLogGroup,
-    DebugLogGroups,
-    DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint, DeviceInfo, DeviceSettings,
-    LogicalControl,
+    DebugLogGroups, DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint, DeviceInfo,
+    DeviceSettings, LogicalControl,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -236,7 +235,11 @@ impl MacOsHookConfig {
     }
 
     fn gesture_capture_requested(&self) -> bool {
-        self.enabled && self.routes.iter().any(MacOsDeviceRoute::gesture_capture_requested)
+        self.enabled
+            && self
+                .routes
+                .iter()
+                .any(MacOsDeviceRoute::gesture_capture_requested)
     }
 
     fn unique_route_for_control(&self, control: LogicalControl) -> Option<MacOsDeviceRoute> {
@@ -605,12 +608,7 @@ impl MacOsHookShared {
         push_bounded_hook_event(&mut events, kind, message);
     }
 
-    fn push_status(
-        &self,
-        group: DebugLogGroup,
-        kind: DebugEventKind,
-        message: impl Into<String>,
-    ) {
+    fn push_status(&self, group: DebugLogGroup, kind: DebugEventKind, message: impl Into<String>) {
         let message = message.into();
         self.log_console(group, kind, &message);
         self.push_event(kind, message);
@@ -628,11 +626,7 @@ impl MacOsHookShared {
         self.log_console(DebugLogGroup::HookRouting, DebugEventKind::Info, message);
     }
 
-    fn push_hid_debug_rate_limited(
-        &self,
-        key: impl Into<String>,
-        message: impl Into<String>,
-    ) {
+    fn push_hid_debug_rate_limited(&self, key: impl Into<String>, message: impl Into<String>) {
         let config = self.current_config();
         if !config.debug_logging_enabled(DebugLogGroup::Hid) {
             return;
@@ -641,16 +635,20 @@ impl MacOsHookShared {
         let key = key.into();
         let now = Instant::now();
         let mut timestamps = self.hid_debug_timestamps.lock().unwrap();
-        if timestamps
-            .get(&key)
-            .is_some_and(|last| now.duration_since(*last) < Duration::from_millis(HID_DEBUG_LOG_INTERVAL_MS))
-        {
+        if timestamps.get(&key).is_some_and(|last| {
+            now.duration_since(*last) < Duration::from_millis(HID_DEBUG_LOG_INTERVAL_MS)
+        }) {
             return;
         }
         timestamps.insert(key, now);
         drop(timestamps);
 
-        emit_backend_console_log("macos", DebugEventKind::Info, DebugLogGroup::Hid, &message.into());
+        emit_backend_console_log(
+            "macos",
+            DebugEventKind::Info,
+            DebugLogGroup::Hid,
+            &message.into(),
+        );
     }
 
     fn push_thumb_wheel_debug(&self, message: impl Into<String>) {
@@ -752,7 +750,11 @@ impl MacOsHookShared {
         let mut states = self.thumb_wheel_states.lock().unwrap();
         let mut matches = Vec::new();
 
-        for route in config.routes.iter().filter(|route| route.thumb_wheel_hid_requested()) {
+        for route in config
+            .routes
+            .iter()
+            .filter(|route| route.thumb_wheel_hid_requested())
+        {
             let Some(state) = states.get_mut(&route.managed_device_key) else {
                 continue;
             };
@@ -852,7 +854,9 @@ impl MacOsHookShared {
                 continue;
             };
             let hold_timeout = Duration::from_millis(u64::from(
-                route.device_settings.macos_thumb_wheel_trackpad_hold_timeout_ms,
+                route
+                    .device_settings
+                    .macos_thumb_wheel_trackpad_hold_timeout_ms,
             ));
             match thumb_wheel_worker_state_for_state(&mut state.gesture, hold_timeout, now) {
                 ThumbWheelWorkerState::Action(location, flags, phase, deltas) => {
@@ -860,7 +864,8 @@ impl MacOsHookShared {
                 }
                 ThumbWheelWorkerState::Wait => {}
                 ThumbWheelWorkerState::WaitTimeout(duration) => {
-                    wait_timeout = Some(wait_timeout.map_or(duration, |current| current.min(duration)));
+                    wait_timeout =
+                        Some(wait_timeout.map_or(duration, |current| current.min(duration)));
                 }
             }
         }
@@ -1017,7 +1022,12 @@ impl MacOsHookShared {
         ));
 
         if route.thumb_wheel_trackpad_requested() {
-            self.enqueue_thumb_wheel_trackpad_scroll(&route, deltas, event.location(), event.get_flags());
+            self.enqueue_thumb_wheel_trackpad_scroll(
+                &route,
+                deltas,
+                event.location(),
+                event.get_flags(),
+            );
             return CallbackResult::Drop;
         }
 
@@ -1188,7 +1198,9 @@ impl MacOsHookBackend {
         let thumb_wheel_input_stop = Arc::clone(&thumb_wheel_stop);
         let thumb_wheel_input_worker = thread::Builder::new()
             .name("mouser-macos-thumb-wheel".to_string())
-            .spawn(move || run_thumb_wheel_input_worker(thumb_wheel_input_shared, thumb_wheel_input_stop))
+            .spawn(move || {
+                run_thumb_wheel_input_worker(thumb_wheel_input_shared, thumb_wheel_input_stop)
+            })
             .ok();
 
         let thumb_wheel_trackpad_shared = Arc::clone(&shared);
@@ -1471,8 +1483,7 @@ impl GestureSession {
         if idle_timed_out {
             shared.push_gesture_debug(format!(
                 "Gesture segment reset after {} ms [{}]",
-                self.route.device_settings.gesture_timeout_ms,
-                route_key,
+                self.route.device_settings.gesture_timeout_ms, route_key,
             ));
             start_gesture_tracking(state);
         }
@@ -1513,9 +1524,9 @@ impl GestureSession {
     }
 
     fn gesture_cid_active(&self, cid: u16) -> bool {
-        self.routes.iter().any(|route| {
-            route.control == LogicalControl::GesturePress && route.cids.contains(&cid)
-        })
+        self.routes
+            .iter()
+            .any(|route| route.control == LogicalControl::GesturePress && route.cids.contains(&cid))
     }
 
     fn control_for_cid(&self, cid: u16) -> Option<LogicalControl> {
@@ -1745,8 +1756,7 @@ fn run_thumb_wheel_input_worker(shared: Arc<MacOsHookShared>, stop: Arc<AtomicBo
                             &message,
                         );
                         shared.push_event(DebugEventKind::Warning, message.clone());
-                        last_route_failures
-                            .insert(route.managed_device_key.clone(), message);
+                        last_route_failures.insert(route.managed_device_key.clone(), message);
                     }
                 }
             }
@@ -1767,10 +1777,7 @@ fn run_thumb_wheel_input_worker(shared: Arc<MacOsHookShared>, stop: Arc<AtomicBo
                         DebugEventKind::Warning,
                         &message,
                     );
-                    shared.push_event(
-                        DebugEventKind::Warning,
-                        message,
-                    );
+                    shared.push_event(DebugEventKind::Warning, message);
                     disconnected.push(route_key.clone());
                 }
             }
@@ -1926,7 +1933,8 @@ fn run_thumb_wheel_trackpad_worker(shared: Arc<MacOsHookShared>, stop: Arc<Atomi
     while !stop.load(Ordering::SeqCst) {
         match shared.thumb_wheel_worker_state(Instant::now()) {
             ThumbWheelWorkerState::Action(location, flags, phase, deltas) => {
-                if let Err(error) = post_thumb_wheel_trackpad_event(location, flags, phase, deltas) {
+                if let Err(error) = post_thumb_wheel_trackpad_event(location, flags, phase, deltas)
+                {
                     shared.push_event(
                         DebugEventKind::Warning,
                         format!("Thumb wheel trackpad swipe delivery failed: {error}"),
@@ -1967,7 +1975,7 @@ fn try_build_thumb_wheel_session_for_route(
     let mut open_failures = Vec::new();
 
     for info in &candidates {
-        for candidate in iokit_open_candidates(&info) {
+        for candidate in iokit_open_candidates(info) {
             match MacOsNativeHidDevice::open(&candidate) {
                 Ok(device) => {
                     return Ok(ThumbWheelSession {
@@ -1977,18 +1985,15 @@ fn try_build_thumb_wheel_session_for_route(
                     });
                 }
                 Err(error) => {
-                    open_failures.push(format!(
-                        "{} -> {}",
-                        describe_iokit_info(&candidate),
-                        error
-                    ));
+                    open_failures.push(format!("{} -> {}", describe_iokit_info(&candidate), error));
                 }
             }
         }
     }
 
-    let route_identity = normalized_identity_key(route.live_device.fingerprint.identity_key.as_deref())
-        .unwrap_or("<none>");
+    let route_identity =
+        normalized_identity_key(route.live_device.fingerprint.identity_key.as_deref())
+            .unwrap_or("<none>");
     let inventory = describe_iokit_info_list(infos);
     let matched = describe_iokit_info_list(&matched_infos);
     let candidate_summary = describe_iokit_info_list(&candidates);
@@ -2027,18 +2032,17 @@ fn try_build_gesture_session_for_route(
     for info in infos
         .iter()
         .filter(|info| iokit_info_matches_route(info, route))
-        .cloned()
     {
-        for candidate in iokit_open_candidates(&info) {
-        let Ok(device) = MacOsNativeHidDevice::open(&candidate) else {
-            continue;
-        };
+        for candidate in iokit_open_candidates(info) {
+            let Ok(device) = MacOsNativeHidDevice::open(&candidate) else {
+                continue;
+            };
 
             match initialize_gesture_session(shared, route.clone(), info.clone(), device) {
-            Ok(session) => return Ok(session),
-            Err(error) => last_error = Some(error),
+                Ok(session) => return Ok(session),
+                Err(error) => last_error = Some(error),
+            }
         }
-    }
     }
 
     Err(last_error.unwrap_or_else(|| {
@@ -2106,7 +2110,7 @@ fn try_initialize_reprog_session(
             } else {
                 GESTURE_DIVERT_FLAGS
             };
-            if set_gesture_reporting(&device, dev_idx, feature_idx, *cid, flags, 250)?.is_some() {
+            if set_gesture_reporting(device, dev_idx, feature_idx, *cid, flags, 250)?.is_some() {
                 diverted.push((route.control, *cid, route.rawxy_enabled));
                 shared.push_gesture_debug(format!(
                     "Diverted cid 0x{:04X} for {} via devIdx=0x{:02X} rawxy={}",
@@ -2169,9 +2173,8 @@ fn iokit_info_matches_active_target(
     identity_key: Option<&str>,
 ) -> bool {
     if let Some(identity_key) = normalized_identity_key(identity_key) {
-        return normalized_identity_key(
-            fingerprint_from_iokit_info(info).identity_key.as_deref(),
-        ) == Some(identity_key);
+        return normalized_identity_key(fingerprint_from_iokit_info(info).identity_key.as_deref())
+            == Some(identity_key);
     }
 
     model_key.is_some_and(|model_key| {
@@ -2251,7 +2254,8 @@ fn describe_iokit_info_list(infos: &[MacOsIoKitInfo]) -> String {
     if infos.is_empty() {
         "<none>".to_string()
     } else {
-        infos.iter()
+        infos
+            .iter()
             .map(describe_iokit_info)
             .collect::<Vec<_>>()
             .join(" | ")
@@ -2281,8 +2285,12 @@ fn describe_thumb_wheel_route_diagnostics(routes: &[MacOsDeviceRoute]) -> String
                 route.managed_device_key,
                 route.device_settings.macos_thumb_wheel_simulate_trackpad,
                 route.device_settings.invert_horizontal_scroll,
-                route.action_for(LogicalControl::HscrollLeft).unwrap_or("none"),
-                route.action_for(LogicalControl::HscrollRight).unwrap_or("none"),
+                route
+                    .action_for(LogicalControl::HscrollLeft)
+                    .unwrap_or("none"),
+                route
+                    .action_for(LogicalControl::HscrollRight)
+                    .unwrap_or("none"),
             )
         })
         .collect::<Vec<_>>()
@@ -2682,12 +2690,8 @@ fn execute_action(action_id: &str) -> Result<(), PlatformError> {
         "select_all" => send_key_combo(&[KeyCode::COMMAND, KeyCode::ANSI_A]),
         "save" => send_key_combo(&[KeyCode::COMMAND, KeyCode::ANSI_S]),
         "find" => send_key_combo(&[KeyCode::COMMAND, KeyCode::ANSI_F]),
-        "screen_capture" => {
-            send_key_combo(&[KeyCode::COMMAND, KeyCode::SHIFT, KeyCode::ANSI_4])
-        }
-        "emoji_picker" => {
-            send_key_combo(&[KeyCode::CONTROL, KeyCode::COMMAND, KeyCode::SPACE])
-        }
+        "screen_capture" => send_key_combo(&[KeyCode::COMMAND, KeyCode::SHIFT, KeyCode::ANSI_4]),
+        "emoji_picker" => send_key_combo(&[KeyCode::CONTROL, KeyCode::COMMAND, KeyCode::SPACE]),
         "volume_up" => send_media_key(NX_VOL_UP),
         "volume_down" => send_media_key(NX_VOL_DOWN),
         "volume_mute" => send_media_key(NX_MUTE),
@@ -2984,25 +2988,51 @@ mod tests {
     fn control_for_button_maps_supported_buttons() {
         assert_eq!(control_for_button(BTN_MIDDLE), Some(LogicalControl::Middle));
         assert_eq!(control_for_button(BTN_BACK), Some(LogicalControl::Back));
-        assert_eq!(control_for_button(BTN_FORWARD), Some(LogicalControl::Forward));
+        assert_eq!(
+            control_for_button(BTN_FORWARD),
+            Some(LogicalControl::Forward)
+        );
         assert_eq!(control_for_button(99), None);
     }
 
     #[test]
     fn unique_route_for_control_requires_an_unambiguous_match() {
         let config = test_config(vec![
-            test_route("mx_master_3-1", &[(LogicalControl::Back, "mission_control")], |_| {}),
-            test_route("mx_master_3-2", &[(LogicalControl::Middle, "launchpad")], |_| {}),
+            test_route(
+                "mx_master_3-1",
+                &[(LogicalControl::Back, "mission_control")],
+                |_| {},
+            ),
+            test_route(
+                "mx_master_3-2",
+                &[(LogicalControl::Middle, "launchpad")],
+                |_| {},
+            ),
         ]);
 
         let route = config.unique_route_for_control(LogicalControl::Back);
-        assert_eq!(route.as_ref().map(|route| route.managed_device_key.as_str()), Some("mx_master_3-1"));
+        assert_eq!(
+            route
+                .as_ref()
+                .map(|route| route.managed_device_key.as_str()),
+            Some("mx_master_3-1")
+        );
 
         let ambiguous = test_config(vec![
-            test_route("mx_master_3-1", &[(LogicalControl::Back, "mission_control")], |_| {}),
-            test_route("mx_master_3-2", &[(LogicalControl::Back, "launchpad")], |_| {}),
+            test_route(
+                "mx_master_3-1",
+                &[(LogicalControl::Back, "mission_control")],
+                |_| {},
+            ),
+            test_route(
+                "mx_master_3-2",
+                &[(LogicalControl::Back, "launchpad")],
+                |_| {},
+            ),
         ]);
-        assert!(ambiguous.unique_route_for_control(LogicalControl::Back).is_none());
+        assert!(ambiguous
+            .unique_route_for_control(LogicalControl::Back)
+            .is_none());
     }
 
     #[test]

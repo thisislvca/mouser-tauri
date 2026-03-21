@@ -2272,7 +2272,6 @@ version = "0.1.0"
 dependencies = [
  "mouser-core",
  "mouser-import",
- "mouser-mock",
  "mouser-platform",
  "serde",
  "serde_json",

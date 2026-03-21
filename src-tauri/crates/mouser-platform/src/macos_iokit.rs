@@ -531,7 +531,10 @@ impl MacOsNativeHidDevice {
         Ok(Vec::new())
     }
 
-    pub fn read_value_timeout(&self, timeout_ms: i32) -> Result<Option<MacOsInputValueEvent>, PlatformError> {
+    pub fn read_value_timeout(
+        &self,
+        timeout_ms: i32,
+    ) -> Result<Option<MacOsInputValueEvent>, PlatformError> {
         match self.value_receiver.try_recv() {
             Ok(event) => return Ok(Some(event)),
             Err(TryRecvError::Disconnected) => {

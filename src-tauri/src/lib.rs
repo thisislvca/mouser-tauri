@@ -1,23 +1,19 @@
+mod config;
 mod runtime;
 
-use std::{
-    collections::BTreeMap,
-    sync::{mpsc, Mutex, MutexGuard},
-    time::Duration,
-};
+#[cfg(test)]
+use std::collections::BTreeMap;
 
 use mouser_core::{
-    AppConfig, AppDiscoverySnapshot, AppIdentity, BootstrapPayload, DebugEvent, DebugEventKind,
-    DeviceInfo, DeviceRoutingChange, DeviceRoutingChangeKind, DeviceRoutingEntry,
-    DeviceRoutingEvent, DeviceRoutingSnapshot, DeviceSettings, EngineSnapshot, LegacyImportReport,
-    Profile, Settings,
+    AppConfig, AppDiscoverySnapshot, BootstrapPayload, DebugEvent, DeviceInfo, DeviceRoutingEvent,
+    DeviceRoutingSnapshot, DeviceSettings, EngineSnapshot, LegacyImportReport, Profile, Settings,
 };
-use mouser_import::{import_legacy_config as import_legacy_payload, ImportSource};
+#[cfg(test)]
+use mouser_core::{DeviceRoutingChange, DeviceRoutingChangeKind, DeviceRoutingEntry};
 #[cfg(target_os = "macos")]
 use mouser_platform::macos::{MacOsAppFocusMonitor, MacOsDeviceMonitor};
 #[cfg(target_os = "windows")]
 use mouser_platform::windows::WindowsAppFocusMonitor;
-use runtime::AppRuntime;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -28,6 +24,11 @@ use tauri::{
 };
 use tauri_specta::{collect_commands, collect_events, Builder, Event as SpectaEvent};
 
+use runtime::{
+    RuntimeBackgroundUpdate, RuntimeMutationResult, RuntimeNotification, RuntimeNotifier,
+    RuntimeService,
+};
+
 const TRAY_ID: &str = "main";
 const TRAY_SHOW_ID: &str = "show";
 const TRAY_TOGGLE_REMAPPING_ID: &str = "toggle_remapping";
@@ -35,26 +36,10 @@ const TRAY_TOGGLE_DEBUG_ID: &str = "toggle_debug";
 const TRAY_QUIT_ID: &str = "quit";
 
 struct AppState {
-    runtime: Mutex<AppRuntime>,
+    runtime: RuntimeService,
 }
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-#[derive(Debug, Clone)]
-enum RuntimeSignal {
-    DevicesChanged,
-    FrontmostAppChanged(Option<AppIdentity>),
-    HookDrain,
-    SafetyResync,
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-type RuntimeSignalTx = mpsc::SyncSender<RuntimeSignal>;
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-const RUNTIME_SIGNAL_BUFFER: usize = 32;
 
 type CommandResult<T> = Result<T, String>;
-const RUNTIME_STATE_ERROR: &str = "runtime state is unavailable";
 
 #[derive(Debug, Deserialize, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -96,16 +81,20 @@ struct DebugEventEnvelope(pub DebugEvent);
 #[tauri_specta(event_name = "device_routing_changed")]
 struct DeviceRoutingChangedEvent(pub DeviceRoutingEvent);
 
+fn runtime_service<'a>(state: &'a State<'a, AppState>) -> &'a RuntimeService {
+    &state.inner().runtime
+}
+
 #[tauri::command]
 #[specta::specta]
 fn bootstrap_load(state: State<'_, AppState>) -> CommandResult<BootstrapPayload> {
-    with_runtime(&state, AppRuntime::bootstrap_payload)
+    runtime_service(&state).bootstrap_load()
 }
 
 #[tauri::command]
 #[specta::specta]
 fn config_get(state: State<'_, AppState>) -> CommandResult<AppConfig> {
-    with_runtime(&state, AppRuntime::config)
+    runtime_service(&state).config_get()
 }
 
 #[tauri::command]
@@ -115,7 +104,8 @@ fn config_save(
     state: State<'_, AppState>,
     config: AppConfig,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| runtime.save_config(config))
+    let result = runtime_service(&state).config_save(config)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -125,9 +115,8 @@ fn app_settings_update(
     state: State<'_, AppState>,
     settings: Settings,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
-        runtime.update_app_settings(settings)
-    })
+    let result = runtime_service(&state).app_settings_update(settings)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -137,9 +126,8 @@ fn device_defaults_update(
     state: State<'_, AppState>,
     settings: DeviceSettings,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
-        runtime.update_device_defaults(settings)
-    })
+    let result = runtime_service(&state).device_defaults_update(settings)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -149,7 +137,8 @@ fn profiles_create(
     state: State<'_, AppState>,
     profile: Profile,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| runtime.create_profile(profile))
+    let result = runtime_service(&state).profiles_create(profile)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -159,7 +148,8 @@ fn profiles_update(
     state: State<'_, AppState>,
     profile: Profile,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| runtime.update_profile(profile))
+    let result = runtime_service(&state).profiles_update(profile)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -169,7 +159,8 @@ fn profiles_delete(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| runtime.delete_profile(&profile_id))
+    let result = runtime_service(&state).profiles_delete(profile_id)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -178,7 +169,8 @@ fn app_discovery_refresh(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, AppRuntime::refresh_app_discovery)
+    let result = runtime_service(&state).app_discovery_refresh()?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -197,9 +189,8 @@ fn devices_update_settings(
     device_key: String,
     settings: DeviceSettings,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
-        runtime.update_managed_device_settings(&device_key, settings)
-    })
+    let result = runtime_service(&state).devices_update_settings(device_key, settings)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -210,9 +201,8 @@ fn devices_update_profile(
     device_key: String,
     profile_id: Option<String>,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
-        runtime.update_managed_device_profile(&device_key, profile_id)
-    })
+    let result = runtime_service(&state).devices_update_profile(device_key, profile_id)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -223,9 +213,8 @@ fn devices_update_nickname(
     device_key: String,
     nickname: Option<String>,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
-        runtime.update_managed_device_nickname(&device_key, nickname)
-    })
+    let result = runtime_service(&state).devices_update_nickname(device_key, nickname)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -235,15 +224,14 @@ fn devices_reset_to_factory(
     state: State<'_, AppState>,
     device_key: String,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
-        runtime.reset_managed_device_to_factory_defaults(&device_key)
-    })
+    let result = runtime_service(&state).devices_reset_to_factory(device_key)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
 #[specta::specta]
 fn devices_list(state: State<'_, AppState>) -> CommandResult<Vec<DeviceInfo>> {
-    with_runtime(&state, AppRuntime::devices)
+    runtime_service(&state).devices_list()
 }
 
 #[tauri::command]
@@ -253,9 +241,8 @@ fn devices_add(
     state: State<'_, AppState>,
     model_key: String,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
-        runtime.add_managed_device(&model_key)
-    })
+    let result = runtime_service(&state).devices_add(model_key)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -265,9 +252,8 @@ fn devices_remove(
     state: State<'_, AppState>,
     device_key: String,
 ) -> Result<BootstrapPayload, String> {
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
-        runtime.remove_managed_device(&device_key)
-    })
+    let result = runtime_service(&state).devices_remove(device_key)?;
+    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -277,10 +263,8 @@ fn devices_select(
     state: State<'_, AppState>,
     device_key: String,
 ) -> Result<EngineSnapshot, String> {
-    let payload = mutate_runtime_and_emit_payload(&app, &state, |runtime| {
-        runtime.select_device(&device_key)
-    })?;
-    Ok(payload.engine_snapshot)
+    let result = runtime_service(&state).devices_select(device_key)?;
+    emit_engine_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -300,149 +284,16 @@ fn import_legacy_config(
     state: State<'_, AppState>,
     request: ImportLegacyConfigRequest,
 ) -> Result<LegacyImportReport, String> {
-    let report = import_legacy_payload(ImportSource {
-        source_path: request.source_path,
-        raw_json: request.raw_json,
-    })
-    .map_err(|error| error.to_string())?;
-
-    mutate_runtime_and_emit_payload(&app, &state, |runtime| {
-        runtime.apply_imported_config(report.config.clone())
-    })?;
-    Ok(report)
+    let result =
+        runtime_service(&state).import_legacy_config(request.source_path, request.raw_json)?;
+    emit_import_mutation_result(&app, result)
 }
 
 #[tauri::command]
 #[specta::specta]
 fn debug_clear_log(app: AppHandle, state: State<'_, AppState>) -> Result<EngineSnapshot, String> {
-    let payload = with_runtime_mut(&state, |runtime| {
-        runtime.clear_debug_log();
-        runtime.bootstrap_payload()
-    })?;
-    emit_runtime_events(&app, &payload, &[], false, None)?;
-    Ok(payload.engine_snapshot)
-}
-
-fn lock_runtime<'a>(state: &'a State<'_, AppState>) -> CommandResult<MutexGuard<'a, AppRuntime>> {
-    state
-        .runtime
-        .lock()
-        .map_err(|_| RUNTIME_STATE_ERROR.to_string())
-}
-
-fn with_runtime<T>(
-    state: &State<'_, AppState>,
-    f: impl FnOnce(&AppRuntime) -> T,
-) -> CommandResult<T> {
-    let runtime = lock_runtime(state)?;
-    Ok(f(&runtime))
-}
-
-fn with_runtime_mut<T>(
-    state: &State<'_, AppState>,
-    f: impl FnOnce(&mut AppRuntime) -> T,
-) -> CommandResult<T> {
-    let mut runtime = lock_runtime(state)?;
-    Ok(f(&mut runtime))
-}
-
-fn mutate_runtime_and_emit<T>(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
-    f: impl FnOnce(&mut AppRuntime) -> T,
-) -> Result<(T, BootstrapPayload), String> {
-    let (result, payload, debug_events, app_discovery_changed, device_routing_event) =
-        with_runtime_mut(state, |runtime| {
-            let previous_debug_cursor = runtime.debug_event_cursor();
-            let previous_app_discovery = runtime.app_discovery_snapshot();
-            let previous_device_routing = runtime.device_routing_snapshot();
-            let result = f(runtime);
-            let payload = runtime.bootstrap_payload();
-            let debug_events = runtime.debug_events_since(previous_debug_cursor);
-            let app_discovery_changed = payload.app_discovery != previous_app_discovery;
-            let device_routing_event = build_device_routing_event(
-                &previous_device_routing,
-                &payload.engine_snapshot.device_routing,
-            );
-            (
-                result,
-                payload,
-                debug_events,
-                app_discovery_changed,
-                device_routing_event,
-            )
-        })?;
-    emit_runtime_events(
-        app,
-        &payload,
-        &debug_events,
-        app_discovery_changed,
-        device_routing_event.as_ref(),
-    )?;
-    Ok((result, payload))
-}
-
-fn mutate_runtime_and_emit_payload<T>(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
-    f: impl FnOnce(&mut AppRuntime) -> T,
-) -> Result<BootstrapPayload, String> {
-    let (_, payload) = mutate_runtime_and_emit(app, state, f)?;
-    Ok(payload)
-}
-
-fn with_manager_runtime<M, T>(manager: &M, f: impl FnOnce(&mut AppRuntime) -> T) -> CommandResult<T>
-where
-    M: Manager<Wry>,
-{
-    let state = manager.state::<AppState>();
-    let mut runtime = state
-        .runtime
-        .lock()
-        .map_err(|_| RUNTIME_STATE_ERROR.to_string())?;
-    Ok(f(&mut runtime))
-}
-
-fn emit_runtime_updates_if_changed(
-    app: &AppHandle,
-    f: impl FnOnce(&mut AppRuntime) -> runtime::RuntimeUpdateEffect,
-) -> Result<(), String> {
-    let result = with_manager_runtime(app, |runtime| {
-        let previous_device_routing = runtime.device_routing_snapshot();
-        let effect = f(runtime);
-        let payload = effect.payload_changed.then(|| runtime.bootstrap_payload());
-        let device_routing_event = payload.as_ref().and_then(|payload| {
-            build_device_routing_event(
-                &previous_device_routing,
-                &payload.engine_snapshot.device_routing,
-            )
-        });
-        (
-            payload,
-            effect.debug_events,
-            effect.app_discovery_changed,
-            device_routing_event,
-        )
-    })?;
-
-    let (payload, debug_events, app_discovery_changed, device_routing_event) = result;
-    if let Some(payload) = payload {
-        emit_runtime_events(
-            app,
-            &payload,
-            &debug_events,
-            app_discovery_changed,
-            device_routing_event.as_ref(),
-        )?;
-    } else if let Some(device_routing_event) = device_routing_event {
-        DeviceRoutingChangedEvent(device_routing_event)
-            .emit(app)
-            .map_err(|error| error.to_string())?;
-    } else if !debug_events.is_empty() {
-        emit_debug_events(app, &debug_events)?;
-    }
-
-    Ok(())
+    let result = runtime_service(&state).debug_clear_log()?;
+    emit_engine_mutation_result(&app, result)
 }
 
 fn emit_runtime_events(
@@ -498,6 +349,71 @@ fn emit_debug_events(app: &AppHandle, debug_events: &[DebugEvent]) -> Result<(),
     Ok(())
 }
 
+fn emit_background_update(app: &AppHandle, update: RuntimeBackgroundUpdate) -> Result<(), String> {
+    if let Some(payload) = update.payload {
+        emit_runtime_events(
+            app,
+            &payload,
+            &update.debug_events,
+            update.app_discovery_changed,
+            update.device_routing_event.as_ref(),
+        )?;
+    } else if let Some(device_routing_event) = update.device_routing_event {
+        DeviceRoutingChangedEvent(device_routing_event)
+            .emit(app)
+            .map_err(|error| error.to_string())?;
+    } else if !update.debug_events.is_empty() {
+        emit_debug_events(app, &update.debug_events)?;
+    }
+
+    Ok(())
+}
+
+fn emit_mutation_result(
+    app: &AppHandle,
+    result: RuntimeMutationResult<BootstrapPayload>,
+) -> Result<BootstrapPayload, String> {
+    emit_runtime_events(
+        app,
+        &result.payload,
+        &result.debug_events,
+        result.app_discovery_changed,
+        result.device_routing_event.as_ref(),
+    )?;
+    Ok(result.result)
+}
+
+fn emit_engine_mutation_result(
+    app: &AppHandle,
+    result: RuntimeMutationResult<EngineSnapshot>,
+) -> Result<EngineSnapshot, String> {
+    let engine_snapshot = result.result;
+    emit_runtime_events(
+        app,
+        &result.payload,
+        &result.debug_events,
+        result.app_discovery_changed,
+        result.device_routing_event.as_ref(),
+    )?;
+    Ok(engine_snapshot)
+}
+
+fn emit_import_mutation_result(
+    app: &AppHandle,
+    result: RuntimeMutationResult<LegacyImportReport>,
+) -> Result<LegacyImportReport, String> {
+    let report = result.result;
+    emit_runtime_events(
+        app,
+        &result.payload,
+        &result.debug_events,
+        result.app_discovery_changed,
+        result.device_routing_event.as_ref(),
+    )?;
+    Ok(report)
+}
+
+#[cfg(test)]
 fn build_device_routing_event(
     previous: &DeviceRoutingSnapshot,
     next: &DeviceRoutingSnapshot,
@@ -564,6 +480,7 @@ fn build_device_routing_event(
     })
 }
 
+#[cfg(test)]
 fn device_routing_change(
     kind: DeviceRoutingChangeKind,
     entry: &DeviceRoutingEntry,
@@ -574,208 +491,6 @@ fn device_routing_change(
         managed_device_key: entry.managed_device_key.clone(),
         resolved_profile_id: entry.resolved_profile_id.clone(),
         match_kind: Some(entry.match_kind),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn push_runtime_debug_event(app: &AppHandle, kind: DebugEventKind, message: impl Into<String>) {
-    let message = message.into();
-    let Ok((payload, debug_events)) = with_manager_runtime(app, |runtime| {
-        let previous_debug_cursor = runtime.debug_event_cursor();
-        runtime.record_debug_event(kind, message);
-        let debug_events = runtime.debug_events_since(previous_debug_cursor);
-        (runtime.bootstrap_payload(), debug_events)
-    }) else {
-        return;
-    };
-    let _ = emit_runtime_events(app, &payload, &debug_events, false, None);
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn enqueue_runtime_signal(tx: &RuntimeSignalTx, signal: RuntimeSignal) -> bool {
-    match tx.try_send(signal) {
-        Ok(()) | Err(mpsc::TrySendError::Full(_)) => true,
-        Err(mpsc::TrySendError::Disconnected(_)) => false,
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn spawn_periodic_runtime_signal(tx: RuntimeSignalTx, signal: RuntimeSignal, interval: Duration) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(interval);
-        if !enqueue_runtime_signal(&tx, signal.clone()) {
-            break;
-        }
-    });
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn spawn_focus_fallback(app: AppHandle, tx: RuntimeSignalTx) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(2));
-
-        let Ok((_hid_backend, app_focus_backend, _hook_backend)) =
-            with_manager_runtime(&app, |runtime| runtime.poll_backends())
-        else {
-            break;
-        };
-
-        let frontmost_app = app_focus_backend.current_frontmost_app().ok().flatten();
-        if !enqueue_runtime_signal(&tx, RuntimeSignal::FrontmostAppChanged(frontmost_app)) {
-            break;
-        }
-    });
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn run_runtime_monitor(app: AppHandle, rx: mpsc::Receiver<RuntimeSignal>) {
-    while let Ok(signal) = rx.recv() {
-        let (devices, frontmost_app, hook_events) = match signal {
-            RuntimeSignal::DevicesChanged => {
-                let Ok((hid_backend, _app_focus_backend, hook_backend)) =
-                    with_manager_runtime(&app, |runtime| runtime.poll_backends())
-                else {
-                    break;
-                };
-                (
-                    Some(hid_backend.list_devices()),
-                    None,
-                    hook_backend.drain_events(),
-                )
-            }
-            RuntimeSignal::FrontmostAppChanged(frontmost_app) => {
-                let Ok((_hid_backend, _app_focus_backend, hook_backend)) =
-                    with_manager_runtime(&app, |runtime| runtime.poll_backends())
-                else {
-                    break;
-                };
-                (None, Some(Ok(frontmost_app)), hook_backend.drain_events())
-            }
-            RuntimeSignal::HookDrain => {
-                let Ok((_hid_backend, _app_focus_backend, hook_backend)) =
-                    with_manager_runtime(&app, |runtime| runtime.poll_backends())
-                else {
-                    break;
-                };
-                (None, None, hook_backend.drain_events())
-            }
-            RuntimeSignal::SafetyResync => {
-                let Ok((hid_backend, app_focus_backend, hook_backend)) =
-                    with_manager_runtime(&app, |runtime| runtime.poll_backends())
-                else {
-                    break;
-                };
-                (
-                    Some(hid_backend.list_devices()),
-                    Some(app_focus_backend.current_frontmost_app()),
-                    hook_backend.drain_events(),
-                )
-            }
-        };
-
-        if emit_runtime_updates_if_changed(&app, move |runtime| {
-            runtime.apply_runtime_updates(devices, frontmost_app, hook_events)
-        })
-        .is_err()
-        {
-            break;
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn spawn_runtime_monitor(app: AppHandle) {
-    let (tx, rx) = mpsc::sync_channel::<RuntimeSignal>(RUNTIME_SIGNAL_BUFFER);
-    let monitor_app = app.clone();
-    std::thread::spawn(move || run_runtime_monitor(monitor_app, rx));
-
-    spawn_periodic_runtime_signal(
-        tx.clone(),
-        RuntimeSignal::HookDrain,
-        Duration::from_millis(500),
-    );
-    spawn_periodic_runtime_signal(
-        tx.clone(),
-        RuntimeSignal::SafetyResync,
-        Duration::from_secs(30),
-    );
-
-    let device_signal_tx = tx.clone();
-    match MacOsDeviceMonitor::new(move || {
-        let _ = enqueue_runtime_signal(&device_signal_tx, RuntimeSignal::DevicesChanged);
-    }) {
-        Ok(monitor) => std::mem::forget(monitor),
-        Err(error) => {
-            push_runtime_debug_event(
-                &app,
-                DebugEventKind::Warning,
-                format!("macOS HID device monitor unavailable: {error}"),
-            );
-            spawn_periodic_runtime_signal(
-                tx.clone(),
-                RuntimeSignal::DevicesChanged,
-                Duration::from_secs(5),
-            );
-        }
-    }
-
-    let focus_signal_tx = tx.clone();
-    match MacOsAppFocusMonitor::new(move |frontmost_app| {
-        let _ = enqueue_runtime_signal(
-            &focus_signal_tx,
-            RuntimeSignal::FrontmostAppChanged(frontmost_app),
-        );
-    }) {
-        Ok(monitor) => std::mem::forget(monitor),
-        Err(error) => {
-            push_runtime_debug_event(
-                &app,
-                DebugEventKind::Warning,
-                format!("macOS app-focus monitor unavailable: {error}"),
-            );
-            spawn_focus_fallback(app, tx);
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn spawn_runtime_monitor(app: AppHandle) {
-    let (tx, rx) = mpsc::sync_channel::<RuntimeSignal>(RUNTIME_SIGNAL_BUFFER);
-    let monitor_app = app.clone();
-    std::thread::spawn(move || run_runtime_monitor(monitor_app, rx));
-
-    spawn_periodic_runtime_signal(
-        tx.clone(),
-        RuntimeSignal::HookDrain,
-        Duration::from_millis(500),
-    );
-    spawn_periodic_runtime_signal(
-        tx.clone(),
-        RuntimeSignal::SafetyResync,
-        Duration::from_secs(30),
-    );
-    spawn_periodic_runtime_signal(
-        tx.clone(),
-        RuntimeSignal::DevicesChanged,
-        Duration::from_secs(5),
-    );
-
-    let focus_signal_tx = tx.clone();
-    match WindowsAppFocusMonitor::new(move |frontmost_app| {
-        let _ = enqueue_runtime_signal(
-            &focus_signal_tx,
-            RuntimeSignal::FrontmostAppChanged(frontmost_app),
-        );
-    }) {
-        Ok(monitor) => std::mem::forget(monitor),
-        Err(error) => {
-            push_runtime_debug_event(
-                &app,
-                DebugEventKind::Warning,
-                format!("Windows app-focus monitor unavailable: {error}"),
-            );
-            spawn_focus_fallback(app, tx);
-        }
     }
 }
 
@@ -807,6 +522,107 @@ fn show_main_window(app: &AppHandle<Wry>) {
     }
 }
 
+#[cfg(target_os = "macos")]
+struct RuntimeMonitors {
+    _device_monitor: Option<MacOsDeviceMonitor>,
+    _app_focus_monitor: Option<MacOsAppFocusMonitor>,
+}
+
+#[cfg(target_os = "windows")]
+struct RuntimeMonitors {
+    _app_focus_monitor: Option<WindowsAppFocusMonitor>,
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+struct RuntimeMonitors;
+
+fn push_runtime_debug_event(
+    runtime: &RuntimeNotifier,
+    kind: mouser_core::DebugEventKind,
+    message: impl Into<String>,
+) {
+    let _ = runtime.notify(RuntimeNotification::RecordDebugEvent {
+        kind,
+        message: message.into(),
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn start_runtime_monitors(app: &tauri::App) -> Result<RuntimeMonitors, String> {
+    let state = app.state::<AppState>();
+    let runtime = &state.inner().runtime;
+    let notifier = runtime.notifier();
+
+    let device_notifier = notifier.clone();
+    let device_monitor = match MacOsDeviceMonitor::new(move || {
+        let _ = device_notifier.notify(RuntimeNotification::DevicesChanged);
+    }) {
+        Ok(monitor) => Some(monitor),
+        Err(error) => {
+            push_runtime_debug_event(
+                &notifier,
+                mouser_core::DebugEventKind::Warning,
+                format!("macOS HID device monitor unavailable: {error}"),
+            );
+            runtime.start_device_polling()?;
+            None
+        }
+    };
+
+    let focus_notifier = notifier.clone();
+    let app_focus_monitor = match MacOsAppFocusMonitor::new(move |frontmost_app| {
+        let _ = focus_notifier.notify(RuntimeNotification::FrontmostAppChanged(frontmost_app));
+    }) {
+        Ok(monitor) => Some(monitor),
+        Err(error) => {
+            push_runtime_debug_event(
+                &notifier,
+                mouser_core::DebugEventKind::Warning,
+                format!("macOS app-focus monitor unavailable: {error}"),
+            );
+            runtime.start_focus_fallback()?;
+            None
+        }
+    };
+
+    Ok(RuntimeMonitors {
+        _device_monitor: device_monitor,
+        _app_focus_monitor: app_focus_monitor,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn start_runtime_monitors(app: &tauri::App) -> Result<RuntimeMonitors, String> {
+    let state = app.state::<AppState>();
+    let runtime = &state.inner().runtime;
+    let notifier = runtime.notifier();
+
+    let focus_notifier = notifier.clone();
+    let app_focus_monitor = match WindowsAppFocusMonitor::new(move |frontmost_app| {
+        let _ = focus_notifier.notify(RuntimeNotification::FrontmostAppChanged(frontmost_app));
+    }) {
+        Ok(monitor) => Some(monitor),
+        Err(error) => {
+            push_runtime_debug_event(
+                &notifier,
+                mouser_core::DebugEventKind::Warning,
+                format!("Windows app-focus monitor unavailable: {error}"),
+            );
+            runtime.start_focus_fallback()?;
+            None
+        }
+    };
+
+    Ok(RuntimeMonitors {
+        _app_focus_monitor: app_focus_monitor,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn start_runtime_monitors(_app: &tauri::App) -> Result<RuntimeMonitors, String> {
+    Ok(RuntimeMonitors)
+}
+
 fn sync_tray_menu(app: &AppHandle<Wry>, payload: &BootstrapPayload) -> Result<(), String> {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return Ok(());
@@ -823,9 +639,65 @@ fn sync_tray_menu(app: &AppHandle<Wry>, payload: &BootstrapPayload) -> Result<()
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let (remapping_enabled, debug_mode) =
-        with_manager_runtime(app, |runtime| (runtime.enabled(), runtime.debug_mode()))
-            .unwrap_or((true, false));
+    let state = app.state::<AppState>();
+    let runtime = &state.inner().runtime;
+    let bootstrap = runtime
+        .bootstrap_load()
+        .unwrap_or_else(|_| BootstrapPayload {
+            config: AppConfig {
+                version: 4,
+                active_profile_id: "default".to_string(),
+                profiles: Vec::new(),
+                managed_devices: Vec::new(),
+                settings: Settings {
+                    start_minimized: true,
+                    start_at_login: false,
+                    appearance_mode: mouser_core::AppearanceMode::System,
+                    debug_mode: false,
+                    debug_log_groups: mouser_core::default_debug_log_groups(),
+                },
+                device_defaults: mouser_core::default_device_settings(),
+            },
+            available_actions: Vec::new(),
+            known_apps: Vec::new(),
+            app_discovery: mouser_core::default_app_discovery_snapshot(),
+            supported_devices: Vec::new(),
+            layouts: Vec::new(),
+            engine_snapshot: EngineSnapshot {
+                devices: Vec::new(),
+                detected_devices: Vec::new(),
+                device_routing: DeviceRoutingSnapshot::default(),
+                active_device_key: None,
+                active_device: None,
+                engine_status: mouser_core::EngineStatus {
+                    enabled: true,
+                    connected: false,
+                    active_profile_id: "default".to_string(),
+                    frontmost_app: None,
+                    selected_device_key: None,
+                    debug_mode: false,
+                    debug_log: Vec::new(),
+                },
+            },
+            platform_capabilities: mouser_core::PlatformCapabilities {
+                platform: "unknown".to_string(),
+                windows_supported: true,
+                macos_supported: true,
+                live_hooks_available: false,
+                live_hid_available: false,
+                tray_ready: true,
+                mapping_engine_ready: false,
+                gesture_diversion_available: false,
+                active_hid_backend: "unknown".to_string(),
+                active_hook_backend: "unknown".to_string(),
+                active_focus_backend: "unknown".to_string(),
+                hidapi_available: false,
+                iokit_available: false,
+            },
+            manual_layout_choices: Vec::new(),
+        });
+    let remapping_enabled = bootstrap.engine_snapshot.engine_status.enabled;
+    let debug_mode = bootstrap.engine_snapshot.engine_status.debug_mode;
     let menu = build_tray_menu(app, remapping_enabled, debug_mode)?;
     let icon = app.default_window_icon().cloned();
     let builder = TrayIconBuilder::with_id(TRAY_ID)
@@ -836,36 +708,43 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             |app: &AppHandle<Wry>, event: MenuEvent| match event.id.as_ref() {
                 TRAY_SHOW_ID => show_main_window(app),
                 TRAY_TOGGLE_REMAPPING_ID => {
-                    let Ok((payload, debug_events)) = with_manager_runtime(app, |runtime| {
-                        let previous_debug_cursor = runtime.debug_event_cursor();
-                        let next_enabled = !runtime.enabled();
-                        runtime.set_enabled(next_enabled);
-                        (
-                            runtime.bootstrap_payload(),
-                            runtime.debug_events_since(previous_debug_cursor),
-                        )
-                    }) else {
+                    let state = app.state::<AppState>();
+                    let runtime = &state.inner().runtime;
+                    let current = runtime.bootstrap_load();
+                    let next_enabled = current
+                        .ok()
+                        .map(|payload| !payload.engine_snapshot.engine_status.enabled)
+                        .unwrap_or(true);
+                    let Ok(result) = runtime.set_enabled(next_enabled) else {
                         return;
                     };
-                    let _ = emit_runtime_events(app, &payload, &debug_events, false, None);
+                    let _ = emit_runtime_events(
+                        app,
+                        &result.payload,
+                        &result.debug_events,
+                        result.app_discovery_changed,
+                        result.device_routing_event.as_ref(),
+                    );
                 }
                 TRAY_TOGGLE_DEBUG_ID => {
-                    let Ok((payload, debug_events, debug_mode)) =
-                        with_manager_runtime(app, |runtime| {
-                            let previous_debug_cursor = runtime.debug_event_cursor();
-                            let next_debug_mode = !runtime.debug_mode();
-                            runtime.set_debug_mode(next_debug_mode);
-                            (
-                                runtime.bootstrap_payload(),
-                                runtime.debug_events_since(previous_debug_cursor),
-                                next_debug_mode,
-                            )
-                        })
-                    else {
+                    let state = app.state::<AppState>();
+                    let runtime = &state.inner().runtime;
+                    let current = runtime.bootstrap_load();
+                    let next_debug_mode = current
+                        .ok()
+                        .map(|payload| !payload.engine_snapshot.engine_status.debug_mode)
+                        .unwrap_or(true);
+                    let Ok(result) = runtime.set_debug_mode(next_debug_mode) else {
                         return;
                     };
-                    let _ = emit_runtime_events(app, &payload, &debug_events, false, None);
-                    if debug_mode {
+                    let _ = emit_runtime_events(
+                        app,
+                        &result.payload,
+                        &result.debug_events,
+                        result.app_discovery_changed,
+                        result.device_routing_event.as_ref(),
+                    );
+                    if next_debug_mode {
                         show_main_window(app);
                     }
                 }
@@ -882,32 +761,6 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
     Ok(())
 }
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn spawn_runtime_poller(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(900));
-
-        let Ok((hid_backend, app_focus_backend, hook_backend)) =
-            with_manager_runtime(&app, |runtime| runtime.poll_backends())
-        else {
-            break;
-        };
-
-        let devices = hid_backend.list_devices();
-        let frontmost_app = app_focus_backend.current_frontmost_app();
-        let hook_events = hook_backend.drain_events();
-
-        if emit_runtime_updates_if_changed(&app, move |runtime| {
-            runtime.apply_poll_results(devices, frontmost_app, hook_events)
-        })
-        .is_err()
-        {
-            break;
-        }
-    });
-}
-
 pub fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
@@ -975,24 +828,35 @@ pub fn run() {
     export_bindings().expect("failed to export specta bindings");
 
     let specta_builder = specta_builder();
+    let runtime = RuntimeService::new(None);
 
-    tauri::Builder::default()
-        .manage(AppState {
-            runtime: Mutex::new(AppRuntime::new(None)),
-        })
+    let app = tauri::Builder::default()
+        .manage(AppState { runtime })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(specta_builder.invoke_handler())
-        .setup(move |app| {
-            setup_tray(app)?;
-            specta_builder.mount_events(app);
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            spawn_runtime_monitor(app.handle().clone());
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-            spawn_runtime_poller(app.handle().clone());
-            Ok(())
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running mouser-tauri");
+        .build(tauri::generate_context!())
+        .expect("error while building mouser-tauri");
+
+    setup_tray(&app).expect("failed to set up tray");
+    specta_builder.mount_events(&app);
+
+    {
+        let state = app.state::<AppState>();
+        let runtime = &state.inner().runtime;
+        let app_handle = app.handle().clone();
+        runtime
+            .attach_listener(move |update| {
+                let _ = emit_background_update(&app_handle, update);
+            })
+            .expect("failed to attach runtime listener");
+        runtime
+            .start_background()
+            .expect("failed to start runtime background tasks");
+    }
+
+    let _runtime_monitors = start_runtime_monitors(&app).expect("failed to start runtime monitors");
+
+    app.run(|_, _| {});
 }
 
 #[cfg(test)]
