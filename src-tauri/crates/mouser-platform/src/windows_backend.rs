@@ -2333,16 +2333,33 @@ fn powershell_stdout(script: &str, args: &[&str]) -> Result<String, PlatformErro
         command.arg(arg);
     }
 
-    let output = match command.output() {
-        Ok(output) => output,
-        Err(_) => return Ok(String::new()),
-    };
+    let output = command.output().map_err(|error| {
+        PlatformError::Message(format!("failed to run powershell.exe: {error}"))
+    })?;
 
     if !output.status.success() {
-        return Ok(String::new());
+        return Err(powershell_command_failed(output.status, &output.stderr));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(trimmed_process_output(&output.stdout))
+}
+
+fn trimmed_process_output(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim().to_string()
+}
+
+fn powershell_command_failed(
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> PlatformError {
+    let stderr = trimmed_process_output(stderr);
+    if stderr.is_empty() {
+        PlatformError::Message(format!("powershell.exe exited with status {status}"))
+    } else {
+        PlatformError::Message(format!(
+            "powershell.exe exited with status {status}: {stderr}"
+        ))
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2779,6 +2796,8 @@ fn is_extended_key(vk: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
 
     #[test]
     fn telemetry_cache_key_prefers_identity_then_serial() {
@@ -2802,6 +2821,25 @@ mod tests {
         assert_eq!(
             telemetry_cache_key(Some(0xB034), Some("USB"), &serial_only),
             "serial:b034:abc123"
+        );
+    }
+
+    #[test]
+    fn trimmed_process_output_removes_outer_whitespace() {
+        assert_eq!(trimmed_process_output(b"  hello world \r\n"), "hello world");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn powershell_command_failed_includes_stderr_when_present() {
+        let error = powershell_command_failed(
+            std::process::ExitStatus::from_raw(256),
+            b"Access denied\r\n",
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "powershell.exe exited with status exit status: 1: Access denied"
         );
     }
 
