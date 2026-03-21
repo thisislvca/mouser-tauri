@@ -183,12 +183,14 @@ export const events = __makeEvents__<{
 appDiscoveryChangedEvent: AppDiscoveryChangedEvent,
 debugEventEnvelope: DebugEventEnvelope,
 deviceChangedEvent: DeviceChangedEvent,
+deviceRoutingChangedEvent: DeviceRoutingChangedEvent,
 engineStatusChangedEvent: EngineStatusChangedEvent,
 profileChangedEvent: ProfileChangedEvent
 }>({
 appDiscoveryChangedEvent: "app-discovery-changed-event",
 debugEventEnvelope: "debug-event-envelope",
 deviceChangedEvent: "device-changed-event",
+deviceRoutingChangedEvent: "device-routing-changed-event",
 engineStatusChangedEvent: "engine-status-changed-event",
 profileChangedEvent: "profile-changed-event"
 })
@@ -220,11 +222,18 @@ export type DeviceFingerprint = { identityKey: string | null; serialNumber: stri
 export type DeviceHotspot = { control: LogicalControl; label: string; summaryType: HotspotSummaryType; normX: number; normY: number; labelSide: LabelSide; labelOffX: number; labelOffY: number; isHscroll: boolean }
 export type DeviceInfo = { key: string; modelKey: string; displayName: string; nickname: string | null; productId: number | null; productName: string | null; transport: string | null; source: string | null; uiLayout: string; imageAsset: string; supportedControls: LogicalControl[]; controls?: DeviceControlSpec[]; support: DeviceSupportMatrix; gestureCids: number[]; dpiMin: number; dpiMax: number; dpiInferred?: boolean; dpiSourceKind?: string | null; connected: boolean; batteryLevel: number | null; currentDpi: number; fingerprint?: DeviceFingerprint }
 export type DeviceLayout = { key: string; label: string; imageAsset: string; imageWidth: number; imageHeight: number; interactive: boolean; manualSelectable: boolean; note: string; hotspots: DeviceHotspot[] }
+export type DeviceMatchKind = "identity" | "model_fallback" | "unmanaged"
+export type DeviceRoutingChange = { kind: DeviceRoutingChangeKind; liveDeviceKey: string; managedDeviceKey: string | null; resolvedProfileId: string | null; matchKind: DeviceMatchKind | null }
+export type DeviceRoutingChangeKind = "connected" | "disconnected" | "reassigned" | "active_target_changed" | "resolved_profile_changed"
+export type DeviceRoutingChangedEvent = DeviceRoutingEvent
+export type DeviceRoutingEntry = { liveDeviceKey: string; liveModelKey: string; liveDisplayName: string; liveIdentityKey: string | null; managedDeviceKey: string | null; managedDisplayName: string | null; deviceProfileId: string | null; resolvedProfileId: string | null; matchKind: DeviceMatchKind; isActiveTarget: boolean }
+export type DeviceRoutingEvent = { snapshot: DeviceRoutingSnapshot; changes: DeviceRoutingChange[] }
+export type DeviceRoutingSnapshot = { entries: DeviceRoutingEntry[] }
 export type DeviceSettings = { dpi: number; invertHorizontalScroll: boolean; invertVerticalScroll: boolean; macosThumbWheelSimulateTrackpad?: boolean; macosThumbWheelTrackpadHoldTimeoutMs?: number; gestureThreshold: number; gestureDeadzone: number; gestureTimeoutMs: number; gestureCooldownMs: number; manualLayoutOverride: string | null }
 export type DeviceSupportLevel = "full" | "partial" | "experimental"
 export type DeviceSupportMatrix = { level: DeviceSupportLevel; supportsBatteryStatus: boolean; supportsDpiConfiguration: boolean; hasInteractiveLayout: boolean; notes: string[] }
 export type DiscoveredApp = { id: string; label: string; description: string | null; matchers: AppMatcher[]; iconAsset: string | null; sourceKinds: AppDiscoverySource[]; sourcePath: string | null; suggested: boolean }
-export type EngineSnapshot = { devices: DeviceInfo[]; detectedDevices: DeviceInfo[]; activeDeviceKey: string | null; activeDevice: DeviceInfo | null; engineStatus: EngineStatus }
+export type EngineSnapshot = { devices: DeviceInfo[]; detectedDevices: DeviceInfo[]; deviceRouting?: DeviceRoutingSnapshot; activeDeviceKey: string | null; activeDevice: DeviceInfo | null; engineStatus: EngineStatus }
 export type EngineStatus = { enabled: boolean; connected: boolean; activeProfileId: string; frontmostApp: string | null; selectedDeviceKey: string | null; debugMode: boolean; debugLog: DebugEvent[] }
 export type EngineStatusChangedEvent = EngineStatus
 export type HotspotSummaryType = "mapping" | "gesture" | "hscroll"

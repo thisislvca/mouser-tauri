@@ -12,8 +12,9 @@ use mouser_core::{
     normalize_app_match_value, normalize_bindings, normalize_device_settings,
     profile_for_supported_controls, AppConfig, AppDiscoverySnapshot, AppIdentity, AppMatcher,
     AppMatcherKind, Binding, BootstrapPayload, CatalogApp, DebugEvent, DebugEventKind, DeviceInfo,
-    DeviceSettings, DiscoveredApp, EngineSnapshot, EngineSnapshotState, InstalledApp,
-    ManagedDevice, PlatformCapabilities, Profile,
+    DeviceMatchKind, DeviceRoutingEntry, DeviceRoutingSnapshot, DeviceSettings, DiscoveredApp,
+    EngineSnapshot, EngineSnapshotState, InstalledApp, ManagedDevice, PlatformCapabilities,
+    Profile,
 };
 use mouser_platform::{
     current_platform_name, host_hidapi_available, host_iokit_available,
@@ -45,7 +46,7 @@ pub struct AppRuntime {
 }
 
 struct DeviceResolution {
-    assignments: BTreeMap<String, usize>,
+    assignments: BTreeMap<String, LiveDeviceAssignment>,
     managed_devices: Vec<DeviceInfo>,
 }
 
@@ -55,8 +56,18 @@ impl DeviceResolution {
     }
 
     fn selected_live_device_index(&self, selected_device_key: Option<&str>) -> Option<usize> {
-        selected_device_key.and_then(|device_key| self.assignments.get(device_key).copied())
+        selected_device_key.and_then(|device_key| {
+            self.assignments
+                .get(device_key)
+                .map(|assignment| assignment.live_index)
+        })
     }
+}
+
+#[derive(Clone, Copy)]
+struct LiveDeviceAssignment {
+    live_index: usize,
+    match_kind: DeviceMatchKind,
 }
 
 pub struct RuntimeUpdateEffect {
@@ -520,10 +531,12 @@ impl AppRuntime {
 
     pub fn engine_snapshot(&self) -> EngineSnapshot {
         let resolution = self.device_resolution();
+        let device_routing = self.device_routing_snapshot_from_resolution(&resolution);
         let active_device = self.active_device_from_resolution(&resolution);
         build_engine_snapshot(
             resolution.managed_devices,
             self.detected_devices.clone(),
+            device_routing,
             self.selected_device_key.clone(),
             active_device,
             EngineSnapshotState {
@@ -538,6 +551,11 @@ impl AppRuntime {
                     .collect(),
             },
         )
+    }
+
+    pub fn device_routing_snapshot(&self) -> DeviceRoutingSnapshot {
+        let resolution = self.device_resolution();
+        self.device_routing_snapshot_from_resolution(&resolution)
     }
 
     fn persist_config(&mut self) {
@@ -715,8 +733,8 @@ impl AppRuntime {
         let assignments = self.matched_live_device_indexes();
         let now = now_ms();
         for device in &mut self.config.managed_devices {
-            if let Some(index) = assignments.get(&device.id) {
-                let live = &self.detected_devices[*index];
+            if let Some(assignment) = assignments.get(&device.id) {
+                let live = &self.detected_devices[assignment.live_index];
                 let was_connected = previously_connected.contains(&device.id);
                 if device.nickname.is_none() {
                     if let Some(live_product_name) = live
@@ -1186,7 +1204,7 @@ impl AppRuntime {
 
     fn device_resolution_with_assignments(
         &self,
-        assignments: BTreeMap<String, usize>,
+        assignments: BTreeMap<String, LiveDeviceAssignment>,
     ) -> DeviceResolution {
         let managed_devices = self
             .config
@@ -1195,7 +1213,7 @@ impl AppRuntime {
             .map(|device| {
                 let live = assignments
                     .get(&device.id)
-                    .and_then(|index| self.detected_devices.get(*index));
+                    .and_then(|assignment| self.detected_devices.get(assignment.live_index));
                 build_managed_device_info(device, live)
             })
             .collect();
@@ -1227,7 +1245,68 @@ impl AppRuntime {
             })
     }
 
-    fn matched_live_device_indexes(&self) -> BTreeMap<String, usize> {
+    fn device_routing_snapshot_from_resolution(
+        &self,
+        resolution: &DeviceResolution,
+    ) -> DeviceRoutingSnapshot {
+        let managed_by_id = self
+            .config
+            .managed_devices
+            .iter()
+            .map(|device| (device.id.as_str(), device))
+            .collect::<BTreeMap<_, _>>();
+
+        let assigned_live = resolution
+            .assignments
+            .iter()
+            .map(|(managed_device_key, assignment)| {
+                (assignment.live_index, (managed_device_key.as_str(), assignment.match_kind))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let mut entries = self
+            .detected_devices
+            .iter()
+            .enumerate()
+            .map(|(live_index, live)| {
+                let managed = assigned_live
+                    .get(&live_index)
+                    .and_then(|(managed_device_key, _)| managed_by_id.get(managed_device_key))
+                    .copied();
+                let device_profile_id = managed.and_then(|device| device.profile_id.clone());
+                let resolved_profile_id = managed.map(|device| {
+                    self.config
+                        .resolved_profile_id(device.profile_id.as_deref(), self.frontmost_app.as_ref())
+                });
+                let managed_device_key = managed.map(|device| device.id.clone());
+                let managed_display_name = managed.map(|device| device.display_name.clone());
+                let match_kind = assigned_live
+                    .get(&live_index)
+                    .map(|(_, match_kind)| *match_kind)
+                    .unwrap_or(DeviceMatchKind::Unmanaged);
+
+                DeviceRoutingEntry {
+                    live_device_key: live.key.clone(),
+                    live_model_key: live.model_key.clone(),
+                    live_display_name: live.display_name.clone(),
+                    live_identity_key: live.fingerprint.identity_key.clone(),
+                    managed_device_key: managed_device_key.clone(),
+                    managed_display_name,
+                    device_profile_id,
+                    resolved_profile_id,
+                    match_kind,
+                    is_active_target: managed_device_key
+                        .as_deref()
+                        .is_some_and(|device_key| Some(device_key) == self.selected_device_key.as_deref()),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        entries.sort_by(|left, right| left.live_device_key.cmp(&right.live_device_key));
+        DeviceRoutingSnapshot { entries }
+    }
+
+    fn matched_live_device_indexes(&self) -> BTreeMap<String, LiveDeviceAssignment> {
         let mut assignments = BTreeMap::new();
         let mut remaining_indexes = (0..self.detected_devices.len()).collect::<Vec<_>>();
 
@@ -1236,13 +1315,19 @@ impl AppRuntime {
                 continue;
             };
             if let Some(position) = remaining_indexes.iter().position(|index| {
-                let live = &self.detected_devices[*index];
+                    let live = &self.detected_devices[*index];
                 live.model_key == device.model_key
                     && normalized_identity_key(live.fingerprint.identity_key.as_deref())
                         == Some(identity_key)
             }) {
                 let index = remaining_indexes.remove(position);
-                assignments.insert(device.id.clone(), index);
+                assignments.insert(
+                    device.id.clone(),
+                    LiveDeviceAssignment {
+                        live_index: index,
+                        match_kind: DeviceMatchKind::Identity,
+                    },
+                );
             }
         }
 
@@ -1254,7 +1339,13 @@ impl AppRuntime {
                 live_matches_managed_device(device, &self.detected_devices[*index])
             }) {
                 let index = remaining_indexes.remove(position);
-                assignments.insert(device.id.clone(), index);
+                assignments.insert(
+                    device.id.clone(),
+                    LiveDeviceAssignment {
+                        live_index: index,
+                        match_kind: DeviceMatchKind::ModelFallback,
+                    },
+                );
             }
         }
 
@@ -1631,6 +1722,36 @@ mod tests {
         let managed = managed_device(None);
         let live = live_device(Some("serial:123"));
         assert!(live_matches_managed_device(&managed, &live));
+    }
+
+    #[test]
+    fn device_routing_snapshot_reports_identity_match_for_live_device() {
+        let mut runtime = test_runtime();
+        runtime.config.managed_devices = vec![managed_device(Some("serial:123"))];
+        runtime.selected_device_key = Some("mx-master".to_string());
+        runtime.detected_devices = vec![live_device(Some("serial:123"))];
+
+        let snapshot = runtime.device_routing_snapshot();
+        assert_eq!(snapshot.entries.len(), 1);
+        let entry = &snapshot.entries[0];
+        assert_eq!(entry.live_device_key, "live-device");
+        assert_eq!(entry.managed_device_key.as_deref(), Some("mx-master"));
+        assert_eq!(entry.match_kind, DeviceMatchKind::Identity);
+        assert!(entry.is_active_target);
+    }
+
+    #[test]
+    fn device_routing_snapshot_reports_model_fallback_when_identity_missing() {
+        let mut runtime = test_runtime();
+        runtime.config.managed_devices = vec![managed_device(None)];
+        runtime.selected_device_key = Some("mx-master".to_string());
+        runtime.detected_devices = vec![live_device(Some("serial:456"))];
+
+        let snapshot = runtime.device_routing_snapshot();
+        assert_eq!(snapshot.entries.len(), 1);
+        let entry = &snapshot.entries[0];
+        assert_eq!(entry.managed_device_key.as_deref(), Some("mx-master"));
+        assert_eq!(entry.match_kind, DeviceMatchKind::ModelFallback);
     }
 
     #[test]

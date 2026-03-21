@@ -686,6 +686,62 @@ pub struct DeviceInfo {
     pub fingerprint: DeviceFingerprint,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceMatchKind {
+    Identity,
+    ModelFallback,
+    Unmanaged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRoutingEntry {
+    pub live_device_key: String,
+    pub live_model_key: String,
+    pub live_display_name: String,
+    pub live_identity_key: Option<String>,
+    pub managed_device_key: Option<String>,
+    pub managed_display_name: Option<String>,
+    pub device_profile_id: Option<String>,
+    pub resolved_profile_id: Option<String>,
+    pub match_kind: DeviceMatchKind,
+    pub is_active_target: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRoutingSnapshot {
+    pub entries: Vec<DeviceRoutingEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceRoutingChangeKind {
+    Connected,
+    Disconnected,
+    Reassigned,
+    ActiveTargetChanged,
+    ResolvedProfileChanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRoutingChange {
+    pub kind: DeviceRoutingChangeKind,
+    pub live_device_key: String,
+    pub managed_device_key: Option<String>,
+    pub resolved_profile_id: Option<String>,
+    pub match_kind: Option<DeviceMatchKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRoutingEvent {
+    pub snapshot: DeviceRoutingSnapshot,
+    pub changes: Vec<DeviceRoutingChange>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum DebugEventKind {
@@ -719,6 +775,8 @@ pub struct EngineStatus {
 pub struct EngineSnapshot {
     pub devices: Vec<DeviceInfo>,
     pub detected_devices: Vec<DeviceInfo>,
+    #[serde(default)]
+    pub device_routing: DeviceRoutingSnapshot,
     pub active_device_key: Option<String>,
     pub active_device: Option<DeviceInfo>,
     pub engine_status: EngineStatus,
@@ -1482,6 +1540,7 @@ pub struct EngineSnapshotState<'a> {
 pub fn build_engine_snapshot(
     devices: Vec<DeviceInfo>,
     detected_devices: Vec<DeviceInfo>,
+    device_routing: DeviceRoutingSnapshot,
     active_device_key: Option<String>,
     active_device: Option<DeviceInfo>,
     state: EngineSnapshotState<'_>,
@@ -1489,6 +1548,7 @@ pub fn build_engine_snapshot(
     EngineSnapshot {
         devices,
         detected_devices,
+        device_routing,
         active_device_key: active_device_key.clone(),
         active_device: active_device.clone(),
         engine_status: EngineStatus {

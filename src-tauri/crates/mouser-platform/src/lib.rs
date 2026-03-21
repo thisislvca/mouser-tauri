@@ -56,6 +56,7 @@ pub struct HookBackendSettings {
     pub gesture_cooldown_ms: u32,
     pub debug_mode: bool,
     pub device_model_key: Option<String>,
+    pub device_identity_key: Option<String>,
     pub device_controls: Vec<DeviceControlSpec>,
 }
 
@@ -66,6 +67,15 @@ impl HookBackendSettings {
         active_device: Option<&DeviceInfo>,
     ) -> Self {
         let device_model_key = active_device.map(|device| device.model_key.clone());
+        let device_identity_key = active_device.and_then(|device| {
+            device
+                .fingerprint
+                .identity_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
         Self {
             invert_horizontal_scroll: device_settings.invert_horizontal_scroll,
             invert_vertical_scroll: device_settings.invert_vertical_scroll,
@@ -79,6 +89,7 @@ impl HookBackendSettings {
             gesture_timeout_ms: device_settings.gesture_timeout_ms,
             gesture_cooldown_ms: device_settings.gesture_cooldown_ms,
             debug_mode: settings.debug_mode,
+            device_identity_key,
             device_controls: active_device
                 .map(|device| device.controls.clone())
                 .unwrap_or_default(),

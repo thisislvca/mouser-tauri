@@ -14,9 +14,10 @@ use std::{
 };
 
 use mouser_core::{
-    build_connected_device_info, hydrate_identity_key, AppDiscoverySource, AppIdentity,
-    DebugEventKind, DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint, DeviceInfo,
-    InstalledApp, LogicalControl, Profile,
+    build_connected_device_info, hydrate_identity_key, known_device_spec_by_key,
+    resolve_known_device, AppDiscoverySource, AppIdentity, DebugEventKind,
+    DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint, DeviceInfo, InstalledApp,
+    LogicalControl, Profile,
 };
 
 use crate::{
@@ -99,6 +100,8 @@ struct LinuxHookConfig {
     invert_horizontal_scroll: bool,
     invert_vertical_scroll: bool,
     debug_mode: bool,
+    device_model_key: Option<String>,
+    device_identity_key: Option<String>,
     bindings: HashMap<LogicalControl, String>,
     device_controls: Vec<DeviceControlSpec>,
     gesture_threshold: u16,
@@ -121,6 +124,8 @@ impl LinuxHookConfig {
             invert_horizontal_scroll: settings.invert_horizontal_scroll,
             invert_vertical_scroll: settings.invert_vertical_scroll,
             debug_mode: settings.debug_mode,
+            device_model_key: settings.device_model_key.clone(),
+            device_identity_key: settings.device_identity_key.clone(),
             bindings: profile
                 .bindings
                 .iter()
@@ -969,7 +974,8 @@ fn run_hook_worker(shared: Arc<LinuxHookShared>, stop: Arc<AtomicBool>) {
     let mut warned_setup_failure = false;
 
     while !stop.load(Ordering::SeqCst) {
-        match MouseHookSession::open() {
+        let preferred_model_key = shared.current_config().device_model_key.clone();
+        match MouseHookSession::open(preferred_model_key.as_deref()) {
             Ok(mut session) => {
                 warned_setup_failure = false;
                 shared.mark_hook_running(
@@ -1029,8 +1035,8 @@ struct MouseHookSession {
 
 #[cfg(target_os = "linux")]
 impl MouseHookSession {
-    fn open() -> Result<Self, PlatformError> {
-        let (device_path, mut device) = find_mouse_device().ok_or_else(|| {
+    fn open(preferred_model_key: Option<&str>) -> Result<Self, PlatformError> {
+        let (device_path, mut device) = find_mouse_device(preferred_model_key).ok_or_else(|| {
             PlatformError::Message(
                 "could not find a relative Linux mouse device with primary buttons".to_string(),
             )
@@ -1240,9 +1246,12 @@ impl Drop for MouseHookSession {
 }
 
 #[cfg(target_os = "linux")]
-fn find_mouse_device() -> Option<(PathBuf, Device)> {
-    let mut preferred = Vec::new();
-    let mut fallback = Vec::new();
+fn find_mouse_device(preferred_model_key: Option<&str>) -> Option<(PathBuf, Device)> {
+    let preferred_product_ids = preferred_model_key
+        .and_then(known_device_spec_by_key)
+        .map(|spec| spec.product_ids.into_iter().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    let mut candidates = Vec::new();
 
     for (path, device) in evdev::enumerate() {
         let Some(relative_axes) = device.supported_relative_axes() else {
@@ -1264,19 +1273,23 @@ fn find_mouse_device() -> Option<(PathBuf, Device)> {
         }
 
         let has_side_buttons = keys.contains(KeyCode::BTN_SIDE) || keys.contains(KeyCode::BTN_EXTRA);
-        let target = if device.input_id().vendor() == LOGI_VID {
-            &mut preferred
-        } else {
-            &mut fallback
-        };
-        target.push((!has_side_buttons, path, device));
+        let input_id = device.input_id();
+        let is_preferred_model = !preferred_product_ids.is_empty()
+            && input_id.vendor() == LOGI_VID
+            && preferred_product_ids.contains(&input_id.product());
+        candidates.push((
+            !is_preferred_model,
+            input_id.vendor() != LOGI_VID,
+            !has_side_buttons,
+            path,
+            device,
+        ));
     }
 
-    preferred
+    candidates
         .into_iter()
-        .chain(fallback)
-        .min_by_key(|entry| entry.0)
-        .map(|(_, path, device)| (path, device))
+        .min_by_key(|entry| (entry.0, entry.1, entry.2))
+        .map(|(_, _, _, path, device)| (path, device))
 }
 
 #[cfg(target_os = "linux")]
@@ -1500,8 +1513,9 @@ impl GestureSession {
 fn connect_gesture_session(shared: &LinuxHookShared) -> Result<GestureSession, PlatformError> {
     let api = HidApi::new().map_err(map_hid_error)?;
     let mut last_error = None;
+    let config = shared.current_config();
 
-    for info in vendor_hid_infos(&api) {
+    for info in preferred_vendor_hid_infos(&api, config.as_ref()) {
         let Ok(device) = info.open_device(&api) else {
             continue;
         };
@@ -1667,6 +1681,56 @@ fn fingerprint_from_hid_info(info: &HidDeviceInfo) -> DeviceFingerprint {
     };
     hydrate_identity_key(Some(info.product_id()), &mut fingerprint);
     fingerprint
+}
+
+#[cfg(target_os = "linux")]
+fn preferred_vendor_hid_infos<'a>(
+    api: &'a HidApi,
+    config: &LinuxHookConfig,
+) -> Vec<&'a HidDeviceInfo> {
+    let mut preferred = Vec::new();
+    let mut others = Vec::new();
+
+    for info in vendor_hid_infos(api) {
+        if hid_info_matches_active_target(
+            info,
+            config.device_model_key.as_deref(),
+            config.device_identity_key.as_deref(),
+        ) {
+            preferred.push(info);
+        } else {
+            others.push(info);
+        }
+    }
+
+    preferred.extend(others);
+    preferred
+}
+
+#[cfg(target_os = "linux")]
+fn hid_info_matches_active_target(
+    info: &HidDeviceInfo,
+    model_key: Option<&str>,
+    identity_key: Option<&str>,
+) -> bool {
+    if let Some(identity_key) = normalized_identity_key(identity_key) {
+        return normalized_identity_key(fingerprint_from_hid_info(info).identity_key.as_deref())
+            == Some(identity_key);
+    }
+
+    model_key.is_some_and(|model_key| {
+        resolve_known_device(Some(info.product_id()), info.product_string())
+            .map(|spec| spec.key == model_key)
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn normalized_identity_key(value: Option<&str>) -> Option<&str> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
 }
 
 fn should_probe_dpi(entry: Option<&DeviceTelemetryCacheEntry>, now: Instant) -> bool {

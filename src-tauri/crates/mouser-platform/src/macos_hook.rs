@@ -10,7 +10,8 @@ use crate::{HookBackend, HookBackendEvent, HookBackendSettings, HookCapabilities
 use mouser_core::Profile;
 #[cfg(target_os = "macos")]
 use mouser_core::{
-    Binding, DebugEventKind, DeviceControlCaptureKind, DeviceControlSpec, LogicalControl,
+    hydrate_identity_key, resolve_known_device, Binding, DebugEventKind,
+    DeviceControlCaptureKind, DeviceControlSpec, DeviceFingerprint, LogicalControl,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -163,6 +164,8 @@ struct MacOsHookConfig {
     profile_id: String,
     enabled: bool,
     debug_mode: bool,
+    device_model_key: Option<String>,
+    device_identity_key: Option<String>,
     invert_vertical_scroll: bool,
     invert_horizontal_scroll: bool,
     macos_thumb_wheel_simulate_trackpad: bool,
@@ -190,6 +193,8 @@ impl MacOsHookConfig {
             profile_id: profile.id.clone(),
             enabled,
             debug_mode: settings.debug_mode,
+            device_model_key: settings.device_model_key.clone(),
+            device_identity_key: settings.device_identity_key.clone(),
             invert_vertical_scroll: settings.invert_vertical_scroll,
             invert_horizontal_scroll: settings.invert_horizontal_scroll,
             macos_thumb_wheel_simulate_trackpad: settings.macos_thumb_wheel_simulate_trackpad,
@@ -1340,7 +1345,7 @@ fn run_thumb_wheel_worker(shared: Arc<MacOsHookShared>, stop: Arc<AtomicBool>) {
 
 #[cfg(target_os = "macos")]
 fn connect_gesture_session(shared: &MacOsHookShared) -> Result<GestureSession, PlatformError> {
-    let infos = enumerate_iokit_infos()?;
+    let infos = preferred_iokit_infos(enumerate_iokit_infos()?, shared.current_config().as_ref());
     let mut last_error = None;
 
     for info in infos {
@@ -1480,6 +1485,69 @@ fn collect_active_cids(params: &[u8]) -> BTreeSet<u16> {
         .take_while(|pair| pair[0] != 0 || pair[1] != 0)
         .map(|pair| u16::from(pair[0]) << 8 | u16::from(pair[1]))
         .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn preferred_iokit_infos(infos: Vec<MacOsIoKitInfo>, config: &MacOsHookConfig) -> Vec<MacOsIoKitInfo> {
+    let mut preferred = Vec::new();
+    let mut others = Vec::new();
+
+    for info in infos {
+        if iokit_info_matches_active_target(
+            &info,
+            config.device_model_key.as_deref(),
+            config.device_identity_key.as_deref(),
+        ) {
+            preferred.push(info);
+        } else {
+            others.push(info);
+        }
+    }
+
+    preferred.extend(others);
+    preferred
+}
+
+#[cfg(target_os = "macos")]
+fn iokit_info_matches_active_target(
+    info: &MacOsIoKitInfo,
+    model_key: Option<&str>,
+    identity_key: Option<&str>,
+) -> bool {
+    if let Some(identity_key) = normalized_identity_key(identity_key) {
+        return normalized_identity_key(
+            fingerprint_from_iokit_info(info).identity_key.as_deref(),
+        ) == Some(identity_key);
+    }
+
+    model_key.is_some_and(|model_key| {
+        resolve_known_device(Some(info.product_id), info.product_string.as_deref())
+            .map(|spec| spec.key == model_key)
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn normalized_identity_key(value: Option<&str>) -> Option<&str> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn fingerprint_from_iokit_info(info: &MacOsIoKitInfo) -> DeviceFingerprint {
+    let mut fingerprint = DeviceFingerprint {
+        identity_key: None,
+        serial_number: info.serial_number.clone(),
+        hid_path: None,
+        interface_number: None,
+        usage_page: Some(info.usage_page as u16),
+        usage: Some(info.usage as u16),
+        location_id: info.location_id,
+    };
+    hydrate_identity_key(Some(info.product_id), &mut fingerprint);
+    fingerprint
 }
 
 #[cfg(target_os = "macos")]
