@@ -2235,14 +2235,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mouser-mock"
-version = "0.1.0"
-dependencies = [
- "mouser-core",
- "mouser-platform",
-]
-
-[[package]]
 name = "mouser-platform"
 version = "0.1.0"
 dependencies = [

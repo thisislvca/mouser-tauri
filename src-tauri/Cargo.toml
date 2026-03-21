@@ -11,7 +11,6 @@ default-run = "mouser-tauri"
 members = [
     "crates/mouser-core",
     "crates/mouser-import",
-    "crates/mouser-mock",
     "crates/mouser-platform",
 ]
 resolver = "2"
@@ -24,7 +23,6 @@ license = "Apache-2.0"
 [workspace.dependencies]
 mouser-core = { path = "crates/mouser-core" }
 mouser-import = { path = "crates/mouser-import" }
-mouser-mock = { path = "crates/mouser-mock" }
 mouser-platform = { path = "crates/mouser-platform" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

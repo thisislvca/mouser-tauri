@@ -1,9 +1,0 @@
-[package]
-name = "mouser-mock"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-mouser-core.workspace = true
-mouser-platform.workspace = true

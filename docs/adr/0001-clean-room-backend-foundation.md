@@ -12,7 +12,7 @@ Instead, the new repo uses:
 
 - a clean-room Rust domain model in `mouser-core`
 - platform port traits in `mouser-platform`
-- a mock runtime in `mouser-mock`
+- runtime-service integration tests with fake backends
 - an importer that treats the current Python Mouser config as a migration source, not as executable logic
 
 ## Rationale
@@ -25,4 +25,4 @@ Instead, the new repo uses:
 ## Consequences
 
 - Milestone 1 optimizes for typed contracts, UI iteration, config migration, and app structure instead of premature low-level device integration.
-- Replacing the mock runtime with live Windows and macOS backends later should not require a schema or UI rewrite.
+- Replacing fake backend fixtures with richer live backend coverage later should not require a schema or UI rewrite.

@@ -8,16 +8,15 @@ This repo now includes a first Linux-native backend pass alongside the typed con
 - An internal Rust workspace under [`src-tauri`](/Users/luca/Documents/dev/mouser-tauri/src-tauri)
 - A new Rust-native config schema and typed domain model
 - A legacy Mouser JSON importer
-- Mock devices, mock app focus, and mock engine status
+- Service-backed runtime tests with fake HID, focus, and app-discovery backends
 - A live Linux backend for Logitech HID++ enumeration, DPI changes, battery/DPI reads, input remapping, gestures, and app discovery
 - A React shell for `Devices`, `Buttons`, `Profiles`, `Settings`, and `Debug`
-- Tauri commands and runtime events for the desktop runtime, with live Linux backends and mock fallbacks
+- Tauri commands and runtime events for the desktop runtime, with live Linux backends and service-owned runtime orchestration
 
 ## Workspace
 
 - [`crates/mouser-core`](/Users/luca/Documents/dev/mouser-tauri/src-tauri/crates/mouser-core): domain types, config schema, layouts, actions, and engine snapshot models
 - [`crates/mouser-import`](/Users/luca/Documents/dev/mouser-tauri/src-tauri/crates/mouser-import): importer from the current Python Mouser `config.json`
-- [`crates/mouser-mock`](/Users/luca/Documents/dev/mouser-tauri/src-tauri/crates/mouser-mock): mock device catalog and mock runtime
 - [`crates/mouser-platform`](/Users/luca/Documents/dev/mouser-tauri/src-tauri/crates/mouser-platform): platform backends, including the Linux HID/hook/app-focus/app-discovery implementation
 
 ## Commands
