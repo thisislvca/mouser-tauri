@@ -49,4 +49,5 @@ specta.workspace = true
 specta-typescript.workspace = true
 tauri.workspace = true
 tauri-specta.workspace = true
+thiserror.workspace = true
 tauri-plugin-opener = "2"

@@ -1,15 +1,10 @@
 mod config;
 mod runtime;
 
-#[cfg(test)]
-use std::collections::BTreeMap;
-
 use mouser_core::{
     AppConfig, AppDiscoverySnapshot, BootstrapPayload, DebugEvent, DeviceInfo, DeviceRoutingEvent,
     DeviceRoutingSnapshot, DeviceSettings, EngineSnapshot, LegacyImportReport, Profile, Settings,
 };
-#[cfg(test)]
-use mouser_core::{DeviceRoutingChange, DeviceRoutingChangeKind, DeviceRoutingEntry};
 #[cfg(target_os = "macos")]
 use mouser_platform::macos::{MacOsAppFocusMonitor, MacOsDeviceMonitor};
 #[cfg(target_os = "windows")]
@@ -24,9 +19,11 @@ use tauri::{
 };
 use tauri_specta::{collect_commands, collect_events, Builder, Event as SpectaEvent};
 
+#[cfg(test)]
+use runtime::build_device_routing_event;
 use runtime::{
-    RuntimeBackgroundUpdate, RuntimeMutationResult, RuntimeNotification, RuntimeNotifier,
-    RuntimeService,
+    RuntimeBackgroundUpdate, RuntimeError, RuntimeMutationResult, RuntimeNotification,
+    RuntimeNotifier, RuntimeService,
 };
 
 const TRAY_ID: &str = "main";
@@ -39,7 +36,7 @@ struct AppState {
     runtime: RuntimeService,
 }
 
-type CommandResult<T> = Result<T, String>;
+type CommandResult<T> = Result<T, RuntimeError>;
 
 #[derive(Debug, Deserialize, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -103,7 +100,7 @@ fn config_save(
     app: AppHandle,
     state: State<'_, AppState>,
     config: AppConfig,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).config_save(config)?;
     emit_mutation_result(&app, result)
 }
@@ -114,7 +111,7 @@ fn app_settings_update(
     app: AppHandle,
     state: State<'_, AppState>,
     settings: Settings,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).app_settings_update(settings)?;
     emit_mutation_result(&app, result)
 }
@@ -125,7 +122,7 @@ fn device_defaults_update(
     app: AppHandle,
     state: State<'_, AppState>,
     settings: DeviceSettings,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).device_defaults_update(settings)?;
     emit_mutation_result(&app, result)
 }
@@ -136,7 +133,7 @@ fn profiles_create(
     app: AppHandle,
     state: State<'_, AppState>,
     profile: Profile,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).profiles_create(profile)?;
     emit_mutation_result(&app, result)
 }
@@ -147,7 +144,7 @@ fn profiles_update(
     app: AppHandle,
     state: State<'_, AppState>,
     profile: Profile,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).profiles_update(profile)?;
     emit_mutation_result(&app, result)
 }
@@ -158,7 +155,7 @@ fn profiles_delete(
     app: AppHandle,
     state: State<'_, AppState>,
     profile_id: String,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).profiles_delete(profile_id)?;
     emit_mutation_result(&app, result)
 }
@@ -168,7 +165,7 @@ fn profiles_delete(
 fn app_discovery_refresh(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).app_discovery_refresh()?;
     emit_mutation_result(&app, result)
 }
@@ -188,7 +185,7 @@ fn devices_update_settings(
     state: State<'_, AppState>,
     device_key: String,
     settings: DeviceSettings,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).devices_update_settings(device_key, settings)?;
     emit_mutation_result(&app, result)
 }
@@ -200,7 +197,7 @@ fn devices_update_profile(
     state: State<'_, AppState>,
     device_key: String,
     profile_id: Option<String>,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).devices_update_profile(device_key, profile_id)?;
     emit_mutation_result(&app, result)
 }
@@ -212,7 +209,7 @@ fn devices_update_nickname(
     state: State<'_, AppState>,
     device_key: String,
     nickname: Option<String>,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).devices_update_nickname(device_key, nickname)?;
     emit_mutation_result(&app, result)
 }
@@ -223,7 +220,7 @@ fn devices_reset_to_factory(
     app: AppHandle,
     state: State<'_, AppState>,
     device_key: String,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).devices_reset_to_factory(device_key)?;
     emit_mutation_result(&app, result)
 }
@@ -240,7 +237,7 @@ fn devices_add(
     app: AppHandle,
     state: State<'_, AppState>,
     model_key: String,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).devices_add(model_key)?;
     emit_mutation_result(&app, result)
 }
@@ -251,7 +248,7 @@ fn devices_remove(
     app: AppHandle,
     state: State<'_, AppState>,
     device_key: String,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     let result = runtime_service(&state).devices_remove(device_key)?;
     emit_mutation_result(&app, result)
 }
@@ -262,7 +259,7 @@ fn devices_select(
     app: AppHandle,
     state: State<'_, AppState>,
     device_key: String,
-) -> Result<EngineSnapshot, String> {
+) -> CommandResult<EngineSnapshot> {
     let result = runtime_service(&state).devices_select(device_key)?;
     emit_engine_mutation_result(&app, result)
 }
@@ -273,7 +270,7 @@ fn devices_select_mock(
     app: AppHandle,
     state: State<'_, AppState>,
     device_key: String,
-) -> Result<EngineSnapshot, String> {
+) -> CommandResult<EngineSnapshot> {
     devices_select(app, state, device_key)
 }
 
@@ -283,7 +280,7 @@ fn import_legacy_config(
     app: AppHandle,
     state: State<'_, AppState>,
     request: ImportLegacyConfigRequest,
-) -> Result<LegacyImportReport, String> {
+) -> CommandResult<LegacyImportReport> {
     let result =
         runtime_service(&state).import_legacy_config(request.source_path, request.raw_json)?;
     emit_import_mutation_result(&app, result)
@@ -291,7 +288,7 @@ fn import_legacy_config(
 
 #[tauri::command]
 #[specta::specta]
-fn debug_clear_log(app: AppHandle, state: State<'_, AppState>) -> Result<EngineSnapshot, String> {
+fn debug_clear_log(app: AppHandle, state: State<'_, AppState>) -> CommandResult<EngineSnapshot> {
     let result = runtime_service(&state).debug_clear_log()?;
     emit_engine_mutation_result(&app, result)
 }
@@ -302,7 +299,7 @@ fn emit_runtime_events(
     debug_events: &[DebugEvent],
     app_discovery_changed: bool,
     device_routing_event: Option<&DeviceRoutingEvent>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     sync_tray_menu(app, payload)?;
 
     DeviceChangedEvent(payload.engine_snapshot.active_device.clone())
@@ -339,7 +336,7 @@ fn emit_runtime_events(
     emit_debug_events(app, debug_events)
 }
 
-fn emit_debug_events(app: &AppHandle, debug_events: &[DebugEvent]) -> Result<(), String> {
+fn emit_debug_events(app: &AppHandle, debug_events: &[DebugEvent]) -> CommandResult<()> {
     for debug_event in debug_events {
         DebugEventEnvelope(debug_event.clone())
             .emit(app)
@@ -349,7 +346,7 @@ fn emit_debug_events(app: &AppHandle, debug_events: &[DebugEvent]) -> Result<(),
     Ok(())
 }
 
-fn emit_background_update(app: &AppHandle, update: RuntimeBackgroundUpdate) -> Result<(), String> {
+fn emit_background_update(app: &AppHandle, update: RuntimeBackgroundUpdate) -> CommandResult<()> {
     if let Some(payload) = update.payload {
         emit_runtime_events(
             app,
@@ -372,7 +369,7 @@ fn emit_background_update(app: &AppHandle, update: RuntimeBackgroundUpdate) -> R
 fn emit_mutation_result(
     app: &AppHandle,
     result: RuntimeMutationResult<BootstrapPayload>,
-) -> Result<BootstrapPayload, String> {
+) -> CommandResult<BootstrapPayload> {
     emit_runtime_events(
         app,
         &result.payload,
@@ -386,7 +383,7 @@ fn emit_mutation_result(
 fn emit_engine_mutation_result(
     app: &AppHandle,
     result: RuntimeMutationResult<EngineSnapshot>,
-) -> Result<EngineSnapshot, String> {
+) -> CommandResult<EngineSnapshot> {
     let engine_snapshot = result.result;
     emit_runtime_events(
         app,
@@ -401,7 +398,7 @@ fn emit_engine_mutation_result(
 fn emit_import_mutation_result(
     app: &AppHandle,
     result: RuntimeMutationResult<LegacyImportReport>,
-) -> Result<LegacyImportReport, String> {
+) -> CommandResult<LegacyImportReport> {
     let report = result.result;
     emit_runtime_events(
         app,
@@ -411,87 +408,6 @@ fn emit_import_mutation_result(
         result.device_routing_event.as_ref(),
     )?;
     Ok(report)
-}
-
-#[cfg(test)]
-fn build_device_routing_event(
-    previous: &DeviceRoutingSnapshot,
-    next: &DeviceRoutingSnapshot,
-) -> Option<DeviceRoutingEvent> {
-    if previous == next {
-        return None;
-    }
-
-    let previous_by_key = previous
-        .entries
-        .iter()
-        .map(|entry| (entry.live_device_key.as_str(), entry))
-        .collect::<BTreeMap<_, _>>();
-    let next_by_key = next
-        .entries
-        .iter()
-        .map(|entry| (entry.live_device_key.as_str(), entry))
-        .collect::<BTreeMap<_, _>>();
-    let mut changes = Vec::new();
-
-    for (live_device_key, next_entry) in &next_by_key {
-        match previous_by_key.get(live_device_key) {
-            None => changes.push(device_routing_change(
-                DeviceRoutingChangeKind::Connected,
-                next_entry,
-            )),
-            Some(previous_entry) => {
-                if previous_entry.managed_device_key != next_entry.managed_device_key
-                    || previous_entry.match_kind != next_entry.match_kind
-                {
-                    changes.push(device_routing_change(
-                        DeviceRoutingChangeKind::Reassigned,
-                        next_entry,
-                    ));
-                }
-                if previous_entry.is_active_target != next_entry.is_active_target {
-                    changes.push(device_routing_change(
-                        DeviceRoutingChangeKind::ActiveTargetChanged,
-                        next_entry,
-                    ));
-                }
-                if previous_entry.resolved_profile_id != next_entry.resolved_profile_id {
-                    changes.push(device_routing_change(
-                        DeviceRoutingChangeKind::ResolvedProfileChanged,
-                        next_entry,
-                    ));
-                }
-            }
-        }
-    }
-
-    for (live_device_key, previous_entry) in &previous_by_key {
-        if !next_by_key.contains_key(live_device_key) {
-            changes.push(device_routing_change(
-                DeviceRoutingChangeKind::Disconnected,
-                previous_entry,
-            ));
-        }
-    }
-
-    Some(DeviceRoutingEvent {
-        snapshot: next.clone(),
-        changes,
-    })
-}
-
-#[cfg(test)]
-fn device_routing_change(
-    kind: DeviceRoutingChangeKind,
-    entry: &DeviceRoutingEntry,
-) -> DeviceRoutingChange {
-    DeviceRoutingChange {
-        kind,
-        live_device_key: entry.live_device_key.clone(),
-        managed_device_key: entry.managed_device_key.clone(),
-        resolved_profile_id: entry.resolved_profile_id.clone(),
-        match_kind: Some(entry.match_kind),
-    }
 }
 
 fn build_tray_menu<M: Manager<Wry>>(
@@ -548,7 +464,7 @@ fn push_runtime_debug_event(
 }
 
 #[cfg(target_os = "macos")]
-fn start_runtime_monitors(app: &tauri::App) -> Result<RuntimeMonitors, String> {
+fn start_runtime_monitors(app: &tauri::App) -> CommandResult<RuntimeMonitors> {
     let state = app.state::<AppState>();
     let runtime = &state.inner().runtime;
     let notifier = runtime.notifier();
@@ -592,7 +508,7 @@ fn start_runtime_monitors(app: &tauri::App) -> Result<RuntimeMonitors, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn start_runtime_monitors(app: &tauri::App) -> Result<RuntimeMonitors, String> {
+fn start_runtime_monitors(app: &tauri::App) -> CommandResult<RuntimeMonitors> {
     let state = app.state::<AppState>();
     let runtime = &state.inner().runtime;
     let notifier = runtime.notifier();
@@ -619,11 +535,11 @@ fn start_runtime_monitors(app: &tauri::App) -> Result<RuntimeMonitors, String> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn start_runtime_monitors(_app: &tauri::App) -> Result<RuntimeMonitors, String> {
+fn start_runtime_monitors(_app: &tauri::App) -> CommandResult<RuntimeMonitors> {
     Ok(RuntimeMonitors)
 }
 
-fn sync_tray_menu(app: &AppHandle<Wry>, payload: &BootstrapPayload) -> Result<(), String> {
+fn sync_tray_menu(app: &AppHandle<Wry>, payload: &BootstrapPayload) -> CommandResult<()> {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return Ok(());
     };
@@ -635,7 +551,9 @@ fn sync_tray_menu(app: &AppHandle<Wry>, payload: &BootstrapPayload) -> Result<()
     )
     .map_err(|error| error.to_string())?;
 
-    tray.set_menu(Some(menu)).map_err(|error| error.to_string())
+    Ok(tray
+        .set_menu(Some(menu))
+        .map_err(|error| error.to_string())?)
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -677,6 +595,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                     selected_device_key: None,
                     debug_mode: false,
                     debug_log: Vec::new(),
+                    runtime_health: mouser_core::RuntimeHealth::default(),
                 },
             },
             platform_capabilities: mouser_core::PlatformCapabilities {
@@ -801,9 +720,10 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         .typ::<EngineSnapshot>()
         .typ::<LegacyImportReport>()
         .typ::<ImportLegacyConfigRequest>()
+        .typ::<RuntimeError>()
 }
 
-pub fn export_bindings() -> Result<(), String> {
+pub fn export_bindings() -> CommandResult<()> {
     let builder = specta_builder();
     let output_path = format!("{}/../src/lib/bindings.ts", env!("CARGO_MANIFEST_DIR"));
     builder
@@ -819,7 +739,7 @@ pub fn export_bindings() -> Result<(), String> {
         "import {\n\tinvoke as TAURI_INVOKE,\n} from \"@tauri-apps/api/core\";",
     );
     let generated = format!("// @ts-nocheck\n{generated}");
-    std::fs::write(output_path, generated).map_err(|error| error.to_string())
+    Ok(std::fs::write(output_path, generated).map_err(|error| error.to_string())?)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -862,7 +782,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mouser_core::{DeviceAttributionStatus, DeviceMatchKind};
+    use mouser_core::{
+        DeviceAttributionStatus, DeviceMatchKind, DeviceRoutingChangeKind, DeviceRoutingEntry,
+    };
 
     fn routing_entry(
         live_device_key: &str,

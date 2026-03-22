@@ -835,6 +835,41 @@ pub struct DebugEvent {
     pub timestamp_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendHealthState {
+    #[default]
+    Ready,
+    Stale,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendHealth {
+    #[serde(default)]
+    pub state: BackendHealthState,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub updated_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeHealth {
+    #[serde(default)]
+    pub persistence: BackendHealth,
+    #[serde(default)]
+    pub hid: BackendHealth,
+    #[serde(default)]
+    pub hook: BackendHealth,
+    #[serde(default)]
+    pub focus: BackendHealth,
+    #[serde(default)]
+    pub discovery: BackendHealth,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineStatus {
@@ -845,6 +880,8 @@ pub struct EngineStatus {
     pub selected_device_key: Option<String>,
     pub debug_mode: bool,
     pub debug_log: Vec<DebugEvent>,
+    #[serde(default)]
+    pub runtime_health: RuntimeHealth,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

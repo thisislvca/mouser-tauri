@@ -1,5 +1,6 @@
 use crate::{
     AppIdentity, DebugEvent, DeviceInfo, DeviceRoutingSnapshot, EngineSnapshot, EngineStatus,
+    RuntimeHealth,
 };
 
 pub struct EngineSnapshotState<'a> {
@@ -8,6 +9,7 @@ pub struct EngineSnapshotState<'a> {
     pub frontmost_app: Option<&'a AppIdentity>,
     pub debug_mode: bool,
     pub debug_log: Vec<DebugEvent>,
+    pub runtime_health: RuntimeHealth,
 }
 
 pub fn build_engine_snapshot(
@@ -34,6 +36,7 @@ pub fn build_engine_snapshot(
             selected_device_key: active_device_key,
             debug_mode: state.debug_mode,
             debug_log: state.debug_log,
+            runtime_health: state.runtime_health,
         },
     }
 }

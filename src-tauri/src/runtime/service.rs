@@ -8,34 +8,22 @@ use std::{
 };
 
 use mouser_core::{
-    AppConfig, AppIdentity, BootstrapPayload, DebugEvent, DebugEventKind, DeviceInfo,
-    DeviceRoutingChange, DeviceRoutingChangeKind, DeviceRoutingEntry, DeviceRoutingEvent,
-    DeviceRoutingSnapshot, DeviceSettings, EngineSnapshot, LegacyImportReport, Profile, Settings,
+    AppConfig, AppIdentity, BootstrapPayload, DebugEventKind, DeviceInfo, DeviceSettings,
+    EngineSnapshot, LegacyImportReport, Profile, Settings,
 };
 use mouser_import::{import_legacy_config as import_legacy_payload, ImportSource};
 
-use super::{AppRuntime, RuntimeUpdateEffect, RUNTIME_STATE_ERROR};
+use super::{
+    build_device_routing_event,
+    events::{
+        RuntimeBackgroundUpdate, RuntimeMutationResult, RuntimeNotification, RuntimeUpdateEffect,
+    },
+    AppRuntime, RuntimeError, RuntimeResult,
+};
 
 const HOOK_DRAIN_INTERVAL: Duration = Duration::from_millis(500);
 const SAFETY_RESYNC_INTERVAL: Duration = Duration::from_secs(30);
 const FOCUS_FALLBACK_INTERVAL: Duration = Duration::from_secs(2);
-
-#[derive(Debug)]
-pub struct RuntimeMutationResult<T> {
-    pub result: T,
-    pub payload: BootstrapPayload,
-    pub debug_events: Vec<DebugEvent>,
-    pub app_discovery_changed: bool,
-    pub device_routing_event: Option<DeviceRoutingEvent>,
-}
-
-#[derive(Debug)]
-pub struct RuntimeBackgroundUpdate {
-    pub payload: Option<BootstrapPayload>,
-    pub debug_events: Vec<DebugEvent>,
-    pub app_discovery_changed: bool,
-    pub device_routing_event: Option<DeviceRoutingEvent>,
-}
 
 #[derive(Clone)]
 pub struct RuntimeNotifier {
@@ -43,10 +31,10 @@ pub struct RuntimeNotifier {
 }
 
 impl RuntimeNotifier {
-    pub fn notify(&self, notification: RuntimeNotification) -> Result<(), String> {
+    pub fn notify(&self, notification: RuntimeNotification) -> RuntimeResult<()> {
         self.tx
             .send(RuntimeMessage::Notification(notification))
-            .map_err(|_| RUNTIME_STATE_ERROR.to_string())
+            .map_err(|_| RuntimeError::StateUnavailable)
     }
 }
 
@@ -96,26 +84,9 @@ enum RuntimeResponse {
 }
 
 enum RuntimeMessage {
-    Request(
-        RuntimeRequest,
-        mpsc::Sender<Result<RuntimeResponse, String>>,
-    ),
+    Request(RuntimeRequest, mpsc::Sender<RuntimeResult<RuntimeResponse>>),
     Notification(RuntimeNotification),
     Shutdown,
-}
-
-#[derive(Debug, Clone)]
-pub enum RuntimeNotification {
-    StartupSync,
-    DevicesChanged,
-    FrontmostAppChanged(Option<AppIdentity>),
-    HookDrain,
-    SafetyResync,
-    RefreshAppDiscovery,
-    RecordDebugEvent {
-        kind: DebugEventKind,
-        message: String,
-    },
 }
 
 #[derive(Default)]
@@ -200,16 +171,18 @@ impl RuntimeService {
         }
     }
 
-    pub fn attach_listener<F>(&self, listener: F) -> Result<(), String>
+    pub fn attach_listener<F>(&self, listener: F) -> RuntimeResult<()>
     where
         F: Fn(RuntimeBackgroundUpdate) + Send + 'static,
     {
         let receiver = self
             .background_updates_rx
             .lock()
-            .map_err(|_| RUNTIME_STATE_ERROR.to_string())?
+            .map_err(|_| RuntimeError::StateUnavailable)?
             .take()
-            .ok_or_else(|| "runtime listener is already attached".to_string())?;
+            .ok_or_else(|| {
+                RuntimeError::operation("attach_listener", "runtime listener is already attached")
+            })?;
 
         let handle = thread::Builder::new()
             .name("mouser-runtime-events".to_string())
@@ -218,16 +191,16 @@ impl RuntimeService {
                     listener(update);
                 }
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| RuntimeError::operation("attach_listener", error.to_string()))?;
 
         *self
             .emitter
             .lock()
-            .map_err(|_| RUNTIME_STATE_ERROR.to_string())? = Some(handle);
+            .map_err(|_| RuntimeError::StateUnavailable)? = Some(handle);
         Ok(())
     }
 
-    pub fn start_background(&self) -> Result<(), String> {
+    pub fn start_background(&self) -> RuntimeResult<()> {
         self.spawn_startup_sync();
         self.spawn_periodic_notification(RuntimeNotification::HookDrain, HOOK_DRAIN_INTERVAL)?;
         self.spawn_periodic_notification(
@@ -250,84 +223,111 @@ impl RuntimeService {
         }
     }
 
-    pub fn bootstrap_load(&self) -> Result<BootstrapPayload, String> {
+    pub fn bootstrap_load(&self) -> RuntimeResult<BootstrapPayload> {
         match self.request(RuntimeRequest::BootstrapLoad)? {
             RuntimeResponse::Bootstrap(payload) => Ok(*payload),
-            _ => Err("unexpected runtime bootstrap response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "bootstrap_load",
+                "unexpected runtime bootstrap response",
+            )),
         }
     }
 
-    pub fn config_get(&self) -> Result<AppConfig, String> {
+    pub fn config_get(&self) -> RuntimeResult<AppConfig> {
         match self.request(RuntimeRequest::ConfigGet)? {
             RuntimeResponse::Config(config) => Ok(*config),
-            _ => Err("unexpected runtime config response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "config_get",
+                "unexpected runtime config response",
+            )),
         }
     }
 
-    pub fn devices_list(&self) -> Result<Vec<DeviceInfo>, String> {
+    pub fn devices_list(&self) -> RuntimeResult<Vec<DeviceInfo>> {
         match self.request(RuntimeRequest::DevicesList)? {
             RuntimeResponse::Devices(devices) => Ok(devices),
-            _ => Err("unexpected runtime devices response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "devices_list",
+                "unexpected runtime devices response",
+            )),
         }
     }
 
     pub fn config_save(
         &self,
         config: AppConfig,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::ConfigSave(config))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "config_save",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
     pub fn app_settings_update(
         &self,
         settings: Settings,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::AppSettingsUpdate(settings))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "app_settings_update",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
     pub fn device_defaults_update(
         &self,
         settings: DeviceSettings,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::DeviceDefaultsUpdate(settings))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "device_defaults_update",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
     pub fn profiles_create(
         &self,
         profile: Profile,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::ProfilesCreate(profile))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "profiles_create",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
     pub fn profiles_update(
         &self,
         profile: Profile,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::ProfilesUpdate(profile))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "profiles_update",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
     pub fn profiles_delete(
         &self,
         profile_id: String,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::ProfilesDelete(profile_id))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "profiles_delete",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
@@ -335,13 +335,16 @@ impl RuntimeService {
         &self,
         device_key: String,
         settings: DeviceSettings,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::DevicesUpdateSettings {
             device_key,
             settings,
         })? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "devices_update_settings",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
@@ -349,13 +352,16 @@ impl RuntimeService {
         &self,
         device_key: String,
         profile_id: Option<String>,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::DevicesUpdateProfile {
             device_key,
             profile_id,
         })? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "devices_update_profile",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
@@ -363,53 +369,68 @@ impl RuntimeService {
         &self,
         device_key: String,
         nickname: Option<String>,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::DevicesUpdateNickname {
             device_key,
             nickname,
         })? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "devices_update_nickname",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
     pub fn devices_reset_to_factory(
         &self,
         device_key: String,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::DevicesResetToFactory(device_key))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "devices_reset_to_factory",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
     pub fn devices_add(
         &self,
         model_key: String,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::DevicesAdd(model_key))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "devices_add",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
     pub fn devices_remove(
         &self,
         device_key: String,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::DevicesRemove(device_key))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "devices_remove",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
     pub fn devices_select(
         &self,
         device_key: String,
-    ) -> Result<RuntimeMutationResult<EngineSnapshot>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<EngineSnapshot>> {
         match self.request(RuntimeRequest::DevicesSelect(device_key))? {
             RuntimeResponse::Engine(result) => Ok(*result),
-            _ => Err("unexpected runtime engine response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "devices_select",
+                "unexpected runtime engine response",
+            )),
         }
     }
 
@@ -417,47 +438,62 @@ impl RuntimeService {
         &self,
         source_path: Option<String>,
         raw_json: Option<String>,
-    ) -> Result<RuntimeMutationResult<LegacyImportReport>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<LegacyImportReport>> {
         match self.request(RuntimeRequest::ImportLegacyConfig {
             source_path,
             raw_json,
         })? {
             RuntimeResponse::Import(result) => Ok(*result),
-            _ => Err("unexpected runtime import response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "import_legacy_config",
+                "unexpected runtime import response",
+            )),
         }
     }
 
-    pub fn debug_clear_log(&self) -> Result<RuntimeMutationResult<EngineSnapshot>, String> {
+    pub fn debug_clear_log(&self) -> RuntimeResult<RuntimeMutationResult<EngineSnapshot>> {
         match self.request(RuntimeRequest::DebugClearLog)? {
             RuntimeResponse::Engine(result) => Ok(*result),
-            _ => Err("unexpected runtime engine response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "debug_clear_log",
+                "unexpected runtime engine response",
+            )),
         }
     }
 
     pub fn set_enabled(
         &self,
         enabled: bool,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::SetEnabled(enabled))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "set_enabled",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
     pub fn set_debug_mode(
         &self,
         enabled: bool,
-    ) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::SetDebugMode(enabled))? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "set_debug_mode",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
-    pub fn app_discovery_refresh(&self) -> Result<RuntimeMutationResult<BootstrapPayload>, String> {
+    pub fn app_discovery_refresh(&self) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
         match self.request(RuntimeRequest::RefreshAppDiscovery)? {
             RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err("unexpected runtime payload response".to_string()),
+            _ => Err(RuntimeError::operation(
+                "app_discovery_refresh",
+                "unexpected runtime payload response",
+            )),
         }
     }
 
@@ -465,22 +501,22 @@ impl RuntimeService {
     pub(crate) fn enqueue_notification(
         &self,
         notification: RuntimeNotification,
-    ) -> Result<(), String> {
+    ) -> RuntimeResult<()> {
         self.notifier().notify(notification)
     }
 
-    fn request(&self, request: RuntimeRequest) -> Result<RuntimeResponse, String> {
+    fn request(&self, request: RuntimeRequest) -> RuntimeResult<RuntimeResponse> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.send_message(RuntimeMessage::Request(request, reply_tx))?;
         reply_rx
             .recv()
-            .map_err(|_| RUNTIME_STATE_ERROR.to_string())?
+            .map_err(|_| RuntimeError::StateUnavailable)?
     }
 
-    fn send_message(&self, message: RuntimeMessage) -> Result<(), String> {
+    fn send_message(&self, message: RuntimeMessage) -> RuntimeResult<()> {
         self.tx
             .send(message)
-            .map_err(|_| RUNTIME_STATE_ERROR.to_string())
+            .map_err(|_| RuntimeError::StateUnavailable)
     }
 
     fn spawn_startup_sync(&self) {
@@ -489,7 +525,7 @@ impl RuntimeService {
         ));
     }
 
-    fn spawn_app_discovery_start(&self) -> Result<(), String> {
+    fn spawn_app_discovery_start(&self) -> RuntimeResult<()> {
         self.send_message(RuntimeMessage::Notification(
             RuntimeNotification::RefreshAppDiscovery,
         ))
@@ -499,7 +535,7 @@ impl RuntimeService {
         &self,
         notification: RuntimeNotification,
         interval: Duration,
-    ) -> Result<(), String> {
+    ) -> RuntimeResult<()> {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let tx = self.tx.clone();
@@ -520,17 +556,19 @@ impl RuntimeService {
                     break;
                 }
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                RuntimeError::operation("spawn_periodic_notification", error.to_string())
+            })?;
 
         self.background_threads
             .lock()
-            .map_err(|_| RUNTIME_STATE_ERROR.to_string())?
+            .map_err(|_| RuntimeError::StateUnavailable)?
             .push(ThreadStop::new(stop, handle));
         Ok(())
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub(crate) fn start_focus_fallback(&self) -> Result<(), String> {
+    pub(crate) fn start_focus_fallback(&self) -> RuntimeResult<()> {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let tx = self.tx.clone();
@@ -553,16 +591,16 @@ impl RuntimeService {
                     break;
                 }
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| RuntimeError::operation("start_focus_fallback", error.to_string()))?;
 
         self.background_threads
             .lock()
-            .map_err(|_| RUNTIME_STATE_ERROR.to_string())?
+            .map_err(|_| RuntimeError::StateUnavailable)?
             .push(ThreadStop::new(stop, handle));
         Ok(())
     }
 
-    pub(crate) fn start_device_polling(&self) -> Result<(), String> {
+    pub(crate) fn start_device_polling(&self) -> RuntimeResult<()> {
         self.spawn_periodic_notification(
             RuntimeNotification::DevicesChanged,
             Duration::from_secs(5),
@@ -570,7 +608,7 @@ impl RuntimeService {
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    fn start_linux_background(&self) -> Result<(), String> {
+    fn start_linux_background(&self) -> RuntimeResult<()> {
         self.spawn_periodic_notification(
             RuntimeNotification::SafetyResync,
             Duration::from_millis(900),
@@ -652,7 +690,7 @@ fn handle_request(
     runtime: &mut AppRuntime,
     request: RuntimeRequest,
     background_updates_tx: &mpsc::Sender<RuntimeBackgroundUpdate>,
-) -> Result<RuntimeResponse, String> {
+) -> RuntimeResult<RuntimeResponse> {
     match request {
         RuntimeRequest::BootstrapLoad => Ok(RuntimeResponse::Bootstrap(Box::new(
             runtime.bootstrap_payload(),
@@ -664,42 +702,42 @@ fn handle_request(
                 runtime,
                 |runtime| runtime.save_config(config),
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::AppSettingsUpdate(settings) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
                 |runtime| runtime.update_app_settings(settings),
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::DeviceDefaultsUpdate(settings) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
                 |runtime| runtime.update_device_defaults(settings),
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::ProfilesCreate(profile) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
                 |runtime| runtime.create_profile(profile),
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::ProfilesUpdate(profile) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
                 |runtime| runtime.update_profile(profile),
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::ProfilesDelete(profile_id) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
                 |runtime| runtime.delete_profile(&profile_id),
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::DevicesUpdateSettings {
             device_key,
@@ -708,7 +746,7 @@ fn handle_request(
             runtime,
             |runtime| runtime.update_managed_device_settings(&device_key, settings),
             |runtime| runtime.bootstrap_payload(),
-        )))),
+        )?))),
         RuntimeRequest::DevicesUpdateProfile {
             device_key,
             profile_id,
@@ -716,7 +754,7 @@ fn handle_request(
             runtime,
             |runtime| runtime.update_managed_device_profile(&device_key, profile_id),
             |runtime| runtime.bootstrap_payload(),
-        )))),
+        )?))),
         RuntimeRequest::DevicesUpdateNickname {
             device_key,
             nickname,
@@ -724,36 +762,37 @@ fn handle_request(
             runtime,
             |runtime| runtime.update_managed_device_nickname(&device_key, nickname),
             |runtime| runtime.bootstrap_payload(),
-        )))),
+        )?))),
         RuntimeRequest::DevicesResetToFactory(device_key) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
                 |runtime| runtime.reset_managed_device_to_factory_defaults(&device_key),
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::DevicesAdd(model_key) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
-                |runtime| {
-                    let _ = runtime.add_managed_device(&model_key);
-                },
+                |runtime| runtime.add_managed_device(&model_key).map(|_| ()),
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::DevicesRemove(device_key) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
                 |runtime| runtime.remove_managed_device(&device_key),
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::DevicesSelect(device_key) => {
             Ok(RuntimeResponse::Engine(Box::new(capture_mutation(
                 runtime,
-                |runtime| runtime.select_device(&device_key),
+                |runtime| {
+                    runtime.select_device(&device_key);
+                    Ok(())
+                },
                 |runtime| runtime.engine_snapshot(),
-            ))))
+            )?)))
         }
         RuntimeRequest::ImportLegacyConfig {
             source_path,
@@ -763,40 +802,51 @@ fn handle_request(
                 source_path,
                 raw_json,
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| RuntimeError::LegacyImport {
+                message: error.to_string(),
+            })?;
             let imported_config = report.config.clone();
             Ok(RuntimeResponse::Import(Box::new(capture_mutation(
                 runtime,
                 |runtime| runtime.apply_imported_config(imported_config),
                 |_| report,
-            ))))
+            )?)))
         }
         RuntimeRequest::DebugClearLog => Ok(RuntimeResponse::Engine(Box::new(capture_mutation(
             runtime,
-            |runtime| runtime.clear_debug_log(),
+            |runtime| {
+                runtime.clear_debug_log();
+                Ok(())
+            },
             |runtime| runtime.engine_snapshot(),
-        )))),
+        )?))),
         RuntimeRequest::SetEnabled(enabled) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
-                |runtime| runtime.set_enabled(enabled),
+                |runtime| {
+                    runtime.set_enabled(enabled);
+                    Ok(())
+                },
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::SetDebugMode(enabled) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
                 |runtime| runtime.set_debug_mode(enabled),
                 |runtime| runtime.bootstrap_payload(),
-            ))))
+            )?)))
         }
         RuntimeRequest::RefreshAppDiscovery => {
             if !runtime.app_discovery.scanning {
                 let scanning_started = capture_mutation(
                     runtime,
-                    |runtime| runtime.app_discovery.scanning = true,
+                    |runtime| {
+                        runtime.app_discovery.scanning = true;
+                        Ok(())
+                    },
                     |runtime| runtime.bootstrap_payload(),
-                );
+                )?;
                 let _ = background_updates_tx.send(RuntimeBackgroundUpdate {
                     payload: Some(scanning_started.payload),
                     debug_events: scanning_started.debug_events,
@@ -810,9 +860,10 @@ fn handle_request(
                 |runtime| {
                     runtime.refresh_app_discovery();
                     runtime.app_discovery.scanning = false;
+                    Ok(())
                 },
                 |runtime| runtime.bootstrap_payload(),
-            );
+            )?;
             Ok(RuntimeResponse::Payload(Box::new(result)))
         }
     }
@@ -825,7 +876,15 @@ fn handle_notifications(
     let mut updates = Vec::new();
 
     if pending.startup_sync {
-        let update = capture_mutation(runtime, |runtime| runtime.sync_hook_backend(), |_| ());
+        let update = capture_mutation(
+            runtime,
+            |runtime| {
+                runtime.sync_hook_backend();
+                Ok(())
+            },
+            |_| (),
+        )
+        .expect("startup sync should not fail");
         updates.push(RuntimeBackgroundUpdate {
             payload: Some(runtime.bootstrap_payload()),
             debug_events: update.debug_events,
@@ -837,9 +896,13 @@ fn handle_notifications(
     for (kind, message) in pending.debug_events {
         let update = capture_mutation(
             runtime,
-            |runtime| runtime.record_debug_event(kind, message),
+            |runtime| {
+                runtime.record_debug_event(kind, message);
+                Ok(())
+            },
             |_| (),
-        );
+        )
+        .expect("recording debug events should not fail");
         updates.push(RuntimeBackgroundUpdate {
             payload: None,
             debug_events: update.debug_events,
@@ -852,9 +915,13 @@ fn handle_notifications(
         if !runtime.app_discovery.scanning {
             let scanning_started = capture_mutation(
                 runtime,
-                |runtime| runtime.app_discovery.scanning = true,
+                |runtime| {
+                    runtime.app_discovery.scanning = true;
+                    Ok(())
+                },
                 |_| (),
-            );
+            )
+            .expect("marking discovery as scanning should not fail");
             updates.push(RuntimeBackgroundUpdate {
                 payload: Some(runtime.bootstrap_payload()),
                 debug_events: scanning_started.debug_events,
@@ -868,9 +935,11 @@ fn handle_notifications(
             |runtime| {
                 runtime.refresh_app_discovery();
                 runtime.app_discovery.scanning = false;
+                Ok(())
             },
             |_| (),
-        );
+        )
+        .expect("refreshing app discovery should not fail");
         updates.push(RuntimeBackgroundUpdate {
             payload: Some(runtime.bootstrap_payload()),
             debug_events: completed.debug_events,
@@ -944,13 +1013,13 @@ fn handle_notifications(
 
 fn capture_mutation<T, R>(
     runtime: &mut AppRuntime,
-    mutate: impl FnOnce(&mut AppRuntime) -> T,
+    mutate: impl FnOnce(&mut AppRuntime) -> RuntimeResult<T>,
     read_result: impl FnOnce(&AppRuntime) -> R,
-) -> RuntimeMutationResult<R> {
+) -> RuntimeResult<RuntimeMutationResult<R>> {
     let previous_debug_cursor = runtime.debug_event_cursor();
     let previous_app_discovery = runtime.app_discovery_snapshot();
     let previous_device_routing = runtime.device_routing_snapshot();
-    let _ = mutate(runtime);
+    let _ = mutate(runtime)?;
     let result = read_result(runtime);
     let payload = runtime.bootstrap_payload();
     let debug_events = runtime.debug_events_since(previous_debug_cursor);
@@ -960,13 +1029,13 @@ fn capture_mutation<T, R>(
         &payload.engine_snapshot.device_routing,
     );
 
-    RuntimeMutationResult {
+    Ok(RuntimeMutationResult {
         result,
         payload,
         debug_events,
         app_discovery_changed,
         device_routing_event,
-    }
+    })
 }
 
 fn capture_runtime_update(
@@ -991,85 +1060,6 @@ fn capture_runtime_update(
     }
 }
 
-fn build_device_routing_event(
-    previous: &DeviceRoutingSnapshot,
-    next: &DeviceRoutingSnapshot,
-) -> Option<DeviceRoutingEvent> {
-    if previous == next {
-        return None;
-    }
-
-    let previous_by_key = previous
-        .entries
-        .iter()
-        .map(|entry| (entry.live_device_key.as_str(), entry))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let next_by_key = next
-        .entries
-        .iter()
-        .map(|entry| (entry.live_device_key.as_str(), entry))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let mut changes = Vec::new();
-
-    for (live_device_key, next_entry) in &next_by_key {
-        match previous_by_key.get(live_device_key) {
-            None => changes.push(device_routing_change(
-                DeviceRoutingChangeKind::Connected,
-                next_entry,
-            )),
-            Some(previous_entry) => {
-                if previous_entry.managed_device_key != next_entry.managed_device_key
-                    || previous_entry.match_kind != next_entry.match_kind
-                {
-                    changes.push(device_routing_change(
-                        DeviceRoutingChangeKind::Reassigned,
-                        next_entry,
-                    ));
-                }
-                if previous_entry.is_active_target != next_entry.is_active_target {
-                    changes.push(device_routing_change(
-                        DeviceRoutingChangeKind::ActiveTargetChanged,
-                        next_entry,
-                    ));
-                }
-                if previous_entry.resolved_profile_id != next_entry.resolved_profile_id {
-                    changes.push(device_routing_change(
-                        DeviceRoutingChangeKind::ResolvedProfileChanged,
-                        next_entry,
-                    ));
-                }
-            }
-        }
-    }
-
-    for (live_device_key, previous_entry) in &previous_by_key {
-        if !next_by_key.contains_key(live_device_key) {
-            changes.push(device_routing_change(
-                DeviceRoutingChangeKind::Disconnected,
-                previous_entry,
-            ));
-        }
-    }
-
-    Some(DeviceRoutingEvent {
-        snapshot: next.clone(),
-        changes,
-    })
-}
-
-fn device_routing_change(
-    kind: DeviceRoutingChangeKind,
-    entry: &DeviceRoutingEntry,
-) -> DeviceRoutingChange {
-    DeviceRoutingChange {
-        kind,
-        live_device_key: entry.live_device_key.clone(),
-        managed_device_key: entry.managed_device_key.clone(),
-        resolved_profile_id: entry.resolved_profile_id.clone(),
-        match_kind: Some(entry.match_kind),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1082,8 +1072,8 @@ mod tests {
     use mouser_core::{
         default_app_discovery_snapshot, default_config, default_device_settings,
         default_profile_bindings, AppDiscoverySource, AppMatcher, AppMatcherKind,
-        DeviceFingerprint, DeviceSupportLevel, DeviceSupportMatrix, InstalledApp, ManagedDevice,
-        Profile,
+        DeviceFingerprint, DeviceRoutingChangeKind, DeviceSupportLevel, DeviceSupportMatrix,
+        InstalledApp, ManagedDevice, Profile,
     };
     use mouser_platform::{
         AppDiscoveryBackend, AppFocusBackend, HidBackend, HidCapabilities, HookBackend,
@@ -1272,10 +1262,12 @@ mod tests {
     ) -> AppRuntime {
         let mut runtime = AppRuntime {
             catalog: StaticDeviceCatalog::new(),
-            config_store: crate::config::JsonConfigStore::new(std::env::temp_dir().join(format!(
-                "mouser-service-test-{}.json",
-                super::super::now_ms()
-            ))),
+            config_store: Box::new(crate::config::JsonConfigStore::new(
+                std::env::temp_dir().join(format!(
+                    "mouser-service-test-{}.json",
+                    super::super::now_ms()
+                )),
+            )),
             hid_backend,
             hook_backend: Arc::new(CountingHookBackend),
             app_focus_backend,
@@ -1287,6 +1279,7 @@ mod tests {
             frontmost_app: None,
             app_discovery: default_app_discovery_snapshot(),
             enabled: true,
+            runtime_health: mouser_core::RuntimeHealth::default(),
             debug_log: std::collections::VecDeque::new(),
             next_debug_seq: 0,
         };

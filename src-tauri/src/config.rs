@@ -119,6 +119,10 @@ impl JsonConfigStore {
 }
 
 impl ConfigStore for JsonConfigStore {
+    fn load_or_recover(&self) -> (AppConfig, Option<String>) {
+        JsonConfigStore::load_or_recover(self)
+    }
+
     fn load(&self) -> Result<AppConfig, PlatformError> {
         if !self.path.exists() {
             return Ok(default_config());

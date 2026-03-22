@@ -287,6 +287,16 @@ pub trait DeviceCatalog: Send + Sync {
 pub trait ConfigStore: Send + Sync {
     fn load(&self) -> Result<AppConfig, PlatformError>;
     fn save(&self, config: &AppConfig) -> Result<(), PlatformError>;
+
+    fn load_or_recover(&self) -> (AppConfig, Option<String>) {
+        match self.load() {
+            Ok(config) => (config, None),
+            Err(error) => (
+                mouser_core::default_config(),
+                Some(format!("Failed to load config: {error}. Loaded defaults.")),
+            ),
+        }
+    }
 }
 
 pub fn load_native_app_icon(source_path: &str) -> Result<Option<String>, PlatformError> {
