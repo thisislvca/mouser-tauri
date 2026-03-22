@@ -6,6 +6,12 @@ use mouser_core::{
     DeviceRoutingSnapshot, EngineSnapshot, LegacyImportReport, Settings,
 };
 #[cfg(target_os = "macos")]
+use objc2::{AnyThread, MainThreadMarker};
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSApplication, NSImage};
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSData;
+#[cfg(target_os = "macos")]
 use mouser_platform::macos::{MacOsAppFocusMonitor, MacOsDeviceMonitor};
 #[cfg(target_os = "windows")]
 use mouser_platform::windows::WindowsAppFocusMonitor;
@@ -31,6 +37,10 @@ const TRAY_SHOW_ID: &str = "show";
 const TRAY_TOGGLE_REMAPPING_ID: &str = "toggle_remapping";
 const TRAY_TOGGLE_DEBUG_ID: &str = "toggle_debug";
 const TRAY_QUIT_ID: &str = "quit";
+
+#[cfg(target_os = "macos")]
+const TRAY_TEMPLATE_ICON: tauri::image::Image<'_> =
+    tauri::include_image!("./icons/tray-icon-template.png");
 
 struct AppState {
     runtime: RuntimeService,
@@ -498,10 +508,8 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let remapping_enabled = bootstrap.engine_snapshot.engine_status.enabled;
     let debug_mode = bootstrap.engine_snapshot.engine_status.debug_mode;
     let menu = build_tray_menu(app, remapping_enabled, debug_mode)?;
-    let icon = app.default_window_icon().cloned();
     let builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .icon_as_template(cfg!(target_os = "macos"))
         .show_menu_on_left_click(true)
         .on_menu_event(
             |app: &AppHandle<Wry>, event: MenuEvent| match event.id.as_ref() {
@@ -552,14 +560,43 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             },
         );
 
-    if let Some(icon) = icon {
-        builder.icon(icon).build(app)?;
-    } else {
-        builder.build(app)?;
+    #[cfg(target_os = "macos")]
+    builder
+        .icon(TRAY_TEMPLATE_ICON)
+        .icon_as_template(true)
+        .build(app)?;
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(icon) = app.default_window_icon().cloned() {
+            builder.icon(icon).build(app)?;
+        } else {
+            builder.build(app)?;
+        }
     }
 
     Ok(())
 }
+
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+
+    let icon_data = NSData::with_bytes(include_bytes!("../icons/icon.icns"));
+    let Some(icon) = NSImage::initWithData(NSImage::alloc(), &icon_data) else {
+        return;
+    };
+
+    unsafe {
+        NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&icon));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_macos_dock_icon() {}
+
 pub fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
@@ -625,6 +662,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building mouser-tauri");
 
+    set_macos_dock_icon();
     setup_tray(&app).expect("failed to set up tray");
     specta_builder.mount_events(&app);
 

@@ -16,7 +16,6 @@ import {
   GearSix,
   MouseLeftClick,
   MouseScroll,
-  Plus,
   Stack,
   WarningCircle,
   X,
@@ -1152,9 +1151,13 @@ function App() {
               <button
                 className="flex h-9 w-9 items-center justify-center rounded-xl text-muted-foreground transition hover:bg-black/5 hover:text-foreground"
                 onClick={openAppDiscovery}
+                title="Browse apps"
                 type="button"
               >
-                <Plus size={18} weight="bold" />
+                <span
+                  aria-hidden="true"
+                  className="app-discovery-trigger-icon h-[18px] w-[18px]"
+                />
               </button>
             </div>
           </header>

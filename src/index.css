@@ -190,3 +190,11 @@ img {
     @apply font-sans;
   }
 }
+
+.app-discovery-trigger-icon {
+  background-color: currentColor;
+  mask: url("/assets/icons/touchpad_mouse_material.svg") center / contain
+    no-repeat;
+  -webkit-mask:
+    url("/assets/icons/touchpad_mouse_material.svg") center / contain no-repeat;
+}

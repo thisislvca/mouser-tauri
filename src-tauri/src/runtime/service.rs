@@ -853,20 +853,18 @@ fn handle_notifications(
         });
     }
 
-    if pending.refresh_app_discovery {
-        if runtime.start_app_discovery_scan() {
-            let scanning_started = capture_mutation(runtime, |_| Ok(()), |_| ())
-                .expect("marking discovery as scanning should not fail");
-            updates.push(RuntimeBackgroundUpdate {
-                payload: Some(runtime.bootstrap_payload()),
-                debug_events: scanning_started.debug_events,
-                app_discovery_changed: scanning_started.app_discovery_changed,
-                device_routing_event: scanning_started.device_routing_event,
-            });
-            io_dispatcher
-                .discover_apps()
-                .expect("queueing app discovery should not fail");
-        }
+    if pending.refresh_app_discovery && runtime.start_app_discovery_scan() {
+        let scanning_started = capture_mutation(runtime, |_| Ok(()), |_| ())
+            .expect("marking discovery as scanning should not fail");
+        updates.push(RuntimeBackgroundUpdate {
+            payload: Some(runtime.bootstrap_payload()),
+            debug_events: scanning_started.debug_events,
+            app_discovery_changed: scanning_started.app_discovery_changed,
+            device_routing_event: scanning_started.device_routing_event,
+        });
+        io_dispatcher
+            .discover_apps()
+            .expect("queueing app discovery should not fail");
     }
 
     if pending.safety_resync {
