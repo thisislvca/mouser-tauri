@@ -56,20 +56,13 @@ import { Textarea } from "./components/ui/textarea";
 import {
   appIconLoad,
   appDiscoveryRefresh,
-  appSettingsUpdate,
   bootstrapLoad,
-  deviceDefaultsUpdate,
+  configSave,
   devicesAdd,
   devicesResetToFactory,
   devicesRemove,
   devicesSelect,
-  devicesUpdateNickname,
-  devicesUpdateProfile,
-  devicesUpdateSettings,
   importLegacyConfig,
-  profilesCreate,
-  profilesDelete,
-  profilesUpdate,
 } from "./lib/api";
 import { sampleLegacyConfig } from "./lib/sampleLegacyConfig";
 import type {
@@ -705,62 +698,16 @@ function App() {
   const invalidateBootstrap = () =>
     queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
 
-  const appSettingsMutation = useMutation({
-    mutationFn: appSettingsUpdate,
-    onSuccess: setBootstrapQueryData,
-  });
-  const deviceDefaultsMutation = useMutation({
-    mutationFn: deviceDefaultsUpdate,
+  const saveConfigMutation = useMutation({
+    mutationFn: configSave,
     onSuccess: setBootstrapQueryData,
   });
   const appDiscoveryRefreshMutation = useMutation({
     mutationFn: appDiscoveryRefresh,
     onSuccess: setBootstrapQueryData,
   });
-  const updateDeviceSettingsMutation = useMutation({
-    mutationFn: ({
-      deviceKey,
-      settings,
-    }: {
-      deviceKey: string;
-      settings: NonNullable<AppConfig["deviceDefaults"]>;
-    }) => devicesUpdateSettings(deviceKey, settings),
-    onSuccess: setBootstrapQueryData,
-  });
-  const updateDeviceProfileMutation = useMutation({
-    mutationFn: ({
-      deviceKey,
-      profileId,
-    }: {
-      deviceKey: string;
-      profileId: string | null;
-    }) => devicesUpdateProfile(deviceKey, profileId),
-    onSuccess: setBootstrapQueryData,
-  });
-  const updateDeviceNicknameMutation = useMutation({
-    mutationFn: ({
-      deviceKey,
-      nickname,
-    }: {
-      deviceKey: string;
-      nickname: string | null;
-    }) => devicesUpdateNickname(deviceKey, nickname),
-    onSuccess: setBootstrapQueryData,
-  });
   const resetDeviceToFactoryMutation = useMutation({
     mutationFn: devicesResetToFactory,
-    onSuccess: setBootstrapQueryData,
-  });
-  const createProfileMutation = useMutation({
-    mutationFn: profilesCreate,
-    onSuccess: setBootstrapQueryData,
-  });
-  const updateProfileMutation = useMutation({
-    mutationFn: profilesUpdate,
-    onSuccess: setBootstrapQueryData,
-  });
-  const deleteProfileMutation = useMutation({
-    mutationFn: profilesDelete,
     onSuccess: setBootstrapQueryData,
   });
   const addDeviceMutation = useMutation({
@@ -920,15 +867,8 @@ function App() {
 
   const bootstrap = bootstrapQuery.data;
   const isMutating =
-    appSettingsMutation.isPending ||
-    deviceDefaultsMutation.isPending ||
-    updateDeviceSettingsMutation.isPending ||
-    updateDeviceProfileMutation.isPending ||
-    updateDeviceNicknameMutation.isPending ||
+    saveConfigMutation.isPending ||
     resetDeviceToFactoryMutation.isPending ||
-    createProfileMutation.isPending ||
-    updateProfileMutation.isPending ||
-    deleteProfileMutation.isPending ||
     addDeviceMutation.isPending ||
     removeDeviceMutation.isPending ||
     selectDeviceMutation.isPending ||
@@ -978,20 +918,30 @@ function App() {
   );
   const groupedActions = groupActions(availableActions);
 
+  const mutateConfig = (editConfig: (nextConfig: AppConfig) => void) => {
+    const nextConfig = cloneConfig(config);
+    editConfig(nextConfig);
+    saveConfigMutation.mutate(nextConfig);
+  };
+
   const updateSelectedProfile = (mutateProfile: (profile: Profile) => void) => {
-    const nextProfile = cloneProfile(selectedProfile);
-    mutateProfile(nextProfile);
-    updateProfileMutation.mutate(nextProfile);
+    mutateConfig((nextConfig) => {
+      const existingProfile = nextConfig.profiles.find(
+        (profile) => profile.id === selectedProfile.id,
+      );
+      if (!existingProfile) {
+        return;
+      }
+      mutateProfile(existingProfile);
+    });
   };
 
   const saveAppSettings = (
     mutateSettings: (nextSettings: AppConfig["settings"]) => void,
   ) => {
-    const nextSettings = {
-      ...config.settings,
-    };
-    mutateSettings(nextSettings);
-    appSettingsMutation.mutate(nextSettings);
+    mutateConfig((nextConfig) => {
+      mutateSettings(nextConfig.settings);
+    });
   };
 
   const saveDeviceDefaults = (
@@ -999,9 +949,29 @@ function App() {
       nextSettings: NonNullable<AppConfig["deviceDefaults"]>,
     ) => void,
   ) => {
-    const nextSettings = normalizeDeviceSettings(config.deviceDefaults);
-    mutateSettings(nextSettings);
-    deviceDefaultsMutation.mutate(nextSettings);
+    mutateConfig((nextConfig) => {
+      nextConfig.deviceDefaults = normalizeDeviceSettings(
+        nextConfig.deviceDefaults,
+      );
+      mutateSettings(nextConfig.deviceDefaults);
+    });
+  };
+
+  const saveManagedDevice = (
+    deviceKey: string,
+    mutateDevice: (
+      nextDevice: NonNullable<AppConfig["managedDevices"]>[number],
+    ) => void,
+  ) => {
+    mutateConfig((nextConfig) => {
+      const managedDevices = nextConfig.managedDevices ?? [];
+      nextConfig.managedDevices = managedDevices;
+      const managedDevice = managedDevices.find((device) => device.id === deviceKey);
+      if (!managedDevice) {
+        return;
+      }
+      mutateDevice(managedDevice);
+    });
   };
 
   const openDeviceDetail = (
@@ -1028,13 +998,15 @@ function App() {
     }
 
     const id = makeProfileId(labelSource, config);
-    createProfileMutation.mutate({
-      id,
-      label: labelSource,
-      appMatchers: executable
-        ? [{ kind: "executable", value: executable }]
-        : [],
-      bindings: selectedProfile.bindings.map((binding) => ({ ...binding })),
+    mutateConfig((nextConfig) => {
+      nextConfig.profiles.push({
+        id,
+        label: labelSource,
+        appMatchers: executable
+          ? [{ kind: "executable", value: executable }]
+          : [],
+        bindings: selectedProfile.bindings.map((binding) => ({ ...binding })),
+      });
     });
     setNewProfileLabel("");
     setNewProfileApp("");
@@ -1065,21 +1037,17 @@ function App() {
     }
 
     const id = makeProfileId(app.label, config);
-    createProfileMutation.mutate(
-      {
+    mutateConfig((nextConfig) => {
+      nextConfig.profiles.push({
         id,
         label: app.label,
         appMatchers: app.matchers.map((matcher) => ({ ...matcher })),
         bindings: selectedProfile.bindings.map((binding) => ({ ...binding })),
-      },
-      {
-        onSuccess: () => {
-          setSelectedProfileId(id);
-          setActiveSection("profiles");
-          setAppSidebarOpen(false);
-        },
-      },
-    );
+      });
+    });
+    setSelectedProfileId(id);
+    setActiveSection("profiles");
+    setAppSidebarOpen(false);
   };
 
   const shellTitle =
@@ -1244,13 +1212,19 @@ function App() {
                 profiles={config.profiles}
                 setSelectedProfileId={setSelectedProfileId}
                 updateDeviceNickname={(deviceKey, nickname) =>
-                  updateDeviceNicknameMutation.mutate({ deviceKey, nickname })
+                  saveManagedDevice(deviceKey, (device) => {
+                    device.nickname = nickname;
+                  })
                 }
                 updateDeviceProfile={(deviceKey, profileId) =>
-                  updateDeviceProfileMutation.mutate({ deviceKey, profileId })
+                  saveManagedDevice(deviceKey, (device) => {
+                    device.profileId = profileId;
+                  })
                 }
                 updateDeviceSettings={(deviceKey, settings) =>
-                  updateDeviceSettingsMutation.mutate({ deviceKey, settings })
+                  saveManagedDevice(deviceKey, (device) => {
+                    device.settings = settings;
+                  })
                 }
               />
             )}
@@ -1258,7 +1232,13 @@ function App() {
             {activeSection === "profiles" && (
               <ProfilesView
                 createProfileFromDraft={createProfileFromDraft}
-                deleteProfile={deleteProfileMutation.mutate}
+                deleteProfile={(profileId) =>
+                  mutateConfig((nextConfig) => {
+                    nextConfig.profiles = nextConfig.profiles.filter(
+                      (profile) => profile.id !== profileId,
+                    );
+                  })
+                }
                 discoveredApps={discoveredApps}
                 knownApps={knownApps}
                 newProfileApp={newProfileApp}
@@ -4334,6 +4314,25 @@ function cloneProfile(profile: Profile): Profile {
     ...profile,
     appMatchers: profile.appMatchers.map((matcher) => ({ ...matcher })),
     bindings: profile.bindings.map((binding) => ({ ...binding })),
+  };
+}
+
+function cloneConfig(config: AppConfig): AppConfig {
+  return {
+    ...config,
+    settings: {
+      ...config.settings,
+      debugLogGroups: {
+        ...DEFAULT_DEBUG_LOG_GROUPS,
+        ...(config.settings.debugLogGroups ?? {}),
+      },
+    },
+    deviceDefaults: normalizeDeviceSettings(config.deviceDefaults),
+    profiles: config.profiles.map(cloneProfile),
+    managedDevices: (config.managedDevices ?? []).map((device) => ({
+      ...device,
+      settings: normalizeDeviceSettings(device.settings),
+    })),
   };
 }
 

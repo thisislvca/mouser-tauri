@@ -21,9 +21,11 @@ use mouser_core::{
     default_device_settings, known_device_spec_by_key, known_device_specs, manual_layout_choices,
     normalize_device_settings, AppConfig, AppDiscoverySnapshot, AppIdentity, BackendHealth,
     BackendHealthState, BootstrapPayload, DebugEvent, DebugEventKind, DebugLogGroup, DeviceInfo,
-    DeviceRoutingSnapshot, DeviceSettings, EngineSnapshot, EngineSnapshotState, ManagedDevice,
-    PlatformCapabilities, Profile, RuntimeHealth,
+    DeviceRoutingSnapshot, EngineSnapshot, EngineSnapshotState, ManagedDevice,
+    PlatformCapabilities, RuntimeHealth,
 };
+#[cfg(test)]
+use mouser_core::{DeviceSettings, Profile};
 use mouser_platform::{
     current_platform_name, emit_backend_console_log, host_hidapi_available, host_iokit_available,
     AppDiscoveryBackend, AppFocusBackend, ConfigStore, HidBackend, HookBackend, HookBackendEvent,
@@ -194,60 +196,6 @@ impl AppRuntime {
         Ok(())
     }
 
-    pub fn create_profile(&mut self, profile: Profile) -> RuntimeResult<()> {
-        self.save_profile(profile, "Created profile")
-    }
-
-    pub fn update_profile(&mut self, profile: Profile) -> RuntimeResult<()> {
-        self.save_profile(profile, "Updated profile")
-    }
-
-    fn save_profile(&mut self, profile: Profile, message: &'static str) -> RuntimeResult<()> {
-        self.config.upsert_profile(profile);
-        self.sync_active_profile();
-        self.persist_config()?;
-        self.sync_hook_backend();
-        self.push_debug(DebugEventKind::Info, message);
-        self.log_active_profile_snapshot("Bindings snapshot");
-        Ok(())
-    }
-
-    fn edit_managed_device(
-        &mut self,
-        device_key: &str,
-        edit: impl FnOnce(&mut ManagedDevice),
-    ) -> RuntimeResult<bool> {
-        let mut edit = Some(edit);
-        let mut updated = false;
-        self.apply_config_edit(|config| {
-            let Some(device) = config
-                .managed_devices
-                .iter_mut()
-                .find(|device| device.id == device_key)
-            else {
-                return;
-            };
-            if let Some(edit) = edit.take() {
-                edit(device);
-                updated = true;
-            }
-        })?;
-        Ok(updated)
-    }
-
-    pub fn delete_profile(&mut self, profile_id: &str) -> RuntimeResult<()> {
-        if self.config.delete_profile(profile_id) {
-            self.sync_active_profile();
-            self.persist_config()?;
-            self.sync_hook_backend();
-            self.push_debug(
-                DebugEventKind::Info,
-                format!("Deleted profile `{profile_id}`"),
-            );
-        }
-        Ok(())
-    }
-
     pub fn add_managed_device(&mut self, model_key: &str) -> RuntimeResult<Option<String>> {
         let Some(device_id) = self.add_managed_device_record(model_key) else {
             self.push_debug(
@@ -312,83 +260,6 @@ impl AppRuntime {
             self.log_active_profile_snapshot("Active bindings");
             self.log_dpi_state("DPI snapshot");
         }
-    }
-
-    pub fn update_app_settings(&mut self, settings: mouser_core::Settings) -> RuntimeResult<()> {
-        let debug_mode_was_enabled = self.apply_config_edit(|config| {
-            config.settings = settings;
-        })?;
-        self.push_debug(DebugEventKind::Info, "Updated app settings");
-        self.log_debug_session_if_newly_enabled(debug_mode_was_enabled);
-        Ok(())
-    }
-
-    pub fn update_device_defaults(&mut self, settings: DeviceSettings) -> RuntimeResult<()> {
-        self.apply_config_edit(|config| {
-            config.device_defaults = settings;
-        })?;
-        self.push_debug(
-            DebugEventKind::Info,
-            "Updated default settings for new devices",
-        );
-        Ok(())
-    }
-
-    pub fn update_managed_device_settings(
-        &mut self,
-        device_key: &str,
-        settings: DeviceSettings,
-    ) -> RuntimeResult<()> {
-        let updated = self.edit_managed_device(device_key, move |device| {
-            device.settings = settings;
-        })?;
-        if !updated {
-            return Ok(());
-        }
-        self.push_debug(
-            DebugEventKind::Info,
-            format!("Updated settings for device `{device_key}`"),
-        );
-        self.log_dpi_state("DPI snapshot");
-        Ok(())
-    }
-
-    pub fn update_managed_device_profile(
-        &mut self,
-        device_key: &str,
-        profile_id: Option<String>,
-    ) -> RuntimeResult<()> {
-        let updated = self.edit_managed_device(device_key, move |device| {
-            device.profile_id = profile_id;
-        })?;
-        if !updated {
-            return Ok(());
-        }
-        self.push_debug(
-            DebugEventKind::Info,
-            format!("Updated profile assignment for device `{device_key}`"),
-        );
-        self.log_active_profile_snapshot("Active bindings");
-        Ok(())
-    }
-
-    pub fn update_managed_device_nickname(
-        &mut self,
-        device_key: &str,
-        nickname: Option<String>,
-    ) -> RuntimeResult<()> {
-        let updated = self.edit_managed_device(device_key, move |device| {
-            device.nickname = nickname;
-        })?;
-        if !updated {
-            return Ok(());
-        }
-        self.push_debug(
-            DebugEventKind::Info,
-            format!("Updated nickname for device `{device_key}`"),
-        );
-        self.log_device_inventory("Device library");
-        Ok(())
     }
 
     pub fn reset_managed_device_to_factory_defaults(
@@ -1611,10 +1482,9 @@ mod tests {
     #[test]
     fn config_mutation_surfaces_persistence_failures_and_marks_health() {
         let mut runtime = test_runtime_with_store(Box::new(FailingConfigStore));
-        let result = runtime.update_app_settings(mouser_core::Settings {
-            start_minimized: false,
-            ..runtime.config.settings.clone()
-        });
+        let mut next_config = runtime.config.clone();
+        next_config.settings.start_minimized = false;
+        let result = runtime.save_config(next_config);
 
         assert!(matches!(result, Err(RuntimeError::Platform { .. })));
         assert_eq!(

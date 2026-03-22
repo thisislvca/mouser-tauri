@@ -8,8 +8,8 @@ use std::{
 };
 
 use mouser_core::{
-    AppConfig, AppIdentity, BootstrapPayload, DebugEventKind, DeviceInfo, DeviceSettings,
-    EngineSnapshot, InstalledApp, LegacyImportReport, Profile, Settings,
+    AppConfig, AppIdentity, BootstrapPayload, DebugEventKind, DeviceInfo, EngineSnapshot,
+    InstalledApp, LegacyImportReport,
 };
 use mouser_import::{import_legacy_config as import_legacy_payload, ImportSource};
 use mouser_platform::{HookBackendEvent, PlatformError};
@@ -44,23 +44,6 @@ enum RuntimeRequest {
     ConfigGet,
     DevicesList,
     ConfigSave(AppConfig),
-    AppSettingsUpdate(Settings),
-    DeviceDefaultsUpdate(DeviceSettings),
-    ProfilesCreate(Profile),
-    ProfilesUpdate(Profile),
-    ProfilesDelete(String),
-    DevicesUpdateSettings {
-        device_key: String,
-        settings: DeviceSettings,
-    },
-    DevicesUpdateProfile {
-        device_key: String,
-        profile_id: Option<String>,
-    },
-    DevicesUpdateNickname {
-        device_key: String,
-        nickname: Option<String>,
-    },
     DevicesResetToFactory(String),
     DevicesAdd(String),
     DevicesRemove(String),
@@ -319,122 +302,6 @@ impl RuntimeService {
             RuntimeResponse::Payload(result) => Ok(*result),
             _ => Err(RuntimeError::operation(
                 "config_save",
-                "unexpected runtime payload response",
-            )),
-        }
-    }
-
-    pub fn app_settings_update(
-        &self,
-        settings: Settings,
-    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
-        match self.request(RuntimeRequest::AppSettingsUpdate(settings))? {
-            RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err(RuntimeError::operation(
-                "app_settings_update",
-                "unexpected runtime payload response",
-            )),
-        }
-    }
-
-    pub fn device_defaults_update(
-        &self,
-        settings: DeviceSettings,
-    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
-        match self.request(RuntimeRequest::DeviceDefaultsUpdate(settings))? {
-            RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err(RuntimeError::operation(
-                "device_defaults_update",
-                "unexpected runtime payload response",
-            )),
-        }
-    }
-
-    pub fn profiles_create(
-        &self,
-        profile: Profile,
-    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
-        match self.request(RuntimeRequest::ProfilesCreate(profile))? {
-            RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err(RuntimeError::operation(
-                "profiles_create",
-                "unexpected runtime payload response",
-            )),
-        }
-    }
-
-    pub fn profiles_update(
-        &self,
-        profile: Profile,
-    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
-        match self.request(RuntimeRequest::ProfilesUpdate(profile))? {
-            RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err(RuntimeError::operation(
-                "profiles_update",
-                "unexpected runtime payload response",
-            )),
-        }
-    }
-
-    pub fn profiles_delete(
-        &self,
-        profile_id: String,
-    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
-        match self.request(RuntimeRequest::ProfilesDelete(profile_id))? {
-            RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err(RuntimeError::operation(
-                "profiles_delete",
-                "unexpected runtime payload response",
-            )),
-        }
-    }
-
-    pub fn devices_update_settings(
-        &self,
-        device_key: String,
-        settings: DeviceSettings,
-    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
-        match self.request(RuntimeRequest::DevicesUpdateSettings {
-            device_key,
-            settings,
-        })? {
-            RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err(RuntimeError::operation(
-                "devices_update_settings",
-                "unexpected runtime payload response",
-            )),
-        }
-    }
-
-    pub fn devices_update_profile(
-        &self,
-        device_key: String,
-        profile_id: Option<String>,
-    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
-        match self.request(RuntimeRequest::DevicesUpdateProfile {
-            device_key,
-            profile_id,
-        })? {
-            RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err(RuntimeError::operation(
-                "devices_update_profile",
-                "unexpected runtime payload response",
-            )),
-        }
-    }
-
-    pub fn devices_update_nickname(
-        &self,
-        device_key: String,
-        nickname: Option<String>,
-    ) -> RuntimeResult<RuntimeMutationResult<BootstrapPayload>> {
-        match self.request(RuntimeRequest::DevicesUpdateNickname {
-            device_key,
-            nickname,
-        })? {
-            RuntimeResponse::Payload(result) => Ok(*result),
-            _ => Err(RuntimeError::operation(
-                "devices_update_nickname",
                 "unexpected runtime payload response",
             )),
         }
@@ -894,65 +761,6 @@ fn handle_request(
                 |runtime| runtime.bootstrap_payload(),
             )?)))
         }
-        RuntimeRequest::AppSettingsUpdate(settings) => {
-            Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
-                runtime,
-                |runtime| runtime.update_app_settings(settings),
-                |runtime| runtime.bootstrap_payload(),
-            )?)))
-        }
-        RuntimeRequest::DeviceDefaultsUpdate(settings) => {
-            Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
-                runtime,
-                |runtime| runtime.update_device_defaults(settings),
-                |runtime| runtime.bootstrap_payload(),
-            )?)))
-        }
-        RuntimeRequest::ProfilesCreate(profile) => {
-            Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
-                runtime,
-                |runtime| runtime.create_profile(profile),
-                |runtime| runtime.bootstrap_payload(),
-            )?)))
-        }
-        RuntimeRequest::ProfilesUpdate(profile) => {
-            Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
-                runtime,
-                |runtime| runtime.update_profile(profile),
-                |runtime| runtime.bootstrap_payload(),
-            )?)))
-        }
-        RuntimeRequest::ProfilesDelete(profile_id) => {
-            Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
-                runtime,
-                |runtime| runtime.delete_profile(&profile_id),
-                |runtime| runtime.bootstrap_payload(),
-            )?)))
-        }
-        RuntimeRequest::DevicesUpdateSettings {
-            device_key,
-            settings,
-        } => Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
-            runtime,
-            |runtime| runtime.update_managed_device_settings(&device_key, settings),
-            |runtime| runtime.bootstrap_payload(),
-        )?))),
-        RuntimeRequest::DevicesUpdateProfile {
-            device_key,
-            profile_id,
-        } => Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
-            runtime,
-            |runtime| runtime.update_managed_device_profile(&device_key, profile_id),
-            |runtime| runtime.bootstrap_payload(),
-        )?))),
-        RuntimeRequest::DevicesUpdateNickname {
-            device_key,
-            nickname,
-        } => Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
-            runtime,
-            |runtime| runtime.update_managed_device_nickname(&device_key, nickname),
-            |runtime| runtime.bootstrap_payload(),
-        )?))),
         RuntimeRequest::DevicesResetToFactory(device_key) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,

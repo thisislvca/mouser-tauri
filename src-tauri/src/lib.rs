@@ -3,7 +3,7 @@ mod runtime;
 
 use mouser_core::{
     AppConfig, AppDiscoverySnapshot, BootstrapPayload, DebugEvent, DeviceInfo, DeviceRoutingEvent,
-    DeviceRoutingSnapshot, DeviceSettings, EngineSnapshot, LegacyImportReport, Profile, Settings,
+    DeviceRoutingSnapshot, EngineSnapshot, LegacyImportReport, Settings,
 };
 #[cfg(target_os = "macos")]
 use mouser_platform::macos::{MacOsAppFocusMonitor, MacOsDeviceMonitor};
@@ -107,61 +107,6 @@ fn config_save(
 
 #[tauri::command]
 #[specta::specta]
-fn app_settings_update(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    settings: Settings,
-) -> CommandResult<BootstrapPayload> {
-    let result = runtime_service(&state).app_settings_update(settings)?;
-    emit_mutation_result(&app, result)
-}
-
-#[tauri::command]
-#[specta::specta]
-fn device_defaults_update(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    settings: DeviceSettings,
-) -> CommandResult<BootstrapPayload> {
-    let result = runtime_service(&state).device_defaults_update(settings)?;
-    emit_mutation_result(&app, result)
-}
-
-#[tauri::command]
-#[specta::specta]
-fn profiles_create(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    profile: Profile,
-) -> CommandResult<BootstrapPayload> {
-    let result = runtime_service(&state).profiles_create(profile)?;
-    emit_mutation_result(&app, result)
-}
-
-#[tauri::command]
-#[specta::specta]
-fn profiles_update(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    profile: Profile,
-) -> CommandResult<BootstrapPayload> {
-    let result = runtime_service(&state).profiles_update(profile)?;
-    emit_mutation_result(&app, result)
-}
-
-#[tauri::command]
-#[specta::specta]
-fn profiles_delete(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    profile_id: String,
-) -> CommandResult<BootstrapPayload> {
-    let result = runtime_service(&state).profiles_delete(profile_id)?;
-    emit_mutation_result(&app, result)
-}
-
-#[tauri::command]
-#[specta::specta]
 fn app_discovery_refresh(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -176,42 +121,6 @@ fn app_icon_load(source_path: String) -> CommandResult<Option<String>> {
     Ok(mouser_platform::load_native_app_icon(&source_path)
         .ok()
         .flatten())
-}
-
-#[tauri::command]
-#[specta::specta]
-fn devices_update_settings(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    device_key: String,
-    settings: DeviceSettings,
-) -> CommandResult<BootstrapPayload> {
-    let result = runtime_service(&state).devices_update_settings(device_key, settings)?;
-    emit_mutation_result(&app, result)
-}
-
-#[tauri::command]
-#[specta::specta]
-fn devices_update_profile(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    device_key: String,
-    profile_id: Option<String>,
-) -> CommandResult<BootstrapPayload> {
-    let result = runtime_service(&state).devices_update_profile(device_key, profile_id)?;
-    emit_mutation_result(&app, result)
-}
-
-#[tauri::command]
-#[specta::specta]
-fn devices_update_nickname(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    device_key: String,
-    nickname: Option<String>,
-) -> CommandResult<BootstrapPayload> {
-    let result = runtime_service(&state).devices_update_nickname(device_key, nickname)?;
-    emit_mutation_result(&app, result)
 }
 
 #[tauri::command]
@@ -686,18 +595,10 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             bootstrap_load,
             config_get,
             config_save,
-            app_settings_update,
-            device_defaults_update,
             app_discovery_refresh,
             app_icon_load,
-            profiles_create,
-            profiles_update,
-            profiles_delete,
             devices_list,
             devices_add,
-            devices_update_settings,
-            devices_update_profile,
-            devices_update_nickname,
             devices_reset_to_factory,
             devices_remove,
             devices_select,

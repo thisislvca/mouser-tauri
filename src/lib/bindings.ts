@@ -30,22 +30,6 @@ async configSave(config: AppConfig) : Promise<Result<BootstrapPayload, RuntimeEr
     else return { status: "error", error: e  as any };
 }
 },
-async appSettingsUpdate(settings: Settings) : Promise<Result<BootstrapPayload, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("app_settings_update", { settings }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async deviceDefaultsUpdate(settings: DeviceSettings) : Promise<Result<BootstrapPayload, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("device_defaults_update", { settings }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async appDiscoveryRefresh() : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("app_discovery_refresh") };
@@ -62,30 +46,6 @@ async appIconLoad(sourcePath: string) : Promise<Result<string | null, RuntimeErr
     else return { status: "error", error: e  as any };
 }
 },
-async profilesCreate(profile: Profile) : Promise<Result<BootstrapPayload, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("profiles_create", { profile }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async profilesUpdate(profile: Profile) : Promise<Result<BootstrapPayload, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("profiles_update", { profile }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async profilesDelete(profileId: string) : Promise<Result<BootstrapPayload, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("profiles_delete", { profileId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async devicesList() : Promise<Result<DeviceInfo[], RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_list") };
@@ -97,30 +57,6 @@ async devicesList() : Promise<Result<DeviceInfo[], RuntimeError>> {
 async devicesAdd(modelKey: string) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_add", { modelKey }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async devicesUpdateSettings(deviceKey: string, settings: DeviceSettings) : Promise<Result<BootstrapPayload, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("devices_update_settings", { deviceKey, settings }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async devicesUpdateProfile(deviceKey: string, profileId: string | null) : Promise<Result<BootstrapPayload, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("devices_update_profile", { deviceKey, profileId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async devicesUpdateNickname(deviceKey: string, nickname: string | null) : Promise<Result<BootstrapPayload, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("devices_update_nickname", { deviceKey, nickname }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
