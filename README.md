@@ -1,46 +1,69 @@
 # Mouser Tauri
 
-Clean-room Tauri v2 + React/TypeScript rewrite of Mouser.
+Clean-room Tauri v2 + React/TypeScript rewrite of Mouser, with a native Rust backend, typed frontend bindings, and platform-specific device/app integrations.
 
-This repo now includes a first Linux-native backend pass alongside the typed config/import/runtime work. It includes:
+This repo is no longer just a UI shell. The checked-in code now includes:
 
-- A separate Tauri desktop app repo with a standard React/TypeScript frontend
-- An internal Rust workspace under [`src-tauri`](/Users/luca/Documents/dev/mouser-tauri/src-tauri)
-- A new Rust-native config schema and typed domain model
-- A legacy Mouser JSON importer
-- Service-backed runtime tests with fake HID, focus, and app-discovery backends
-- A live Linux backend for Logitech HID++ enumeration, DPI changes, battery/DPI reads, input remapping, gestures, and app discovery
-- A React shell for `Devices`, `Buttons`, `Profiles`, `Settings`, and `Debug`
-- Tauri commands and runtime events for the desktop runtime, with live Linux backends and service-owned runtime orchestration
+- A Rust runtime service that owns config, device state, profile resolution, routing, health, and background work
+- Native platform backends for macOS, Windows, and Linux
+- A generated Logitech mouse catalog with 43 known device entries and matching layout assets
+- Per-device tuning, per-app profiles, legacy Mouser config import, app discovery, runtime events, and debug tooling
 
-## Workspace
+## What The App Does
 
-- [`crates/mouser-core`](/Users/luca/Documents/dev/mouser-tauri/src-tauri/crates/mouser-core): domain types, config schema, layouts, actions, and engine snapshot models
-- [`crates/mouser-import`](/Users/luca/Documents/dev/mouser-tauri/src-tauri/crates/mouser-import): importer from the current Python Mouser `config.json`
-- [`crates/mouser-platform`](/Users/luca/Documents/dev/mouser-tauri/src-tauri/crates/mouser-platform): platform backends, including the Linux HID/hook/app-focus/app-discovery implementation
+Mouser Tauri lets you:
 
-## Commands
+- add supported Logitech mice as managed devices
+- assign a profile per device or let profiles auto-switch by frontmost app
+- remap buttons, thumb-wheel actions, and gesture controls when the active backend supports them
+- read live battery/DPI telemetry and write DPI values through native HID backends
+- inspect device routing, backend health, active platform adapters, and raw battery telemetry
+- import an existing Mouser `config.json` as a migration source
 
-The Tauri backend exposes config, profile, device, app-discovery, icon-loading, and import commands to the frontend.
+The current frontend is organized around four working areas:
 
-It also emits:
+- `Buttons`: profile bindings and layout-aware control editing
+- `Point & Scroll`: device-level tuning such as DPI, scroll inversion, layout override, and gesture thresholds
+- `Profiles`: profile CRUD plus app matcher editing
+- `Debug`: backend capability inspection, battery telemetry, and legacy import
 
-- `device_changed`
-- `app_discovery_changed` when the discovery snapshot actually changes
-- `profile_changed`
-- `engine_status_changed`
-- `debug_event` for incremental runtime log entries
+## Honest Status
 
-## First-Time Setup
+The codebase is much further along than the old README suggested, but it is still a work in progress.
 
-If this is your first time running the repo, install these first:
+- The backend surface is real and native, not mocked-only.
+- Device and OS validation is still uneven across hardware combinations.
+- The `startMinimized` and `startAtLogin` settings are persisted in config and exposed in the UI, but OS launch integration is not wired up yet.
+- Debug logging now goes to the Rust console only. Run the app from a terminal when you need backend logs.
+- Some Logitech preset actions are imported into the UI as unsupported placeholders and are not executed yet.
 
-- Rust via `rustup`: [https://rustup.rs](https://rustup.rs)
-- Bun: [https://bun.sh/docs/installation](https://bun.sh/docs/installation)
-- Node.js LTS: [https://nodejs.org](https://nodejs.org)
-- Tauri system prerequisites for your OS: [https://v2.tauri.app/start/prerequisites/](https://v2.tauri.app/start/prerequisites/)
+## Platform Status
 
-Quick setup:
+| Platform | Backend status in tree | Notes |
+| --- | --- | --- |
+| macOS | Native HID, event tap, app focus, app discovery | Requires Accessibility permission for live interception. Uses `IOKit` + `hidapi` for device work and `NSWorkspace` for app focus. |
+| Windows | Native HID, low-level hook, app focus, app discovery | Uses Win32 hooks/focus APIs plus `hidapi`. App discovery pulls from shortcuts, registry, packages, and running processes. |
+| Linux | Native HID, `evdev` hook, X11 focus, desktop discovery | Requires low-level device access (`/dev/input`, `/dev/uinput`, `hidraw`). Frontmost-app detection is currently X11-only. |
+
+Linux still has the most environment-specific setup, so it has a dedicated guide: [`docs/linux-support.md`](docs/linux-support.md).
+
+## Getting Started
+
+### Prerequisites
+
+Install these first:
+
+- Rust via [rustup](https://rustup.rs)
+- Node.js LTS with `npm`
+- Bun
+- Tauri v2 system prerequisites for your OS: [https://v2.tauri.app/start/prerequisites/](https://v2.tauri.app/start/prerequisites/)
+
+Why both Node and Bun?
+
+- The repo uses Bun for dependency install and most package scripts.
+- `src-tauri/tauri.conf.json` currently runs `npm run dev` / `npm run build` as Tauri pre-commands, so a working Node/npm install still needs to be present.
+
+### First Run
 
 ```bash
 cd /Users/luca/Documents/dev/mouser-tauri
@@ -50,66 +73,91 @@ bun run test:run
 bun run tauri dev
 ```
 
-Notes:
-
-- Bun is the default package manager in this repo because [`bun.lock`](/Users/luca/Documents/dev/mouser-tauri/bun.lock) is checked in, but the package scripts are standard and also work through `npm`.
-- `rustup` installs both `rustc` and `cargo`.
-- Tauri needs extra native dependencies that vary by OS, so follow the official prerequisites page before running the desktop app.
-- For Linux-specific runtime permissions, build packages, and current Wayland/X11 limitations, see [docs/linux-support.md](/Users/luca/Documents/dev/mouser-tauri/docs/linux-support.md).
-
-## Development
+## Common Commands
 
 ```bash
-cd /Users/luca/Documents/dev/mouser-tauri
-bun install
-bun run test:run
+# Frontend dev server only
+bun run dev
+
+# Full desktop app
+bun run tauri dev
+
+# Frontend production build
 bun run build
+
+# Frontend tests
+bun run test:run
+
+# Rust tests
 cargo test --manifest-path src-tauri/Cargo.toml
+
+# Refresh generated TS bindings after changing Rust commands/types/events
+bun run generate:bindings
 ```
 
-For the desktop app:
+Bindings note:
 
-```bash
-cd /Users/luca/Documents/dev/mouser-tauri
-bun run tauri dev
-```
-
-Bindings workflow:
-
-- `bun run tauri dev` regenerates [bindings.ts](/Users/luca/Documents/dev/mouser-tauri/src/lib/bindings.ts) automatically in debug builds.
+- `bun run tauri dev` regenerates `src/lib/bindings.ts` automatically in debug builds.
 - Plain frontend commands such as `bun run dev`, `bun run build`, and `bun run test:run` use the checked-in bindings file.
-- If you change Rust commands, events, or Specta types without running `tauri dev`, refresh the file manually with `bun run generate:bindings`.
 
-## Current scope
+## Config, Data, And Import
 
-This repo now ships a Linux-first live backend with:
+Default config path by platform:
 
-- Logitech HID++ enumeration, DPI writes, and telemetry reads
-- `evdev`-based global remapping for middle/back/forward/horizontal-scroll controls
-- HID++ gesture diversion with virtual keyboard/mouse injection
-- X11 frontmost-app detection and `.desktop` plus running-process app discovery
-- XDG config storage and native icon loading for file-backed app icons
+- macOS: `~/Library/Application Support/Mouser Tauri/config.json`
+- Linux: `$XDG_CONFIG_HOME/Mouser Tauri/config.json` or `~/.config/Mouser Tauri/config.json`
+- Windows: `%APPDATA%\\Mouser Tauri\\config.json`
 
-Still incomplete:
+Important behavior:
 
-- Wayland frontmost-app detection and profile auto-switching
-- runtime validation across Linux distros and desktop environments
-- equivalent hardening and parity work on the macOS and Windows backends
+- Config saves are written through a temp file and then renamed into place.
+- If Mouser cannot decode the existing config, it preserves the unreadable file as a timestamped recovery file and loads defaults.
+- Legacy Mouser JSON can be imported from a file path or pasted raw into the Debug view.
+- Legacy settings are translated into the new typed schema where possible, and skipped keys produce warnings instead of silently disappearing.
 
-## Logitech Actions Not Yet Supported
+Full details live in [`docs/config-and-import.md`](docs/config-and-import.md).
 
-These actions are imported from Logitech device data and now surface in the UI as disabled `Unsupported` options, but Mouser does not execute them yet:
+## Repository Layout
 
-- Horizontal Scroll: `card_global_presets_osx_horizontal_scroll`
-- Keyboard Shortcut: `card_global_presets_keyboard_shortcut`
-- Middle Button: `card_global_presets_middle_button`
-- Mode Shift: `card_global_presets_mode_shift`
-- One Of Gesture Button: `card_global_presets_one_of_gesture_button`
-- Scroll Left: `card_global_presets_scroll_left`
-- Scroll Right: `card_global_presets_scroll_right`
-- Show Radial Menu: `card_global_presets_show_radial_menu`
-- Smart Zoom: `card_global_presets_osx_smart_zoom`
-- Spotlight Effects: `card_global_presets_spotlight_effects`
-- Swipe Pages: `card_global_presets_osx_swipe_pages`
-- Volume Control: `card_global_presets_osx_volume_control`
-- Zoom: `card_global_presets_osx_zoom`
+- `src/`: React app, sections, hooks, UI primitives, API wrapper, and generated bindings
+- `src-tauri/src/`: Tauri entrypoint, command surface, runtime orchestration, config store
+- `src-tauri/crates/mouser-core/`: shared types, defaults, catalog, layout data, snapshot builders
+- `src-tauri/crates/mouser-import/`: legacy Mouser importer
+- `src-tauri/crates/mouser-platform/`: macOS/Windows/Linux backends
+- `docs/`: focused project docs and ADRs
+
+## Backend Architecture
+
+The backend is structured around a single runtime owner instead of scattering state across commands.
+
+- `RuntimeService` runs the request/notification loop and background workers.
+- `AppRuntime` owns mutable state: config, detected devices, app discovery snapshot, resolved profile, device routing, debug log, and backend health.
+- Platform adapters implement `HidBackend`, `HookBackend`, `AppFocusBackend`, and `AppDiscoveryBackend`.
+- The frontend calls typed Tauri commands and refreshes its bootstrap query when runtime events arrive.
+
+See [`docs/runtime-architecture.md`](docs/runtime-architecture.md) for the detailed flow, command list, and emitted events.
+
+## Additional Docs
+
+- [`docs/runtime-architecture.md`](docs/runtime-architecture.md)
+- [`docs/config-and-import.md`](docs/config-and-import.md)
+- [`docs/linux-support.md`](docs/linux-support.md)
+- [`docs/adr/0001-clean-room-backend-foundation.md`](docs/adr/0001-clean-room-backend-foundation.md)
+
+## Unsupported Logitech Preset Actions
+
+The generated Logitech catalog currently contributes 13 action identifiers that Mouser Tauri surfaces in the UI as unsupported options but does not execute yet:
+
+- `card_global_presets_osx_horizontal_scroll`
+- `card_global_presets_keyboard_shortcut`
+- `card_global_presets_middle_button`
+- `card_global_presets_mode_shift`
+- `card_global_presets_one_of_gesture_button`
+- `card_global_presets_scroll_left`
+- `card_global_presets_scroll_right`
+- `card_global_presets_show_radial_menu`
+- `card_global_presets_osx_smart_zoom`
+- `card_global_presets_spotlight_effects`
+- `card_global_presets_osx_swipe_pages`
+- `card_global_presets_osx_volume_control`
+- `card_global_presets_osx_zoom`
