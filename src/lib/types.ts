@@ -6,6 +6,8 @@ export type {
   AppMatcher,
   AppMatcherKind,
   AppearanceMode,
+  BackendHealth,
+  BackendHealthState,
   Binding,
   BootstrapPayload,
   DebugEvent as DebugEventRecord,
@@ -42,5 +44,6 @@ export type {
   ManagedDevice,
   PlatformCapabilities,
   Profile,
+  RuntimeHealth,
   Settings,
 } from "./bindings";

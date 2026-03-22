@@ -2,14 +2,26 @@ use mouser_core::{
     default_app_catalog, normalize_app_match_value, AppDiscoverySnapshot, AppMatcher,
     AppMatcherKind, CatalogApp, DebugEventKind, DiscoveredApp, InstalledApp,
 };
+use mouser_platform::PlatformError;
 
 use super::{now_ms, AppRuntime, BackendSlot};
 use mouser_core::BackendHealthState;
 
 impl AppRuntime {
-    pub fn refresh_app_discovery(&mut self) -> bool {
+    pub(crate) fn start_app_discovery_scan(&mut self) -> bool {
+        if self.app_discovery.scanning {
+            return false;
+        }
+        self.app_discovery.scanning = true;
+        true
+    }
+
+    pub(crate) fn finish_app_discovery_scan(
+        &mut self,
+        result: Result<Vec<InstalledApp>, PlatformError>,
+    ) -> bool {
         let previous = self.app_discovery.clone();
-        match self.app_discovery_backend.discover_apps() {
+        match result {
             Ok(installed_apps) => {
                 let health_changed = self.mark_backend_health(
                     BackendSlot::Discovery,
@@ -34,11 +46,13 @@ impl AppRuntime {
             Err(error) => {
                 let message = format!("App discovery refresh failed: {error}");
                 self.push_debug(DebugEventKind::Warning, message.clone());
-                self.mark_backend_health(
+                let health_changed = self.mark_backend_health(
                     BackendSlot::Discovery,
                     BackendHealthState::Stale,
                     Some(message),
-                )
+                );
+                self.app_discovery.scanning = false;
+                health_changed || self.app_discovery != previous
             }
         }
     }

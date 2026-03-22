@@ -18,6 +18,7 @@ import {
   MouseScroll,
   Plus,
   Stack,
+  WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -76,6 +77,7 @@ import type {
   AppConfig,
   AppMatcher,
   AppMatcherKind,
+  BackendHealthState,
   Binding,
   BootstrapPayload,
   DeviceControlSpec,
@@ -87,6 +89,7 @@ import type {
   KnownDeviceSpec,
   LogicalControl,
   Profile,
+  RuntimeHealth,
 } from "./lib/types";
 import { useRuntimeEvents } from "./hooks/useRuntimeEvents";
 import { cn } from "./lib/utils";
@@ -244,6 +247,40 @@ function supportLevelTone(level: DeviceSupportLevel): "success" | "warning" | "n
   }
 
   return "neutral";
+}
+
+function runtimeHealthIssues(runtimeHealth: RuntimeHealth | null | undefined) {
+  const entries = [
+    ["persistence", "Config save", runtimeHealth?.persistence],
+    ["hid", "Device detection", runtimeHealth?.hid],
+    ["hook", "Input hook", runtimeHealth?.hook],
+    ["focus", "App focus", runtimeHealth?.focus],
+    ["discovery", "App discovery", runtimeHealth?.discovery],
+  ] as const;
+
+  return entries.flatMap(([key, label, health]) => {
+    const state = health?.state;
+    if (state == null || state === "ready") {
+      return [];
+    }
+
+    return [
+      {
+        key,
+        label,
+        state,
+        message:
+          health?.message ??
+          (state === "error"
+            ? `${label} is unavailable.`
+            : `${label} is using stale data.`),
+      },
+    ];
+  });
+}
+
+function runtimeHealthTone(state: BackendHealthState): "warning" | "danger" {
+  return state === "error" ? "danger" : "warning";
 }
 
 function batteryStatusLabel(device: DeviceInfo | null | undefined) {
@@ -1055,6 +1092,7 @@ function App() {
       ? { tone: "neutral" as const, value: "Added" }
       : { tone: "neutral" as const, value: "No device" };
   const isDashboard = shellMode === "dashboard";
+  const runtimeHealth = engineSnapshot.engineStatus.runtimeHealth;
 
   return (
     <main className="min-h-screen bg-app-bg text-foreground antialiased">
@@ -1072,6 +1110,7 @@ function App() {
             openDeviceDetail(deviceKey, section)
           }
           onRemoveDevice={removeDeviceMutation.mutate}
+          runtimeHealth={runtimeHealth}
           supportedDevices={bootstrap.supportedDevices}
         />
       ) : (
@@ -1176,6 +1215,10 @@ function App() {
           </nav>
 
           <div className="min-h-screen overflow-y-auto px-6 pb-8 pt-[72px] lg:pl-[220px]">
+            <RuntimeHealthNotice
+              className="mb-6"
+              runtimeHealth={runtimeHealth}
+            />
             {activeSection === "buttons" && (
               <ButtonsView
                 actionLookup={actionLookup}
@@ -1429,6 +1472,7 @@ function DashboardShell(props: {
   onOpenAppSettings: () => void;
   onOpenDevice: (deviceKey: string, section: SectionName) => void;
   onRemoveDevice: (deviceKey: string) => void;
+  runtimeHealth?: RuntimeHealth;
   supportedDevices: KnownDeviceSpec[];
 }) {
   const detectedModelKeys = new Set(
@@ -1471,6 +1515,7 @@ function DashboardShell(props: {
       </div>
 
       <div className="mx-auto flex w-full max-w-[1680px] flex-1 flex-col px-6 pb-10 sm:px-10">
+        <RuntimeHealthNotice className="mb-8" runtimeHealth={props.runtimeHealth} />
         <div className="flex flex-1 items-center justify-center">
           {props.engineSnapshot.devices.length > 0 ? (
             <div className="flex flex-wrap items-start justify-center gap-10">
@@ -3268,6 +3313,80 @@ function SupportNotesPanel(props: { notes: string[]; className?: string }) {
   );
 }
 
+function RuntimeHealthNotice(props: {
+  runtimeHealth?: RuntimeHealth;
+  className?: string;
+}) {
+  const issues = runtimeHealthIssues(props.runtimeHealth);
+
+  if (issues.length === 0) {
+    return null;
+  }
+
+  const hasError = issues.some((issue) => issue.state === "error");
+
+  return (
+    <Card
+      className={cn(
+        "shadow-none ring-1",
+        hasError
+          ? "border-red-200 bg-red-50/80 ring-red-100"
+          : "border-amber-200 bg-amber-50/80 ring-amber-100",
+        props.className,
+      )}
+    >
+      <CardContent className="px-5 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <WarningCircle
+                className={cn(
+                  "h-4 w-4",
+                  hasError ? "text-red-600" : "text-amber-600",
+                )}
+                weight="fill"
+              />
+              <p className="text-sm font-semibold text-foreground">
+                Backend health needs attention
+              </p>
+            </div>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Mouser is still running, but some backend subsystems are stale or
+              unavailable.
+            </p>
+          </div>
+          <StatusPill
+            tone={hasError ? "danger" : "warning"}
+            value={hasError ? "Degraded" : "Stale"}
+          />
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {issues.map((issue) => (
+            <div
+              className="rounded-[20px] bg-white/80 px-4 py-3 ring-1 ring-black/5"
+              key={issue.key}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium text-foreground">
+                  {issue.label}
+                </p>
+                <StatusPill
+                  tone={runtimeHealthTone(issue.state)}
+                  value={issue.state === "error" ? "Error" : "Stale"}
+                />
+              </div>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                {issue.message}
+              </p>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function Field(props: { label: string; children: ReactNode }) {
   return (
     <div className="space-y-2.5">
@@ -3772,7 +3891,7 @@ function SheetActionField(props: {
 }
 
 function StatusPill(props: {
-  tone: "success" | "accent" | "neutral" | "warning";
+  tone: "success" | "accent" | "neutral" | "warning" | "danger";
   value: string;
 }) {
   const toneProps: {
@@ -3794,6 +3913,11 @@ function StatusPill(props: {
               variant: "secondary",
               className: "border-amber-200 bg-amber-50 text-amber-700",
             }
+          : props.tone === "danger"
+            ? {
+                variant: "secondary",
+                className: "border-red-200 bg-red-50 text-red-700",
+              }
           : {
               variant: "outline",
               className: "bg-white text-muted-foreground",

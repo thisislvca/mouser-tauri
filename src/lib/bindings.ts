@@ -6,7 +6,7 @@
 
 
 export const commands = {
-async bootstrapLoad() : Promise<Result<BootstrapPayload, string>> {
+async bootstrapLoad() : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("bootstrap_load") };
 } catch (e) {
@@ -14,7 +14,7 @@ async bootstrapLoad() : Promise<Result<BootstrapPayload, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async configGet() : Promise<Result<AppConfig, string>> {
+async configGet() : Promise<Result<AppConfig, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("config_get") };
 } catch (e) {
@@ -22,7 +22,7 @@ async configGet() : Promise<Result<AppConfig, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async configSave(config: AppConfig) : Promise<Result<BootstrapPayload, string>> {
+async configSave(config: AppConfig) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("config_save", { config }) };
 } catch (e) {
@@ -30,7 +30,7 @@ async configSave(config: AppConfig) : Promise<Result<BootstrapPayload, string>> 
     else return { status: "error", error: e  as any };
 }
 },
-async appSettingsUpdate(settings: Settings) : Promise<Result<BootstrapPayload, string>> {
+async appSettingsUpdate(settings: Settings) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("app_settings_update", { settings }) };
 } catch (e) {
@@ -38,7 +38,7 @@ async appSettingsUpdate(settings: Settings) : Promise<Result<BootstrapPayload, s
     else return { status: "error", error: e  as any };
 }
 },
-async deviceDefaultsUpdate(settings: DeviceSettings) : Promise<Result<BootstrapPayload, string>> {
+async deviceDefaultsUpdate(settings: DeviceSettings) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("device_defaults_update", { settings }) };
 } catch (e) {
@@ -46,7 +46,7 @@ async deviceDefaultsUpdate(settings: DeviceSettings) : Promise<Result<BootstrapP
     else return { status: "error", error: e  as any };
 }
 },
-async appDiscoveryRefresh() : Promise<Result<BootstrapPayload, string>> {
+async appDiscoveryRefresh() : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("app_discovery_refresh") };
 } catch (e) {
@@ -54,7 +54,7 @@ async appDiscoveryRefresh() : Promise<Result<BootstrapPayload, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async appIconLoad(sourcePath: string) : Promise<Result<string | null, string>> {
+async appIconLoad(sourcePath: string) : Promise<Result<string | null, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("app_icon_load", { sourcePath }) };
 } catch (e) {
@@ -62,7 +62,7 @@ async appIconLoad(sourcePath: string) : Promise<Result<string | null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async profilesCreate(profile: Profile) : Promise<Result<BootstrapPayload, string>> {
+async profilesCreate(profile: Profile) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("profiles_create", { profile }) };
 } catch (e) {
@@ -70,7 +70,7 @@ async profilesCreate(profile: Profile) : Promise<Result<BootstrapPayload, string
     else return { status: "error", error: e  as any };
 }
 },
-async profilesUpdate(profile: Profile) : Promise<Result<BootstrapPayload, string>> {
+async profilesUpdate(profile: Profile) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("profiles_update", { profile }) };
 } catch (e) {
@@ -78,7 +78,7 @@ async profilesUpdate(profile: Profile) : Promise<Result<BootstrapPayload, string
     else return { status: "error", error: e  as any };
 }
 },
-async profilesDelete(profileId: string) : Promise<Result<BootstrapPayload, string>> {
+async profilesDelete(profileId: string) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("profiles_delete", { profileId }) };
 } catch (e) {
@@ -86,7 +86,7 @@ async profilesDelete(profileId: string) : Promise<Result<BootstrapPayload, strin
     else return { status: "error", error: e  as any };
 }
 },
-async devicesList() : Promise<Result<DeviceInfo[], string>> {
+async devicesList() : Promise<Result<DeviceInfo[], RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_list") };
 } catch (e) {
@@ -94,7 +94,7 @@ async devicesList() : Promise<Result<DeviceInfo[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async devicesAdd(modelKey: string) : Promise<Result<BootstrapPayload, string>> {
+async devicesAdd(modelKey: string) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_add", { modelKey }) };
 } catch (e) {
@@ -102,7 +102,7 @@ async devicesAdd(modelKey: string) : Promise<Result<BootstrapPayload, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async devicesUpdateSettings(deviceKey: string, settings: DeviceSettings) : Promise<Result<BootstrapPayload, string>> {
+async devicesUpdateSettings(deviceKey: string, settings: DeviceSettings) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_update_settings", { deviceKey, settings }) };
 } catch (e) {
@@ -110,7 +110,7 @@ async devicesUpdateSettings(deviceKey: string, settings: DeviceSettings) : Promi
     else return { status: "error", error: e  as any };
 }
 },
-async devicesUpdateProfile(deviceKey: string, profileId: string | null) : Promise<Result<BootstrapPayload, string>> {
+async devicesUpdateProfile(deviceKey: string, profileId: string | null) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_update_profile", { deviceKey, profileId }) };
 } catch (e) {
@@ -118,7 +118,7 @@ async devicesUpdateProfile(deviceKey: string, profileId: string | null) : Promis
     else return { status: "error", error: e  as any };
 }
 },
-async devicesUpdateNickname(deviceKey: string, nickname: string | null) : Promise<Result<BootstrapPayload, string>> {
+async devicesUpdateNickname(deviceKey: string, nickname: string | null) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_update_nickname", { deviceKey, nickname }) };
 } catch (e) {
@@ -126,7 +126,7 @@ async devicesUpdateNickname(deviceKey: string, nickname: string | null) : Promis
     else return { status: "error", error: e  as any };
 }
 },
-async devicesResetToFactory(deviceKey: string) : Promise<Result<BootstrapPayload, string>> {
+async devicesResetToFactory(deviceKey: string) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_reset_to_factory", { deviceKey }) };
 } catch (e) {
@@ -134,7 +134,7 @@ async devicesResetToFactory(deviceKey: string) : Promise<Result<BootstrapPayload
     else return { status: "error", error: e  as any };
 }
 },
-async devicesRemove(deviceKey: string) : Promise<Result<BootstrapPayload, string>> {
+async devicesRemove(deviceKey: string) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_remove", { deviceKey }) };
 } catch (e) {
@@ -142,7 +142,7 @@ async devicesRemove(deviceKey: string) : Promise<Result<BootstrapPayload, string
     else return { status: "error", error: e  as any };
 }
 },
-async devicesSelect(deviceKey: string) : Promise<Result<EngineSnapshot, string>> {
+async devicesSelect(deviceKey: string) : Promise<Result<EngineSnapshot, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_select", { deviceKey }) };
 } catch (e) {
@@ -150,7 +150,7 @@ async devicesSelect(deviceKey: string) : Promise<Result<EngineSnapshot, string>>
     else return { status: "error", error: e  as any };
 }
 },
-async devicesSelectMock(deviceKey: string) : Promise<Result<EngineSnapshot, string>> {
+async devicesSelectMock(deviceKey: string) : Promise<Result<EngineSnapshot, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("devices_select_mock", { deviceKey }) };
 } catch (e) {
@@ -158,7 +158,7 @@ async devicesSelectMock(deviceKey: string) : Promise<Result<EngineSnapshot, stri
     else return { status: "error", error: e  as any };
 }
 },
-async importLegacyConfig(request: ImportLegacyConfigRequest) : Promise<Result<LegacyImportReport, string>> {
+async importLegacyConfig(request: ImportLegacyConfigRequest) : Promise<Result<LegacyImportReport, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("import_legacy_config", { request }) };
 } catch (e) {
@@ -166,7 +166,7 @@ async importLegacyConfig(request: ImportLegacyConfigRequest) : Promise<Result<Le
     else return { status: "error", error: e  as any };
 }
 },
-async debugClearLog() : Promise<Result<EngineSnapshot, string>> {
+async debugClearLog() : Promise<Result<EngineSnapshot, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("debug_clear_log") };
 } catch (e) {
@@ -209,6 +209,8 @@ export type AppDiscoverySource = "catalog" | "application_bundle" | "desktop_ent
 export type AppMatcher = { kind: AppMatcherKind; value: string }
 export type AppMatcherKind = "executable" | "executable_path" | "bundle_id" | "package_family_name"
 export type AppearanceMode = "system" | "light" | "dark"
+export type BackendHealth = { state?: BackendHealthState; message?: string | null; updatedAtMs?: number | null }
+export type BackendHealthState = "ready" | "stale" | "error"
 export type Binding = { control: LogicalControl; actionId: string }
 export type BootstrapPayload = { config: AppConfig; availableActions: ActionDefinition[]; knownApps: KnownApp[]; appDiscovery: AppDiscoverySnapshot; supportedDevices: KnownDeviceSpec[]; layouts: DeviceLayout[]; engineSnapshot: EngineSnapshot; platformCapabilities: PlatformCapabilities; manualLayoutChoices: LayoutChoice[] }
 export type DebugEvent = { kind: DebugEventKind; message: string; timestampMs: number }
@@ -238,7 +240,7 @@ export type DeviceSupportLevel = "full" | "partial" | "experimental"
 export type DeviceSupportMatrix = { level: DeviceSupportLevel; supportsBatteryStatus: boolean; supportsDpiConfiguration: boolean; hasInteractiveLayout: boolean; notes: string[] }
 export type DiscoveredApp = { id: string; label: string; description: string | null; matchers: AppMatcher[]; iconAsset: string | null; sourceKinds: AppDiscoverySource[]; sourcePath: string | null; suggested: boolean }
 export type EngineSnapshot = { devices: DeviceInfo[]; detectedDevices: DeviceInfo[]; deviceRouting?: DeviceRoutingSnapshot; activeDeviceKey: string | null; activeDevice: DeviceInfo | null; engineStatus: EngineStatus }
-export type EngineStatus = { enabled: boolean; connected: boolean; activeProfileId: string; frontmostApp: string | null; selectedDeviceKey: string | null; debugMode: boolean; debugLog: DebugEvent[] }
+export type EngineStatus = { enabled: boolean; connected: boolean; activeProfileId: string; frontmostApp: string | null; selectedDeviceKey: string | null; debugMode: boolean; debugLog: DebugEvent[]; runtimeHealth?: RuntimeHealth }
 export type EngineStatusChangedEvent = EngineStatus
 export type HotspotSummaryType = "mapping" | "gesture" | "hscroll"
 export type ImportLegacyConfigRequest = { sourcePath: string | null; rawJson: string | null }
@@ -252,6 +254,8 @@ export type ManagedDevice = { id: string; modelKey: string; displayName: string;
 export type PlatformCapabilities = { platform: string; windowsSupported: boolean; macosSupported: boolean; liveHooksAvailable: boolean; liveHidAvailable: boolean; trayReady: boolean; mappingEngineReady: boolean; gestureDiversionAvailable: boolean; activeHidBackend: string; activeHookBackend: string; activeFocusBackend: string; hidapiAvailable: boolean; iokitAvailable: boolean }
 export type Profile = { id: string; label: string; appMatchers: AppMatcher[]; bindings: Binding[] }
 export type ProfileChangedEvent = { activeProfileId: string; frontmostApp: string | null }
+export type RuntimeError = { code: "state_unavailable" } | { code: "internal"; message: string } | { code: "operation_failed"; operation: string; message: string } | { code: "platform"; operation: string; message: string } | { code: "legacy_import"; message: string }
+export type RuntimeHealth = { persistence?: BackendHealth; hid?: BackendHealth; hook?: BackendHealth; focus?: BackendHealth; discovery?: BackendHealth }
 export type Settings = { startMinimized: boolean; startAtLogin: boolean; appearanceMode: AppearanceMode; debugMode: boolean; debugLogGroups?: DebugLogGroups }
 
 /** tauri-specta globals **/

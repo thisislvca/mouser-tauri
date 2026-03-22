@@ -43,13 +43,13 @@ pub(super) fn current_app_focus_backend() -> Arc<dyn AppFocusBackend> {
     }
 }
 
-pub(super) fn current_app_discovery_backend() -> Box<dyn AppDiscoveryBackend> {
+pub(super) fn current_app_discovery_backend() -> Arc<dyn AppDiscoveryBackend> {
     if cfg!(target_os = "macos") {
-        Box::new(MacOsAppDiscoveryBackend)
+        Arc::new(MacOsAppDiscoveryBackend)
     } else if cfg!(target_os = "linux") {
-        Box::new(LinuxAppDiscoveryBackend)
+        Arc::new(LinuxAppDiscoveryBackend)
     } else {
-        Box::new(WindowsAppDiscoveryBackend)
+        Arc::new(WindowsAppDiscoveryBackend)
     }
 }
 

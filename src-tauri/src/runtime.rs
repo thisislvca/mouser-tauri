@@ -45,7 +45,7 @@ pub struct AppRuntime {
     hid_backend: Arc<dyn HidBackend>,
     hook_backend: Arc<dyn HookBackend>,
     app_focus_backend: Arc<dyn AppFocusBackend>,
-    app_discovery_backend: Box<dyn AppDiscoveryBackend>,
+    app_discovery_backend: Arc<dyn AppDiscoveryBackend>,
     config: AppConfig,
     resolved_profile_id: String,
     detected_devices: Vec<DeviceInfo>,
@@ -469,18 +469,20 @@ impl AppRuntime {
         self.push_debug(kind, message);
     }
 
-    pub fn poll_backends(
-        &self,
-    ) -> (
-        Arc<dyn HidBackend>,
-        Arc<dyn AppFocusBackend>,
-        Arc<dyn HookBackend>,
-    ) {
-        (
-            Arc::clone(&self.hid_backend),
-            Arc::clone(&self.app_focus_backend),
-            Arc::clone(&self.hook_backend),
-        )
+    pub(crate) fn hid_backend_handle(&self) -> Arc<dyn HidBackend> {
+        Arc::clone(&self.hid_backend)
+    }
+
+    pub(crate) fn hook_backend_handle(&self) -> Arc<dyn HookBackend> {
+        Arc::clone(&self.hook_backend)
+    }
+
+    pub(crate) fn app_focus_backend_handle(&self) -> Arc<dyn AppFocusBackend> {
+        Arc::clone(&self.app_focus_backend)
+    }
+
+    pub(crate) fn app_discovery_backend_handle(&self) -> Arc<dyn AppDiscoveryBackend> {
+        Arc::clone(&self.app_discovery_backend)
     }
 
     #[cfg_attr(target_os = "macos", allow(dead_code))]
@@ -1369,7 +1371,7 @@ mod tests {
             hid_backend: Arc::new(TestHidBackend),
             hook_backend: Arc::new(TestHookBackend),
             app_focus_backend: Arc::new(TestAppFocusBackend),
-            app_discovery_backend: Box::new(TestAppDiscoveryBackend),
+            app_discovery_backend: Arc::new(TestAppDiscoveryBackend),
             resolved_profile_id: config.active_profile_id.clone(),
             config,
             detected_devices: Vec::new(),
@@ -1673,9 +1675,11 @@ mod tests {
     #[test]
     fn app_discovery_failure_marks_backend_as_stale() {
         let mut runtime = test_runtime();
-        runtime.app_discovery_backend = Box::new(FailingDiscoveryBackend);
+        runtime.app_discovery_backend = Arc::new(FailingDiscoveryBackend);
 
-        let changed = runtime.refresh_app_discovery();
+        runtime.start_app_discovery_scan();
+        let changed = runtime
+            .finish_app_discovery_scan(Err(PlatformError::Message("scan failed".to_string())));
 
         assert!(changed);
         assert_eq!(
