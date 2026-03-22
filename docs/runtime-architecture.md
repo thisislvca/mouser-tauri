@@ -174,18 +174,14 @@ Unsupported controls or settings generate warnings and are returned in `LegacyIm
 The backend currently exposes these commands:
 
 - `bootstrap_load`
-- `config_get`
 - `config_save`
 - `app_discovery_refresh`
 - `app_icon_load`
-- `devices_list`
 - `devices_add`
 - `devices_reset_to_factory`
 - `devices_remove`
 - `devices_select`
-- `devices_select_mock`
 - `import_legacy_config`
-- `debug_clear_log`
 
 All commands are exported through Specta, which is why the frontend can use a generated typed API instead of hand-written stringly-typed calls.
 

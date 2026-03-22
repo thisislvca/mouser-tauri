@@ -41,8 +41,6 @@ impl RuntimeNotifier {
 
 enum RuntimeRequest {
     BootstrapLoad,
-    ConfigGet,
-    DevicesList,
     ConfigSave(AppConfig),
     DevicesResetToFactory(String),
     DevicesAdd(String),
@@ -52,7 +50,6 @@ enum RuntimeRequest {
         source_path: Option<String>,
         raw_json: Option<String>,
     },
-    DebugClearLog,
     SetEnabled(bool),
     SetDebugMode(bool),
     RefreshAppDiscovery,
@@ -60,8 +57,6 @@ enum RuntimeRequest {
 
 enum RuntimeResponse {
     Bootstrap(Box<BootstrapPayload>),
-    Config(Box<AppConfig>),
-    Devices(Vec<DeviceInfo>),
     Payload(Box<RuntimeMutationResult<BootstrapPayload>>),
     Engine(Box<RuntimeMutationResult<EngineSnapshot>>),
     Import(Box<RuntimeMutationResult<LegacyImportReport>>),
@@ -274,26 +269,6 @@ impl RuntimeService {
         }
     }
 
-    pub fn config_get(&self) -> RuntimeResult<AppConfig> {
-        match self.request(RuntimeRequest::ConfigGet)? {
-            RuntimeResponse::Config(config) => Ok(*config),
-            _ => Err(RuntimeError::operation(
-                "config_get",
-                "unexpected runtime config response",
-            )),
-        }
-    }
-
-    pub fn devices_list(&self) -> RuntimeResult<Vec<DeviceInfo>> {
-        match self.request(RuntimeRequest::DevicesList)? {
-            RuntimeResponse::Devices(devices) => Ok(devices),
-            _ => Err(RuntimeError::operation(
-                "devices_list",
-                "unexpected runtime devices response",
-            )),
-        }
-    }
-
     pub fn config_save(
         &self,
         config: AppConfig,
@@ -372,16 +347,6 @@ impl RuntimeService {
             _ => Err(RuntimeError::operation(
                 "import_legacy_config",
                 "unexpected runtime import response",
-            )),
-        }
-    }
-
-    pub fn debug_clear_log(&self) -> RuntimeResult<RuntimeMutationResult<EngineSnapshot>> {
-        match self.request(RuntimeRequest::DebugClearLog)? {
-            RuntimeResponse::Engine(result) => Ok(*result),
-            _ => Err(RuntimeError::operation(
-                "debug_clear_log",
-                "unexpected runtime engine response",
             )),
         }
     }
@@ -752,8 +717,6 @@ fn handle_request(
         RuntimeRequest::BootstrapLoad => Ok(RuntimeResponse::Bootstrap(Box::new(
             runtime.bootstrap_payload(),
         ))),
-        RuntimeRequest::ConfigGet => Ok(RuntimeResponse::Config(Box::new(runtime.config()))),
-        RuntimeRequest::DevicesList => Ok(RuntimeResponse::Devices(runtime.devices())),
         RuntimeRequest::ConfigSave(config) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,
@@ -810,14 +773,6 @@ fn handle_request(
                 |_| report,
             )?)))
         }
-        RuntimeRequest::DebugClearLog => Ok(RuntimeResponse::Engine(Box::new(capture_mutation(
-            runtime,
-            |runtime| {
-                runtime.clear_debug_log();
-                Ok(())
-            },
-            |runtime| runtime.engine_snapshot(),
-        )?))),
         RuntimeRequest::SetEnabled(enabled) => {
             Ok(RuntimeResponse::Payload(Box::new(capture_mutation(
                 runtime,

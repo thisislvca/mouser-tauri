@@ -143,10 +143,6 @@ impl AppRuntime {
         }
     }
 
-    pub fn config(&self) -> AppConfig {
-        self.config.clone()
-    }
-
     pub fn save_config(&mut self, config: AppConfig) -> RuntimeResult<()> {
         let debug_mode_was_enabled = self.replace_config(config)?;
         self.push_debug(
@@ -320,20 +316,12 @@ impl AppRuntime {
         Ok(())
     }
 
-    pub fn devices(&self) -> Vec<DeviceInfo> {
-        self.managed_device_infos()
-    }
-
     pub(crate) fn debug_event_cursor(&self) -> u64 {
         self.next_debug_seq
     }
 
     pub(crate) fn app_discovery_snapshot(&self) -> AppDiscoverySnapshot {
         self.app_discovery.clone()
-    }
-
-    pub fn clear_debug_log(&mut self) {
-        self.debug_log.clear();
     }
 
     pub fn record_debug_event(&mut self, kind: DebugEventKind, message: impl Into<String>) {

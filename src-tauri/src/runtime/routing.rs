@@ -39,10 +39,6 @@ pub(super) struct LiveDeviceAssignment {
 }
 
 impl AppRuntime {
-    pub(super) fn managed_device_infos(&self) -> Vec<DeviceInfo> {
-        self.device_resolution().managed_devices
-    }
-
     pub(super) fn device_resolution(&self) -> DeviceResolution {
         let assignments = self.matched_live_device_indexes();
         self.device_resolution_with_assignments(assignments)

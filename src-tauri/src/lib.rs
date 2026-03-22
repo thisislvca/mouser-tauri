@@ -90,12 +90,6 @@ fn bootstrap_load(state: State<'_, AppState>) -> CommandResult<BootstrapPayload>
 
 #[tauri::command]
 #[specta::specta]
-fn config_get(state: State<'_, AppState>) -> CommandResult<AppConfig> {
-    runtime_service(&state).config_get()
-}
-
-#[tauri::command]
-#[specta::specta]
 fn config_save(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -136,12 +130,6 @@ fn devices_reset_to_factory(
 
 #[tauri::command]
 #[specta::specta]
-fn devices_list(state: State<'_, AppState>) -> CommandResult<Vec<DeviceInfo>> {
-    runtime_service(&state).devices_list()
-}
-
-#[tauri::command]
-#[specta::specta]
 fn devices_add(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -175,16 +163,6 @@ fn devices_select(
 
 #[tauri::command]
 #[specta::specta]
-fn devices_select_mock(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    device_key: String,
-) -> CommandResult<EngineSnapshot> {
-    devices_select(app, state, device_key)
-}
-
-#[tauri::command]
-#[specta::specta]
 fn import_legacy_config(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -193,13 +171,6 @@ fn import_legacy_config(
     let result =
         runtime_service(&state).import_legacy_config(request.source_path, request.raw_json)?;
     emit_import_mutation_result(&app, result)
-}
-
-#[tauri::command]
-#[specta::specta]
-fn debug_clear_log(app: AppHandle, state: State<'_, AppState>) -> CommandResult<EngineSnapshot> {
-    let result = runtime_service(&state).debug_clear_log()?;
-    emit_engine_mutation_result(&app, result)
 }
 
 fn emit_runtime_events(
@@ -593,18 +564,14 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             bootstrap_load,
-            config_get,
             config_save,
             app_discovery_refresh,
             app_icon_load,
-            devices_list,
             devices_add,
             devices_reset_to_factory,
             devices_remove,
             devices_select,
-            devices_select_mock,
             import_legacy_config,
-            debug_clear_log
         ])
         .events(collect_events![
             DeviceChangedEvent,

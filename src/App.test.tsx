@@ -269,9 +269,7 @@ const apiMocks = vi.hoisted(() => ({
   devicesResetToFactory: vi.fn(),
   devicesRemove: vi.fn(),
   devicesSelect: vi.fn(),
-  devicesSelectMock: vi.fn(),
   importLegacyConfig: vi.fn(),
-  debugClearLog: vi.fn(),
   deviceChangedListen: vi.fn(async () => () => undefined),
   deviceRoutingChangedListen: vi.fn(async () => () => undefined),
   appDiscoveryChangedListen: vi.fn(async () => () => undefined),
@@ -289,9 +287,7 @@ vi.mock("./lib/api", () => ({
   devicesResetToFactory: apiMocks.devicesResetToFactory,
   devicesRemove: apiMocks.devicesRemove,
   devicesSelect: apiMocks.devicesSelect,
-  devicesSelectMock: apiMocks.devicesSelectMock,
   importLegacyConfig: apiMocks.importLegacyConfig,
-  debugClearLog: apiMocks.debugClearLog,
   events: {
     appDiscoveryChangedEvent: { listen: apiMocks.appDiscoveryChangedListen },
     deviceChangedEvent: { listen: apiMocks.deviceChangedListen },
@@ -812,9 +808,7 @@ describe("App", () => {
     apiMocks.devicesResetToFactory.mockReset();
     apiMocks.devicesRemove.mockReset();
     apiMocks.devicesSelect.mockReset();
-    apiMocks.devicesSelectMock.mockReset();
     apiMocks.importLegacyConfig.mockReset();
-    apiMocks.debugClearLog.mockReset();
     apiMocks.appDiscoveryChangedListen.mockClear();
     apiMocks.deviceChangedListen.mockClear();
     apiMocks.deviceRoutingChangedListen.mockClear();
@@ -1035,7 +1029,6 @@ describe("App", () => {
       };
       return currentBootstrap.engineSnapshot;
     });
-    apiMocks.devicesSelectMock.mockImplementation(apiMocks.devicesSelect);
     apiMocks.importLegacyConfig.mockImplementation(async () => {
       currentBootstrap = makeImportedBootstrap();
       return {
@@ -1044,19 +1037,6 @@ describe("App", () => {
         sourcePath: null,
         importedProfiles: currentBootstrap.config.profiles.length,
       };
-    });
-    apiMocks.debugClearLog.mockImplementation(async () => {
-      currentBootstrap = {
-        ...currentBootstrap,
-        engineSnapshot: {
-          ...currentBootstrap.engineSnapshot,
-          engineStatus: {
-            ...currentBootstrap.engineSnapshot.engineStatus,
-            debugLog: [],
-          },
-        },
-      };
-      return currentBootstrap.engineSnapshot;
     });
 
     useUiStore.setState({

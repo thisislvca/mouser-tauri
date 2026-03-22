@@ -14,14 +14,6 @@ async bootstrapLoad() : Promise<Result<BootstrapPayload, RuntimeError>> {
     else return { status: "error", error: e  as any };
 }
 },
-async configGet() : Promise<Result<AppConfig, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("config_get") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async configSave(config: AppConfig) : Promise<Result<BootstrapPayload, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("config_save", { config }) };
@@ -41,14 +33,6 @@ async appDiscoveryRefresh() : Promise<Result<BootstrapPayload, RuntimeError>> {
 async appIconLoad(sourcePath: string) : Promise<Result<string | null, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("app_icon_load", { sourcePath }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async devicesList() : Promise<Result<DeviceInfo[], RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("devices_list") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -86,25 +70,9 @@ async devicesSelect(deviceKey: string) : Promise<Result<EngineSnapshot, RuntimeE
     else return { status: "error", error: e  as any };
 }
 },
-async devicesSelectMock(deviceKey: string) : Promise<Result<EngineSnapshot, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("devices_select_mock", { deviceKey }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async importLegacyConfig(request: ImportLegacyConfigRequest) : Promise<Result<LegacyImportReport, RuntimeError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("import_legacy_config", { request }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async debugClearLog() : Promise<Result<EngineSnapshot, RuntimeError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("debug_clear_log") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
